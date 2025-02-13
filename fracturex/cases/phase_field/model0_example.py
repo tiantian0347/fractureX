@@ -6,7 +6,7 @@ from fealpy.backend import backend_manager as bm
 from fealpy.mesh import TriangleMesh
 from fealpy.old.geometry.domain_2d import SquareWithCircleHoleDomain
 
-from app.fracturex.fracturex.phasefield.main_solve import MainSolve
+from fracturex.phasefield.main_solve import MainSolve
 
 from fealpy.utils import timer
 

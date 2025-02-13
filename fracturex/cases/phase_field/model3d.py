@@ -3,7 +3,7 @@ import torch
 import numpy as np
 from fealpy.mesh import TetrahedronMesh, HexahedronMesh
 
-from app.fracturex.fracturex.phasefield.main_solve import MainSolve
+from fracturex.phasefield.main_solve import MainSolve
 from fealpy.utils import timer
 
 import time

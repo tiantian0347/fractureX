@@ -1,5 +1,3 @@
-import numpy as np
-import torch
 from typing import Optional
 
 from fealpy.typing import TensorLike
@@ -8,7 +6,7 @@ from fealpy.material.elastic_material import LinearElasticMaterial
 
 from fealpy.decorator import barycentric
 
-from app.fracturex.fracturex.utilfuc.utils import flatten_symmetric_matrices
+from fracturex.utilfuc.utils import flatten_symmetric_matrices
 
 class BasedPhaseFractureMaterial(LinearElasticMaterial):
     def __init__(self, material, energy_degradation_fun):

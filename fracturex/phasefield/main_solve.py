@@ -20,11 +20,11 @@ from fealpy.fem import DirichletBC
 from fealpy.solver import cg, spsolve, gmres
 from scipy.sparse.linalg import lgmres
 
-from app.fracturex.fracturex.phasefield.energy_degradation_function import EnergyDegradationFunction as EDFunc
-from app.fracturex.fracturex.phasefield.crack_surface_density_function import CrackSurfaceDensityFunction as CSDFunc
-from app.fracturex.fracturex.phasefield.phase_fracture_material import PhaseFractureMaterialFactory
-from app.fracturex.fracturex.phasefield.adaptive_refinement import AdaptiveRefinement
-from app.fracturex.fracturex.phasefield.vector_Dirichlet_bc import VectorDirichletBC
+from fracturex.phasefield.energy_degradation_function import EnergyDegradationFunction as EDFunc
+from fracturex.phasefield.crack_surface_density_function import CrackSurfaceDensityFunction as CSDFunc
+from fracturex.phasefield.phase_fracture_material import PhaseFractureMaterialFactory
+from fracturex.phasefield.adaptive_refinement import AdaptiveRefinement
+from fracturex.phasefield.vector_Dirichlet_bc import VectorDirichletBC
 
 
 class MainSolve:
@@ -94,7 +94,7 @@ class MainSolve:
             raise ValueError(f"Unknown method: {self.method}")
         
         gdof = self.space.number_of_global_dofs()
-        print('ddddddd', gdof)
+        
         self.pfcm.update_disp(self.uh)
         self.pfcm.update_phase(self.d)
 

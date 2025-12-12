@@ -230,6 +230,7 @@ class MainSolve:
         ubform = BilinearForm(self.tspace)
         ubform.add_integrator(LinearElasticIntegrator(self.pfcm, q=self.q, method='voigt'))
         A = ubform.assembly()
+        
         R = -A @ uh[:]
         self._Rfu = bm.sum(-R[force_index])
         tmr.send('disp_assemble')
@@ -237,7 +238,7 @@ class MainSolve:
         # Apply force boundary conditions
         ubc = VectorDirichletBC(self.tspace, 0, threshold=self._force_dof, direction=self._force_direction)  
         A, R = ubc.apply(A, R)
-
+        
         # Apply displacement boundary conditions
         A, R = self._apply_boundary_conditions(A, R, field='displacement')
         tmr.send('apply_bc')

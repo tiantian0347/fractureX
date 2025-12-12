@@ -17,8 +17,8 @@ class square_with_circular_notch_3d():
         """
         E = 210
         nu = 0.3
-        Gc = 5e-4
-        l0 = 0.05
+        Gc = 1
+        l0 = 0.2
         self.params = {'E': E, 'nu': nu, 'Gc': Gc, 'l0': l0}
 
 
@@ -29,13 +29,13 @@ class square_with_circular_notch_3d():
         -----
         这里向量的第 i 个值表示第 i 个时间步的位移的大小
         """
-        return bm.linspace(0, 4e-2, 4001)
+        return bm.linspace(0, 0.3, 31)
 
     def is_force_boundary(self, p):
         """
         @brief 标记位移增量的边界点
         """
-        isDNode = bm.abs(p[..., 2] - 10) < 1e-12
+        isDNode = bm.abs(p[..., 2] - 1) < 1e-12
         return isDNode
 
     def is_dirchlet_boundary(self, p):
@@ -84,8 +84,8 @@ parser.add_argument('--refine_method',
         help='网格加密方法, 默认为 bisect.')
 
 parser.add_argument('--n',
-        default=6, type=int,
-        help='初始网格加密次数, 默认为 6.')
+        default=4, type=int,
+        help='初始网格加密次数, 默认为 4.')
 
 parser.add_argument('--vtkname',
         default='test', type=str,
@@ -126,18 +126,21 @@ tmr = timer()
 next(tmr)
 start = time.time()
 bm.set_backend(backend)
+
 if gpu:
     bm.set_default_device('cuda')
 model = square_with_circular_notch_3d()
 
 if args.mesh_type == 'hex':
-    mesh = HexahedronMesh.from_crack_box()
+    #mesh = HexahedronMesh.from_crack_box()
+    mesh = HexahedronMesh.from_crack_box(box=[0, 1, 0, 1, 0, 1], nx=20, ny=20, nz=20)
 elif args.mesh_type == 'tet':
-    mesh = TetrahedronMesh.from_crack_box()
+    #mesh = TetrahedronMesh.from_crack_box()
+    mesh = TetrahedronMesh.from_crack_box(box=[0, 1, 0, 1, 0, 1], nx=20, ny=20, nz=20)
 else:
     raise ValueError('Invalid mesh type.')
 
-mesh.uniform_refine(n=n)
+#mesh.uniform_refine(n=n)
 
 
 fname = args.mesh_type + '_3d_square_with_a_notch_init.vtu'
@@ -153,8 +156,8 @@ ms.add_boundary_condition('force', 'Dirichlet', model.is_force_boundary, model.i
 ms.add_boundary_condition('displacement', 'Dirichlet', model.is_dirchlet_boundary, 0)
 
 
-if bm.backend_name == 'pytorch':
-    ms.auto_assembly_matrix()
+#if bm.backend_name == 'pytorch':
+#    ms.auto_assembly_matrix()
 if cupy:
     ms.set_cupy_solver()
 
@@ -176,6 +179,14 @@ torch.save(force, ftname)
 tname = 'params_'+args.mesh_type + '_p' + str(p) + '_' + 'model3d_disp.txt'
 with open(tname, 'w') as file:
     file.write(f'\n time: {end-start},\n degree:{p},\n, backend:{backend},\n, model_type:{model_type},\n, enable_adaptive:{enable_adaptive},\n, marking_strategy:{marking_strategy},\n, refine_method:{refine_method},\n, n:{n},\n, maxit:{maxit},\n, vtkname:{vtkname}\n')
+
+uh = ms.uh
+uname = 'uh_' + args.mesh_type + '_p' + str(p) + '_' + 'model3d_uh.pt'
+torch.save(uh, uname)
+d = ms.d
+dname = 'd_' + args.mesh_type + '_p' + str(p) + '_' + 'model3d_d.pt'
+torch.save(d, dname)
+
 fig, axs = plt.subplots()
 disp = model.is_z_force()
 plt.plot(disp, force, label='Force')

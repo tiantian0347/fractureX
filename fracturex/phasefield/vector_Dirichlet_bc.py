@@ -32,6 +32,7 @@ class VectorDirichletBC:
         else:
             idx = direction_map.get(direction)
             if idx is not None and idx < GD:
+                
                 bm.set_at(index, idx, is_bd_dof)  # Apply only to the specified direction
                 #bm.set_at(index, (..., idx), is_bd_dof)
             else:

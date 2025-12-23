@@ -230,73 +230,138 @@ class HuzhangStressBoundaryCondition:
         self.mesh = space.mesh
         self.p = space.p
         self.q = q if q is not None else self.p + 3  # Default to p+3 if q is None
+        
+        # 初始化张量转换矩阵
+        tdim = space.tensor_dimension()
+        gdim = space.geo_dimension()
+        if gdim == 2:
+            # 2D情况: (3,2,2)
+            self.T = bm.array([
+                [[1, 0], [0, 0]],
+                [[0, 0], [0, 1]],
+                [[0, 1], [1, 0]]
+            ], dtype=bm.float64)
+        elif gdim == 3:
+            # 3D情况: (6,3,3)
+            self.T = bm.array([
+                [[1, 0, 0], [0, 0, 0], [0, 0, 0]],
+                [[0, 0, 0], [0, 1, 0], [0, 0, 0]],
+                [[0, 0, 0], [0, 0, 0], [0, 0, 1]],
+                [[0, 1, 0], [1, 0, 0], [0, 0, 0]],
+                [[0, 0, 1], [0, 0, 0], [1, 0, 0]],
+                [[0, 0, 0], [0, 0, 1], [0, 1, 0]]
+            ], dtype=bm.float64)
 
+
+    def apply_stress_boundary_condition(space, A, F, g_stress, threshold=None):
+        """
+        处理本质应力边界条件 (Traction BC).
+        在混合元中，指定 sigma*n 是对应力空间的本质边界限制。
+        """
+        # 1. 插值边界上的应力值
+        # 注意：set_dirichlet_bc 内部会调用 boundary_interpolate
+        # 我们需要确保 mesh.edgedata['dirichlet'] 已经被正确标记为 Traction 边界
+        uh, isbddof = space.set_dirichlet_bc(g_stress, threshold=threshold)
+
+        # 2. 修改线性系统 (A x = F)
+        # 将已知自由度移至右端项: F = F - A * known_u
+        F = F - A @ uh
+        
+        # 3. 强制对角线为 1，非对角线为 0，右端项为已知值
+        F[isbddof] = uh[isbddof]
+        
+        gdof = space.number_of_global_dofs()
+        bdIdx = bm.zeros(gdof, dtype=bm.int32)
+        bdIdx[isbddof] = 1
+        
+        Tbd = spdiags(bdIdx, 0, gdof, gdof) # 边界DOF对角矩阵
+        T = spdiags(1 - bdIdx, 0, gdof, gdof) # 内部DOF对角矩阵
+        
+        # A_new = T * A * T + I_bd
+        A = T @ A @ T + Tbd
+        
+        return A, F
     
     def set_essential_bc(self, uh, gN, A, F, threshold=None):
         """
         初始化压力的本质边界条件，插值一个边界sigam,使得sigam*n=gN,对于角点，要小心选取标架
-        由face2bddof 形状为(NFbd,ldof,tdim)
-        2D case 时face2bddof[...,0]--切向标架， face2bddof[...,1]--法向标架， face2bddof[...,2]--切法向组合标架
+        face_to_dof 现在是展平的形状 (NFbd, ldof)，不再有tdim维度
+        A: 完整的刚度矩阵
+        F: 完整的载荷向量
         """
         mesh = self.mesh
         space = self.space
         gdim = space.geo_dimension()
-        #tdim = space.tensor_dimension()
-        ipoint = space.dof.interpolation_points()
+        tdim = space.tensor_dimension()
+        ipoint = space.interpolation_points()
         gdof = space.number_of_global_dofs()
-        #node = mesh.entity('node')
-
 
         if isinstance(threshold, TensorLike):
             index = threshold #此种情况后面补充
+            NFbd = len(index)
+            # 默认所有边界都是法向约束
+            bd_index_type = bm.ones((gdim,NFbd),dtype=bm.bool)
         else:
             index = mesh.boundary_face_index()
             NFbd = len(index)
             if threshold is not None:
-                
                 bc = mesh.entity_barycenter('face',index=index)
                 flag = threshold(bc) #(2,gNEbd),第0行表示给的法向投影，第1行分量表示给的切向投影
                 flag_idx = (bm.sum(flag,axis=0)>0) #(gNFbd,)
                 index = index[flag_idx] #(NFbd,)
                 NFbd = len(index)
 
-                bd_index_type = bm.zeros((2,NFbd),dtype=bm.bool)
+                bd_index_type = bm.zeros((gdim,NFbd),dtype=bm.bool)
                 bd_index_type[0] = flag[0][flag_idx] #第0个分量表示给的法向投影
                 bd_index_type[1] = flag[1][flag_idx] #第1个分量表示给的切向投影
-                #print(bd_index_type)
-
+            else:
+                # 默认所有边界都是法向约束
+                bd_index_type = bm.ones((gdim,NFbd),dtype=bm.bool)
 
         n = mesh.face_unit_normal()[index] #(NEbd,gdim)
         t = mesh.edge_unit_tangent()[index] #(NEbd,gdim)
         isBdDof = bm.zeros(gdof,dtype=bm.bool)#判断是否为固定顶点
         Is_cor_face_idx = bm.zeros(NFbd,dtype=bm.bool) #含角点的边界边
-        f2dbd = space.dof.face_to_dof()[index] #(NEbd,ldof)
-        ipoint = ipoint[f2dbd] #(NEbd,ldof,gdim)
-        facebd2dof = space.face2dof[index] #(NEbd,ldof,tdim)
-        #print(f2dbd,index.shape,facebd2dof.shape)
-        frame = bm.zeros((NFbd,2,2),dtype=bm.float64)
+        facebd2dof = space.face_to_dof()[index] #(NEbd,ldof) - 已展平
+        print('fbd', facebd2dof.shape, ipoint.shape, index.shape)
+        
+        # 重新构造ipoint，需要根据展平的dof索引来获取
+        # 假设每个dof对应tdim个分量，我们需要获取对应的节点坐标
+        node_indices = facebd2dof // tdim  # 获取节点索引
+        ipoint = ipoint[node_indices] #(NEbd,ldof,gdim)
+        
+        frame = bm.zeros((NFbd, gdim, gdim),dtype=bm.float64)
         frame[:,0] = n
         frame[:,1] = t
 
         val = gN(ipoint,n[...,None,:],t=t[...,None,:]) #(NEbd,ldof,gdim)，可能是法向，也可能是切向，或者两者的线性组合
 
-        #将边界边内部点与顶点分别处理
-
-
- 
-
-        self.set_essential_bc_inner_edge(facebd2dof,bd_index_type,frame,val,uh,isBdDof)#处理所有边界边内部点
-        self.set_essential_bc_vertex(index,facebd2dof,bd_index_type,frame,val,uh,isBdDof,M,B0,B1,F0)#处理所有边界边顶点
+        #将边界边内部点与顶点分别处理 
+        self.set_essential_bc_inner_edge(facebd2dof,bd_index_type,frame,val,uh,isBdDof,A,F)#处理所有边界边内部点
+        self.set_essential_bc_vertex(index,facebd2dof,bd_index_type,frame,val,uh,isBdDof,A,F)#处理所有边界边顶点
 
         return isBdDof
 
-    def set_essential_bc_inner_edge(self,facebd2dof,bd_index_type,frame,val,uh,isBdDof):
+    def set_essential_bc_inner_edge(self,facebd2dof,bd_index_type,frame,val,uh,isBdDof,A,F):
         #处理所有边界边内部点
         space = self.space
+        tdim = space.tensor_dimension()
         inner_edge_dof_flag, = bm.nonzero(space.face_dof_falgs_1()[1])
         val_temp = val[:,inner_edge_dof_flag] #(NFbd,edof,gdim)
-        bdinedge2dof = facebd2dof[:,inner_edge_dof_flag,1:] #(NFbd,edof,tdim-1)
-        bdTensor_Frame = space.Tensor_Frame[bdinedge2dof] #(NFbd,edof,2,tdim)
+        
+        # facebd2dof现在是展平的 (NFbd,ldof)，需要提取内部边的自由度
+        bdinedge2dof_flat = facebd2dof[:,inner_edge_dof_flag] #(NFbd,edof)
+        
+        # 对于每个展平的dof，提取除第一个分量外的自由度（对应原来的1:tdim）
+        # 即 dof, dof+1, ..., dof+tdim-1 中的 dof+1, dof+2, ..., dof+tdim-1
+        node_indices = bdinedge2dof_flat // tdim  # 节点索引
+        component_indices = bdinedge2dof_flat % tdim  # 分量索引（应该都是0）
+        bdinedge2dof_list = []
+        for i in range(1, tdim):  # 从1开始，跳过第0个分量
+            bdinedge2dof_list.append(node_indices * tdim + i)
+        bdinedge2dof = bm.stack(bdinedge2dof_list, axis=-1) #(NFbd,edof,tdim-1)
+        
+        bdTensor_Frame = space.Tensor_Frame[bdinedge2dof] #(NFbd,edof,tdim-1,tdim)
         n = frame[:,0]
         for i in range(2):
             bd_index_temp, = bm.nonzero(bd_index_type[i])
@@ -306,18 +371,26 @@ class HuzhangStressBoundaryCondition:
                 val_projection = bm.einsum('ijk,ik->ij',val_temp[bd_index_temp],frame[bd_index_temp,i])
                 uh[bdinedge2dof[bd_index_temp,:,i]] = val_projection/bdTensor_Frame_projection
                 isBdDof[bdinedge2dof[bd_index_temp,:,i]] = True
-                #print(uh[bdinedge2dof[bd_index_temp,:,i]])
 
-    def set_essential_bc_vertex(self,index,facebd2dof,bd_index_type,frame,val,uh,isBdDof,M,B0,B1,F0):
+    def set_essential_bc_vertex(self,index,facebd2dof,bd_index_type,frame,val,uh,isBdDof,A,F):
         space = self.space
         NFbd = len(index)
         tdim = space.tensor_dimension()
         gdim = space.geo_dimension()
-        node_dof_flag, = bm.nonzero(self.face_dof_falgs_1()[0])
+        node_dof_flag, = bm.nonzero(space.face_dof_falgs_1()[0])
         bd_val = val[:,node_dof_flag] #(NFbd,2,gdim)
-        bdnode2dof = facebd2dof[:,node_dof_flag] #(NFbd,2,tdim)
-        #print(facebd2dof[:,:,0]/tdim)
-        bd_edge2node = bm.array(bdnode2dof[:,:,0]/tdim,dtype=int)#(NFbd,2)
+        
+        # facebd2dof 现在是展平的 (NFbd,ldof)
+        bdnode2dof_flat = facebd2dof[:,node_dof_flag] #(NFbd,2)
+        
+        # 重构为 (NFbd,2,tdim) 形式，每个节点有tdim个自由度
+        node_indices = bdnode2dof_flat // tdim  # (NFbd,2)
+        bdnode2dof_list = []
+        for i in range(tdim):
+            bdnode2dof_list.append(node_indices * tdim + i)
+        bdnode2dof = bm.stack(bdnode2dof_list, axis=-1)  #(NFbd,2,tdim)
+        
+        bd_edge2node = bm.array(bdnode2dof_flat/tdim,dtype=int)#(NFbd,2)
         bdnode = bm.unique(bd_edge2node)#boundary vert index
         Corner_point_index_all = bm.array(space.Corner_point_index,dtype=int) #所有边界点
         bdnode = bm.setdiff1d(bdnode,Corner_point_index_all)
@@ -388,7 +461,7 @@ class HuzhangStressBoundaryCondition:
             cor_TF = space.Change_frame(frame)
             orign_TF = space.Tensor_Frame[corner_point*tdim:corner_point*tdim+tdim] #原来角点选用点标架
             Correct_P = space.Transition_matrix(cor_TF,orign_TF)
-            space.Change_basis_frame_matrix(M,B0,B1,F0,Correct_P,corner_point)
+            space.Change_basis_frame_matrix(A,F,Correct_P,corner_point)
             space.Tensor_Frame[corner_point*tdim:corner_point*tdim+tdim] = cor_TF #对原始标架做矫正
 
             #固定自由度赋值
@@ -439,9 +512,11 @@ class HuzhangStressBoundaryCondition:
             elif bm.sum(Ncorner_bdfix_type)==3:
                 #有三个约束，刚好可能确定三个自由度，
                 #而且有一条边两个标架都有，考虑变换标架为该条边方向
-                frame_all = bm.zeros((2,2,gdim),dtype=bm.floa64) #按边顺序放法向，切向向量
+                frame_all = bm.zeros((2,2,gdim),dtype=bm.float64) #按边顺序放法向，切向向量
                 frame_all[:,0,:] = corner_n
                 frame_all[:,1,:] = corner_t
+                frame_idx = 0
+                temp_idx = 1
                 if Ncorner_bdfix_type[0]==2:
                     #第0条边的切，法向分量来构建标架
                     frame_idx = 0
@@ -456,13 +531,14 @@ class HuzhangStressBoundaryCondition:
                 cor_TF = space.Change_frame(frame_edge[[1,0]])
                 orign_TF = space.Tensor_Frame[corner_point*tdim:corner_point*tdim+tdim] #原来角点选用点标架
                 Correct_P = space.Transition_matrix(cor_TF,orign_TF)
-                space.Change_basis_frame_matrix(M,B0,B1,F0,Correct_P,corner_point)
+                space.Change_basis_frame_matrix(A,F,Correct_P,corner_point)
                 space.Tensor_Frame[corner_point*tdim:corner_point*tdim+tdim] = cor_TF
 
                 uh_pre = bm.zeros(3) #可能为三个，也可能只有两个
                 uh_pre[1] = val_temp_n[frame_idx]
                 uh_pre[2] = bm.sqrt(2.0)*val_temp_t[frame_idx]
 
+                A_temp = bm.zeros(3)
                 if corner_index_type[0,temp_idx]:
                     #表明是法向
                     uh_pre[0] = val_temp_n[temp_idx]
@@ -485,7 +561,7 @@ class HuzhangStressBoundaryCondition:
 
             elif bm.sum(Ncorner_bdfix_type)==2:
                 #有两个约束，确定两个方向，要特殊选取标架
-                frame_all = bm.zeros((2,2,gdim),dtype=bm.floa64) #按边顺序放法向，切向向量
+                frame_all = bm.zeros((2,2,gdim),dtype=bm.float64) #按边顺序放法向，切向向量
                 frame_all[:,0,:] = corner_n
                 frame_all[:,1,:] = corner_t
                 idx_temp = bm.zeros(2,dtype=bm.int)
@@ -498,7 +574,7 @@ class HuzhangStressBoundaryCondition:
                 U,Lam,Correct_P = bm.linalg.svd(orign_matrix)
 
                 cor_TF = bm.einsum('ik,kj->ij',Correct_P,orign_TF) #(tdim,tdim)
-                space.Change_basis_frame_matrix(M,B0,B1,F0,Correct_P,corner_point)
+                space.Change_basis_frame_matrix(A,F,Correct_P,corner_point)
                 space.Tensor_Frame[corner_point*tdim:corner_point*tdim+tdim] = cor_TF
 
                 corner_gNb = bm.einsum('ij,ij->i',val_temp,corner_projection)

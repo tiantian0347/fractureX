@@ -99,15 +99,22 @@ def set_essential_stress_bc(A, F, space0, pde, threshold=None):
 def solve(pde, N, p):
     mesh = TriangleMesh.from_box([0, 1, 0, 1], nx=N, ny=N)
     node = mesh.entity('node')
-    # Find corner points
-    is_x_bd = (bm.abs(node[:, 0] - 0) < 1e-9) | (bm.abs(node[:, 0] - 1) < 1e-9)
-    is_y_bd = (bm.abs(node[:, 1] - 0) < 1e-9) | (bm.abs(node[:, 1] - 1) < 1e-9)
-    is_corner = is_x_bd & is_y_bd
-    corner_coords = node[is_corner]
-    mesh.meshdata['corner'] = corner_coords
-    
+    edge = mesh.entity('edge')
+    bd_e = mesh.boundary_face_index()
+    bc_e = mesh.entity_barycenter('edge', index=bd_e)
+    # ΓN: y = 1
+    flagN = bm.abs(bc_e[:, 1] - 1.0) < 1e-12
 
-    space0 = HuZhangFESpace2d(mesh, p=p, use_relaxation=True)
+    isNedge = bm.zeros(mesh.number_of_edges(), dtype=bm.bool)
+    isNedge = bm.set_at(isNedge, bd_e[flagN], True)
+
+    space0 = HuZhangFESpace2d(mesh, p=p, use_relaxation=True, isNedge=isNedge, corner_mode="auto")
+    print("NCP =", space0.NCP)
+    print("corner types count:",
+        (space0.corner['type'] == 2).sum(),
+        (space0.corner['type'] == 1).sum(),
+        (space0.corner['type'] == 0).sum())
+
 
     space = LagrangeFESpace(mesh, p=p-1, ctype='D')
     space1 = TensorFunctionSpace(space, shape=(-1, 2))
@@ -183,8 +190,6 @@ def solve(pde, N, p):
         tol = 1e-9
         flag = (bm.abs(y - 0) < tol) | (bm.abs(y - 1) < tol) 
         return flag
-    
-    mesh.edgedata['dirichlet'] = is_dir_dof
     uh_stress, isbddof_stress = space0.set_dirichlet_bc(pde.stress, threshold=is_dir_dof)
     
     # 扩展全系统向量

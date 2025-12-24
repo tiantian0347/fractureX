@@ -175,14 +175,6 @@ class HuZhangFESolve():
         print('uh',bm.sum(uh[:]))
         print('d', bm.sum(self.d[:]))
 
-        
-
-    def displacement(self, disp, x):
-        disp_index = self.model.is_disp_boundary(x)
-        gd = bm.zeros_like(x)
-        gd[:, disp_index] = disp
-        return gd
-
     def damage_function(self):
         """
         @brief 计算损伤函数

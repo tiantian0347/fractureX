@@ -5,6 +5,7 @@ from sympy import derive_by_array, eye, tensorcontraction
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh import TriangleMesh
 from fealpy.decorator import cartesian
+from fracturex.utilfuc.utils import as_nt, as_xy
 
 class LinearElasticPDE():
     def __init__(self, u, lambda0, lambda1):

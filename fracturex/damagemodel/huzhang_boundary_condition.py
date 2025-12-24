@@ -14,10 +14,10 @@ class HuzhangBoundaryCondition:
         u[self.mesh.boundary_nodes] = self.value
         return u
 
-    # def __call__(self, u):
-    #     return self.apply(u)
+    def __call__(self, u):
+        return self.apply(u)
 
-    # def displacement_boundary_condition(self, value=0.0, threshold=None, direction=None):
+    # def displacement_boundary_condition_old(self, value=0.0, threshold=None, direction=None):
     #     """
     #     @brief 边界条件
     #     @param[in] g 边界条件函数
@@ -25,7 +25,7 @@ class HuzhangBoundaryCondition:
     #     @details 该函数用于设置边界条件，通常用于施加位移或力。
     #     """
     #     mesh = self.mesh
-    #     space = self.hspace
+    #     space = self.space
     #     p = self.p
     #     q = self.q
     #     self.value = value
@@ -81,10 +81,9 @@ class HuzhangBoundaryCondition:
     #             phin[flag, ..., 0] = bm.sum(phi[..., symidx[0]] * fn[flag, None, None], axis=-1)
     #             phin[flag, ..., 1] = bm.sum(phi[..., symidx[1]] * fn[flag, None, None], axis=-1)
     #             points = mesh.bc_to_point(bcsi[i])[f2c[flag, 0]]
-
+                
     #             if dir_idx is None:
-    #                 for j in range(GD):
-    #                     gval[flag, ..., j] = g[..., j]
+    #                     gval[flag, ...] = self.get_boundary_value(points)
     #             else:
     #                 gval[flag] = g
 
@@ -101,8 +100,7 @@ class HuzhangBoundaryCondition:
     #             phin[flag, ..., 2] = bm.sum(phi[..., symidx[2]] * fn[flag, None, None], axis=-1)
     #             points = mesh.bc_to_point(bcsi[i])[f2c[flag, 0]]
     #             if dir_idx is None:
-    #                 for j in range(dir_idx):
-    #                     gval[flag, ..., j] = g[..., j]
+    #                 gval[flag, ...] = self.get_boundary_value(points)
     #             else:
     #                 gval[flag] = g
     #     else:
@@ -116,45 +114,67 @@ class HuzhangBoundaryCondition:
     #     return r
     
 
-    def displacement_boundary_condition(self, value=0.0, threshold=None, direction=None):
+    def displacement_boundary_condition(self, value=0.0, threshold=None, direction=None, piecewise=None):
         """
-        Sets displacement boundary condition, typically for displacement or force application.
+        支持单段 (value, threshold) 或多段 piecewise=[(thr,val,dir),...]
+        返回用于 σ 方程 RHS 的向量 r。
+        @param value: 边界值函数或常数
+        @param threshold: 边界索引或筛选函数
+        @param direction: 施加边界条件的方向 ('x', 'y', 'z' 或 None)
+        @param piecewise: 多段边界条件列表，每段为 (threshold, value, direction)
+        返回载荷向量 r。
         """
+        space = self.space
+        gdof = space.number_of_global_dofs()
+        r = bm.zeros(gdof, dtype=space.ftype)
+
+        if piecewise is None:
+            piecewise = [(threshold, value, direction)]
+
+        # 逐段累加
+        for thr, val, direc in piecewise:
+            if thr is None:
+                continue
+            r += self._displacement_bc_one_piece(val, thr, direc)
+
+        return r
+    
+    def _displacement_bc_one_piece(self, value, threshold, direction):
         mesh, space = self.mesh, self.space
         q = self.q
-        self.value = value
-        self.threshold = threshold
-        self.direction = direction
 
         TD, GD = mesh.top_dimension(), mesh.geo_dimension()
-        ldof, gdof = space.number_of_local_dofs(), space.number_of_global_dofs()
+        ldof = space.number_of_local_dofs()
+        gdof = space.number_of_global_dofs()
 
-        # Determine boundary faces based on threshold
         bdface = self.get_boundary_faces(mesh, threshold)
+        if int(bdface.shape[0]) == 0:
+            return bm.zeros(gdof, dtype=space.ftype)
 
-        f2c, fn = mesh.face_to_cell()[bdface], mesh.face_unit_normal()[bdface]
+        f2c = mesh.face_to_cell()[bdface]
+        fn  = mesh.face_unit_normal(index=bdface)
         cell2dof = space.cell_to_dof()[f2c[:, 0]]
-        NBF = len(bdface)
+        NBF = int(bdface.shape[0])
 
-        # Prepare quadrature for integration
         cellmeasure = mesh.entity_measure('face')[bdface]
         qf = mesh.quadrature_formula(q, 'face')
         bcs, ws = qf.get_quadrature_points_and_weights()
-        NQ = len(bcs)
-        
-        phin, gval = bm.zeros((NBF, NQ, ldof, GD), dtype=space.ftype), bm.zeros((NBF, NQ, GD), dtype=space.ftype)
+        NQ = len(ws)
 
-        # Process boundary condition for 2D and 3D
-        if GD in [2, 3]:
-            self.apply_boundary_condition(GD, f2c, fn, phin, gval, bcs, ws, cellmeasure, mesh, direction, bdface)
-        else:
-            raise ValueError("Only 2D and 3D supported.")
+        phin = bm.zeros((NBF, NQ, ldof, GD), dtype=space.ftype)
+        gval = bm.zeros((NBF, NQ, GD), dtype=space.ftype)
 
-        # Assemble the results into the final boundary condition vector
-        b = bm.einsum('q, c, cqld, cqd->cl', ws, cellmeasure, phin, gval)
-        r = bm.zeros(gdof, dtype=phin.dtype)
+        # 
+        self.apply_boundary_condition(
+            GD, f2c, fn, phin, gval, bcs, mesh, direction, value
+        )
+
+        b = bm.einsum('q, c, cqld, cqd -> cl', ws, cellmeasure, phin, gval)
+        r = bm.zeros(gdof, dtype=space.ftype)
         bm.add.at(r, cell2dof, b)
         return r
+
+
 
     def get_boundary_faces(self, mesh, threshold):
         """Determine the boundary faces based on the threshold."""
@@ -168,7 +188,7 @@ class HuzhangBoundaryCondition:
                 bdface = bdface[flag0]
             return bdface
         
-    def apply_boundary_condition(self, GD, f2c, fn, phin, gval, bcs, ws, cellmeasure, mesh, direction, bdface):
+    def apply_boundary_condition(self, GD, f2c, fn, phin, gval, bcs, mesh, direction, value):
         """Apply the boundary condition for 2D and 3D meshes dynamically."""
 
 
@@ -188,7 +208,7 @@ class HuzhangBoundaryCondition:
         for i in range(num_faces):
             flag = f2c[:, 2] == i
             bcsi = bm.insert(bcs, i, 0, axis=-1)  # Insert boundary coordinates for the current face
-            symidx = self.get_symmetry_indices(GD, i)  # Get the symmetry indices dynamically for GD
+            symidx = self.get_symmetry_indices(GD)  # Get the symmetry indices dynamically for GD
 
             phi = self.space.basis(bcsi)[f2c[flag, 0]]
             for j in range(len(symidx)):
@@ -196,11 +216,11 @@ class HuzhangBoundaryCondition:
 
             points = mesh.bc_to_point(bcsi)[f2c[flag, 0]]
             if dir_idx is None:  # Apply to all directions (default behavior)
-                gval[flag] = self.get_boundary_value(points)  # No change needed for other directions
+                gval[flag] = self.get_boundary_value(points, value)  # No change needed for other directions
             else:  # Apply only to the specified direction
                 gval[flag, ..., dir_idx] = self.get_boundary_value(points)
 
-    def get_symmetry_indices(self, GD, face_idx):
+    def get_symmetry_indices(self, GD):
         """Return the symmetry indices based on the geometric dimension and face index."""
         # Define symmetry indices based on the geometric dimension and face index (e.g., for triangles and tetrahedra)
         if GD == 2:  # For triangles (2D)
@@ -211,15 +231,15 @@ class HuzhangBoundaryCondition:
             raise ValueError(f"Unsupported geometric dimension {GD} for symmetry indices.")
 
                                         
-    def get_boundary_value(self, points):
+    def get_boundary_value(self, points, value=0.0):
         """Evaluate boundary value function based on points."""
         # Check if self.value is a function
-        if callable(self.value):
+        if callable(value):
             # If self.value is a function, call it with points
-            return self.value(points)
+            return value(points)
         # Check if self.value is iterable (like a array or list)
         else:
-            return self.value
+            return value
 
 
 

@@ -28,86 +28,94 @@ from sympy import symbols, sin, cos, Matrix, lambdify
 from fealpy.tools.show import showmultirate
 from fealpy.tools.show import show_error_table
 
-#from fealpy.solver import spsolve
-from scipy.sparse.linalg import spsolve
+from fealpy.solver import spsolve
+from scipy.sparse.linalg import spsolve as scipy_spsolve
+from scipy.sparse.linalg import MatrixRankWarning
+import warnings
 from scipy.sparse import csr_matrix, coo_matrix, bmat, spdiags
+
+
 
 import sys
 import time
 
-def set_essential_stress_bc(A, F, space0, pde, threshold=None):
+import numpy as np
+
+def l2_error_sigma(mesh, sigmah, sigma_exact, q=30):
     """
-    Apply the essential stress boundary conditions in the context of the assembled system matrix `A`
-    and the right-hand side vector `F`.
-
-    Parameters:
-    - A: Assembled system matrix (combined stiffness and mixed integrators).
-    - F: Right-hand side vector (combined forces).
-    - space0: Function space object, used to get the necessary dof information.
-    - pde: The problem definition object, used to get boundary conditions.
-    - threshold: Function to determine which boundary faces to apply the conditions to.
-    
-    Returns:
-    - isBdDof: A boolean array indicating which dofs are on the boundary and have been fixed.
+    sigmah: FE function, 返回 (NC,NQ,3) 或 (NQ,NC,3) 视你的接口
+    sigma_exact(points): 返回 (...,3) 对应 [xx,xy,yy]
     """
-    mesh = space0.mesh
-    gdim = mesh.geo_dimension()
-    gdof = space0.number_of_global_dofs()
-    
-    # Determine boundary face indices based on threshold
-    if threshold is not None:
-        index = mesh.boundary_face_index()
-        bc = mesh.entity_barycenter('face', index=index)
-        flag = threshold(bc)
-        index = index[flag]
+    index = None
+    qf = mesh.quadrature_formula(q, 'cell')
+    bcs, ws = qf.get_quadrature_points_and_weights()      # (NQ,3), (NQ,)
+    cm = mesh.entity_measure('cell', index=index)         # (NC,)
 
-    # Determine boundary degrees of freedom (dof)
-    face2dof = space0.face_to_dof()[index]
-    isBdDof = bm.zeros(gdof, dtype=bm.bool_)
+    # 物理点 (NC,NQ,2)
+    pts = mesh.bc_to_point(bcs, index=index)
 
-    # Initialize the frame for stress projection (normal and tangential)
-    normal = mesh.face_unit_normal(index)
-    tangent = mesh.edge_unit_tangent(index)
-    
-    # Placeholder for stress values (sigma) and corresponding right-hand side terms
-    val = pde.stress_function(index, normal, tangent)
-    
-    # Apply boundary conditions at interior boundary points (internal faces)
-    for i, bd_idx in enumerate(index):
-        # Calculate stress projections
-        stress_proj = val[i]
-        
-        # Apply stress boundary condition to the dof corresponding to this boundary face
-        dof = face2dof[i]
-        F[dof] -= stress_proj
-        isBdDof[dof] = True  # Mark these dofs as boundary dofs
+    # exact: (NC,NQ,3)
+    se = sigma_exact(pts)
 
-    # Apply boundary conditions to corner points if necessary
-    corner_indices = space0.boundary_corner_index(index)  # Call the new function
-    for corner_idx in corner_indices:
-        corner_stress = pde.corner_stress(corner_idx)
-        corner_dof = space0.corner_dof(corner_idx)
-        
-        # Apply corner stress condition
-        F[corner_dof] -= corner_stress
-        isBdDof[corner_dof] = True
-    
-    return isBdDof
+    # approx: (NC,NQ,3) ——这里按你的 FEALPy 接口调整
+    sh = sigmah(bcs)  # 或 sigmah.value(bcs) 等
+
+    diff = se - sh
+
+    # Voigt Frobenius 权重
+    w = np.array([1.0, 2.0, 1.0])
+
+    # (NC,NQ)
+    d2 = diff[...,0]**2*w[0] + diff[...,1]**2*w[1] + diff[...,2]**2*w[2]
+
+    # ∑_cell ∑_q ws * |K| * d2
+    val = np.sum(ws[None,:] * d2, axis=1) * cm
+    return float(np.sqrt(np.sum(val)))
+
+
+
+
+def source_vector(space : LagrangeFESpace, f : callable):
+    p = space.p
+    mesh = space.mesh
+    TD = mesh.top_dimension()
+    gdof = space.number_of_global_dofs()
+
+    cellmeasure = mesh.entity_measure('cell')
+    qf = mesh.quadrature_formula(p+3, 'cell')
+
+    bcs, ws = qf.get_quadrature_points_and_weights()
+    points = mesh.bc_to_point(bcs)
+
+    phi  = space.basis(bcs)
+    fval = f(points)
+    b = bm.einsum('q, c, cql, cqd->cld', ws, cellmeasure, phi, fval)
+
+    cell2dof = space.cell_to_dof()
+    r = bm.zeros(gdof*TD, dtype=phi.dtype)
+    for i in range(TD):
+        bm.add.at(r, gdof*i + cell2dof, b[..., i]) 
+    return r
 
 
 
 def solve(pde, N, p):
     mesh = TriangleMesh.from_box([0, 1, 0, 1], nx=N, ny=N)
     node = mesh.entity('node')
+    q = 2*p + 6
     # Find corner points
     is_x_bd = (bm.abs(node[:, 0] - 0) < 1e-9) | (bm.abs(node[:, 0] - 1) < 1e-9)
     is_y_bd = (bm.abs(node[:, 1] - 0) < 1e-9) | (bm.abs(node[:, 1] - 1) < 1e-9)
     is_corner = is_x_bd & is_y_bd
     corner_coords = node[is_corner]
     mesh.meshdata['corner'] = corner_coords
-    
+    def isD_bd(bc):
+        tol = 1e-12
+        return bm.abs(bc[:, 1] - 0.0) < tol  # bc: (NEb,2) 边重心
 
-    space0 = HuZhangFESpace2d(mesh, p=p, use_relaxation=True)
+    space0 = HuZhangFESpace2d(mesh, p=p, use_relaxation=True, isD_bd=isD_bd)
+
+    #space0 = HuZhangFESpace2d(mesh, p=p, use_relaxation=True)
 
     space = LagrangeFESpace(mesh, p=p-1, ctype='D')
     space1 = TensorFunctionSpace(space, shape=(-1, 2))
@@ -147,7 +155,7 @@ def solve(pde, N, p):
 
 
     # A = BlockForm([[bform1,bform2],
-    #                [bform2.T,None]])
+    #                 [bform2.T,None]])
     # A = A.assembly()
 
     lform1 = LinearForm(space1)
@@ -159,15 +167,9 @@ def solve(pde, N, p):
 
     b = lform1.assembly()
 
-    def is_displacement_bc(point):
-        x = point[:, 0]
-        y = point[:, 1]
-        tol = 1e-9
-        flag = (bm.abs(x - 0) < tol) | (bm.abs(x - 1) < tol) 
-        return flag
 
     HBC = HuzhangBoundaryCondition(space=space0)
-    a = HBC.displacement_boundary_condition(value=pde.displacement, threshold=is_displacement_bc)
+    a = HBC.displacement_boundary_condition(value=pde.displacement, threshold=isD_bd)
     #a = displacement_boundary_condition(space0, pde.displacement)
 
     F = bm.zeros(A.shape[0], dtype=A.dtype)
@@ -175,18 +177,20 @@ def solve(pde, N, p):
     #F[:gdof0] = a
     F[gdof0:] = -b
 
+
     HSBC = HuzhangStressBoundaryCondition(space=space0)
 
     def is_dir_dof(point):
         x = point[:, 0]
         y = point[:, 1]
         tol = 1e-9
-        flag = (bm.abs(y - 0) < tol) | (bm.abs(y - 1) < tol) 
+        flag = (bm.abs(x - 0) < tol) | (bm.abs(x - 1) < tol) | (bm.abs(y - 1) < tol) 
         return flag
     
-    mesh.edgedata['dirichlet'] = is_dir_dof
+    #mesh.edgedata['dirichlet'] = is_dir_dof
     uh_stress, isbddof_stress = space0.set_dirichlet_bc(pde.stress, threshold=is_dir_dof)
     
+
     # 扩展全系统向量
     uh_global = bm.zeros(A.shape[0], dtype=A.dtype)
     uh_global[:gdof0] = uh_stress
@@ -214,9 +218,10 @@ def solve(pde, N, p):
     #isBdDof = HSBC.set_essential_bc(uh, 0, A, F)
     
 
-    X = spsolve(A, F)
+    X = scipy_spsolve(A, F)
 
     sigmaval = TM @ X[:gdof0]
+    #sigmaval = X[:gdof0]
     uval = X[gdof0:]
 
     sigmah = space0.function()
@@ -252,7 +257,7 @@ if __name__ == "__main__":
     pde = LinearElasticPDE(u, lambda0, lambda1)
 
     for i in range(maxit):
-        N = 2**(i+2) 
+        N = 2**(i+1) 
         #N = 2**i
         print("Solving with N =", N)
         sigmah, uh = solve(pde, N, p)
@@ -260,6 +265,7 @@ if __name__ == "__main__":
 
         e0 = mesh.error(uh, pde.displacement) 
         e1 = mesh.error(sigmah, pde.stress)
+        #e1 = l2_error_sigma(mesh, sigmah, pde.stress, q=30)
 
         h[i] = 1/N
         errorMatrix[0, i] = e1

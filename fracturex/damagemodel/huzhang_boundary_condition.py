@@ -267,6 +267,72 @@ class HuzhangStressBoundaryCondition:
         self.q = q if q is not None else self.p + 3
         self.debug = bool(debug)
 
+    def apply_essential_bc_to_system(self, A, F, *,
+                                    gd,
+                                    threshold=None,
+                                    coord="auto",
+                                    piecewise=None,
+                                    sigma_offset=0,
+                                    sigma_gdof=None,
+                                    return_bc=False):
+        """
+        对全系统 (A,F) 强加 HuZhang σ 的本质边界条件。
+
+        参数
+        - A: scipy sparse matrix (CSR/CSC)
+        - F: RHS 向量 (numpy/bm)
+        - gd: 边界数据 (callable or array)，传给 set_essential_bc
+        - threshold/coord/piecewise: 同 set_essential_bc
+        - sigma_offset: σ 在全局未知向量中的起始位置（默认 0）
+        - sigma_gdof: σ 的全局自由度数；默认 space.number_of_global_dofs()
+        - return_bc: True 则同时返回 (uh_stress, isbddof_stress)
+
+        返回
+        - A_new, F_new  （以及可选 uh_stress, isbddof_stress）
+        """
+        space0 = self.space
+        if sigma_gdof is None:
+            sigma_gdof = space0.number_of_global_dofs()
+
+        # 1) 计算 σ 的边界 dof 与值
+        uh_stress, isbddof_stress = self.set_essential_bc(
+            gd, threshold=threshold, coord=coord, piecewise=piecewise
+        )
+
+        # 2) 扩展到全系统
+        total_dof = A.shape[0]
+        uh_global = bm.zeros((total_dof,), dtype=F.dtype if hasattr(F, "dtype") else bm.float64)
+        isbddof_global = bm.zeros((total_dof,), dtype=bm.bool_)
+
+        s0 = int(sigma_offset)
+        s1 = int(sigma_offset + sigma_gdof)
+
+        uh_global[s0:s1] = uh_stress
+        isbddof_global[s0:s1] = isbddof_stress
+
+        # 3) RHS 修正：F <- F - A * u_known
+        F_new = F - A @ uh_global
+
+        # 4) 强加边界值（直接把这些位置 RHS 设为已知值）
+        F_new = bm.asarray(F_new)  # 保证可索引
+        F_new[isbddof_global] = uh_global[isbddof_global]
+
+        # 5) 修改矩阵：置行置列，边界对角置 1
+        bdIdx = bm.zeros((total_dof,), dtype=bm.int32)
+        bdIdx[isbddof_global] = 1
+
+        # 注意：spdiags 需要 numpy array
+        bdIdx_np = bdIdx if hasattr(bdIdx, "__array__") else bm.asarray(bdIdx)
+
+        Tbd = spdiags(bdIdx_np, 0, total_dof, total_dof)
+        T   = spdiags(1 - bdIdx_np, 0, total_dof, total_dof)
+
+        A_new = T @ A @ T + Tbd
+
+        if return_bc:
+            return A_new, F_new, uh_stress, isbddof_stress
+        return A_new, F_new
+
     def set_essential_bc(self, gd, *, threshold=None, coord="auto", piecewise=None):
         """
         参数

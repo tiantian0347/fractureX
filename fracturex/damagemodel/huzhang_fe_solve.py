@@ -7,9 +7,9 @@ from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 from fealpy.fem.huzhang_stress_integrator import HuZhangStressIntegrator
 #from fealpy.fem.huzhang_displacement_integrator import HuZhangDisplacementIntegrator
 from fealpy.fem.huzhang_mix_integrator import HuZhangMixIntegrator
-from fealpy.fem import BilinearForm, LinearForm, BoundaryFaceSourceIntegrator
+from fealpy.fem import BilinearForm, LinearForm
 from fealpy.fem import VectorSourceIntegrator
-from fracturex.damagemodel.huzhang_boundary_condition import HuzhangBoundaryCondition
+from fracturex.damagemodel.huzhang_boundary_condition import HuzhangBoundaryCondition, HuzhangBoundaryCondition, HuzhangStressBoundaryCondition, build_isNedge_from_isD
 
 from fealpy.typing import TensorLike, CoefLike, Threshold
 
@@ -18,27 +18,33 @@ from fealpy.decorator import cartesian, barycentric
 from fealpy.fem import BlockForm
 from fealpy.solver import cg, spsolve, gmres
 from scipy.sparse.linalg import lgmres
+from scipy.sparse import bmat
 
 class HuZhangFESolve():
-    def __init__(self, model, mesh, p:int, q:int=None):
+    def __init__(self, model, mesh, p:int, q:int=None, use_relaxation:bool=True, isNedge:TensorLike=None):
         """
         @brief 
 
         @param[in] model 算例模型
         @param[in] mesh 连续体离散网格
         @param[in] p 有限元空间次数
+        @param[in] q 积分次数
+        @param[in] use_relaxation 是否使用松弛
+        @param[in] isNedge 自由边界标记
         """
         self. model = model
         self.mesh = mesh
         self.p = p
         self.q = q if q else p + 3
-
+        self.use_relaxation = use_relaxation
+        self.isNedge = isNedge
 
         GD = mesh.geo_dimension()
         if GD == 2:
-            self.hspace = HuZhangFESpace2d(mesh, p=p)
+            self.hspace = HuZhangFESpace2d(mesh, p=p, use_relaxation=use_relaxation, bd_stress=isNedge)
         elif GD == 3:
-            self.hspace = HuZhangFESpace3d(mesh, p=p)
+            raise NotImplementedError("3D Hu-Zhang FE space is not implemented yet.")
+            #self.hspace = HuZhangFESpace3d(mesh, p=p, use_relaxation=True, bd_stress=isNedge)
         else:
             raise ValueError("Unsupported mesh dimension: {}".format(mesh.dim))
         self.lspace = LagrangeFESpace(mesh, p=p)
@@ -141,27 +147,55 @@ class HuZhangFESolve():
         bform2 = BilinearForm((tspace, hspace))
         bform2.add_integrator(HuZhangMixIntegrator())
 
-        A = BlockForm([[bform1,bform2],
-                       [bform2.T,None]])
-        A = A.assembly()
+        if self.use_relaxation:
+            M = bform1.assembly().to_scipy().tocsr()
+            B = bform2.assembly().to_scipy().tocsr()
+            TM = hspace.TM.to_scipy().tocsr()
+
+            M2 = TM.T @ M @ TM
+            B2 = TM.T @ B
+            A = bmat([[M2,  B2],
+                  [B2.T, None]], format="csr")
+        else:
+            A = BlockForm([[bform1,bform2],
+                            [bform2.T,None]])
+            A = A.assembly()
 
         tmr.send('matrix_assembly')
 
-        #lform1 = LinearForm(space1)
+        # lform1 = LinearForm(space1)
+        # @cartesian
+        # def source(x, index=None):
+        #     return self.model.source(x)
+        # lform1.add_integrator(VectorSourceIntegrator(source=source))
 
         HBC = HuzhangBoundaryCondition(space=hspace, q=self.q)
         b = HBC.displacement_boundary_condition(value=disp, threshold=self.model.is_disp_boundary, direction='y')
-        #b =HBC.displacement_boundary_condition(value=0, threshold=self.model.is_dirchlet_boundary )
-        #b = self.set_nature_bc(disp, threshold=self.model.is_disp_boundary)
+        
+        
         F = bm.zeros(A.shape[0], dtype=A.dtype)
-        F[:gdof0] = b
 
-        tmr.send('vector_assembly')
+        F[:gdof0] = TM.T @ b
+        #F[gdof0:] = -a
+
+        tmr.send('disp_boundary_assembly')
+        HSBC = HuzhangStressBoundaryCondition(space=hspace)
+        A, F = HSBC.apply_essential_bc_to_system(
+            A, F,
+            gd=0.0,
+            threshold=self.isNedge,    # 直接用 mask 最稳
+            coord="auto",
+            sigma_offset=0,
+            sigma_gdof=gdof0
+        )
+
+
+        tmr.send('stress_boundary_assembly')
         
         _A = A.to_scipy()
         _R = bm.to_numpy(F)
 
-        x,info = lgmres(_A, _R, atol=1e-12)
+        x, info = lgmres(_A, _R, atol=1e-12)
         _x = bm.tensor(x)
         #_x,  = lgmres(A, F)
         sigma = _x[:gdof0]
@@ -252,65 +286,3 @@ class HuZhangFESolve():
         """
         lch = self.Gc*self.E / (self.ft**2)
         return lch
-
-
-'''
-    def displacement_boundary_condition(self, g=0.0, threshold=None):
-        """
-        @brief 边界条件
-        @param[in] g 边界条件函数
-        @param[in] threshold 边界 index
-        @details 该函数用于设置边界条件，通常用于施加位移或力。
-        """
-        mesh = self.mesh
-        space = self.hspace
-        p = self.p
-        q = self.q
-
-        TD = mesh.top_dimension()
-        ldof = space.number_of_local_dofs()
-        gdof = space.number_of_global_dofs()
-       
-        if isinstance(threshold, TensorLike):
-            bdface = threshold
-        else:
-            bdface = mesh.boundary_face_index()
-            if threshold is not None:
-                #ipoints = space.interpolation_points()
-                #flag0 = threshold(ipoints)
-                bc = mesh.entity_barycenter('face', index=bdface)
-                flag0 = threshold(bc)
-                bdface = bdface[flag0]
-
-        f2c = mesh.face_to_cell()[bdface]
-        fn  = mesh.face_unit_normal()[bdface]
-        cell2dof = space.cell_to_dof()[f2c[:, 0]]
-        NBF = len(bdface)
-
-        cellmeasure = mesh.entity_measure('face')[bdface]
-        qf = mesh.quadrature_formula(q, 'face')
-
-        bcs, ws = qf.get_quadrature_points_and_weights()
-        NQ = len(bcs)
-
-        bcsi = [bm.insert(bcs, i, 0, axis=-1) for i in range(3)]
-
-        symidx = [[0, 1], [1, 2]] 
-        phin = bm.zeros((NBF, NQ, ldof, 2), dtype=space.ftype)
-        gval = bm.zeros((NBF, NQ, 2), dtype=space.ftype)
-        for i in range(3):
-            flag = f2c[:, 2] == i
-            phi = space.basis(bcsi[i])[f2c[flag, 0]] 
-            phin[flag, ..., 0] = bm.sum(phi[..., symidx[0]] * fn[flag, None, None], axis=-1)
-            phin[flag, ..., 1] = bm.sum(phi[..., symidx[1]] * fn[flag, None, None], axis=-1)
-            #phin[flag, ..., 2] = bm.sum(phi[..., symidx[2]] * fn[flag, None, None], axis=-1)
-
-            points = mesh.bc_to_point(bcsi[i])[f2c[flag, 0]]
-            gval[flag, ..., 1] = g
-
-        b = bm.einsum('q, c, cqld, cqd->cl', ws, cellmeasure, phin, gval)
-        cell2dof = space.cell_to_dof()[f2c[:, 0]]
-        r = bm.zeros(gdof, dtype=phi.dtype)
-        bm.add.at(r, cell2dof, b) 
-        return r
-'''

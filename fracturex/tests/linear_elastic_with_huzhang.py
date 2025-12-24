@@ -30,10 +30,8 @@ from fealpy.tools.show import show_error_table
 
 from fealpy.solver import spsolve
 from scipy.sparse.linalg import spsolve as scipy_spsolve
-from scipy.sparse.linalg import MatrixRankWarning
-import warnings
 from scipy.sparse import csr_matrix, coo_matrix, bmat, spdiags
-
+from fracturex.utilfuc.utils import build_isNedge_from_isD
 
 
 import sys
@@ -112,8 +110,11 @@ def solve(pde, N, p):
     def isD_bd(bc):
         tol = 1e-12
         return bm.abs(bc[:, 1] - 0.0) < tol  # bc: (NEb,2) 边重心
+    
+    isNedge = build_isNedge_from_isD(mesh, isD_bd)
 
-    space0 = HuZhangFESpace2d(mesh, p=p, use_relaxation=True, isD_bd=isD_bd)
+    space0 = HuZhangFESpace2d(mesh, p=p, use_relaxation=True, 
+                              bd_stress=isNedge)
 
     #space0 = HuZhangFESpace2d(mesh, p=p, use_relaxation=True)
 
@@ -188,7 +189,7 @@ def solve(pde, N, p):
         return flag
     
     #mesh.edgedata['dirichlet'] = is_dir_dof
-    uh_stress, isbddof_stress = space0.set_dirichlet_bc(pde.stress, threshold=is_dir_dof)
+    uh_stress, isbddof_stress = space0.set_dirichlet_bc(pde.stress, threshold=isNedge)
     
 
     # 扩展全系统向量

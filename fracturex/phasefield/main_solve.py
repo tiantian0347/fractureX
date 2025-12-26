@@ -22,8 +22,8 @@ from scipy.sparse.linalg import lgmres
 
 from fracturex.phasefield.energy_degradation_function import EnergyDegradationFunction as EDFunc
 from fracturex.phasefield.crack_surface_density_function import CrackSurfaceDensityFunction as CSDFunc
-from fracturex.phasefield.phase_fracture_material import PhaseFractureMaterialFactory
-from fracturex.phasefield.adaptive_refinement import AdaptiveRefinement
+from fracturex.damage.phase_fracture_material import PhaseFractureMaterialFactory
+from fracturex.adaptivity.adaptive_refinement import AdaptiveRefinement
 from fracturex.phasefield.vector_Dirichlet_bc import VectorDirichletBC
 
 

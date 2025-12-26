@@ -92,15 +92,50 @@ def boundary_entity_mask(mesh, etype: str, spec, *, name="spec"):
         tmp = bm.set_at(tmp, bdidx, out[bdidx])
         return tmp
     
-def build_isNedge_from_isD(mesh, isD_bd):
+def build_isNedge_from_isD(mesh, isD_bd, tol=1e-9):
     """
-    ΓN = ∂Ω \ ΓD
-    isD_bd 的形式与 bd_stress 完全统一（callable/mask/index）。
-    返回 (NE,) bool isNedge。
+    给一个 isD_bd(points)->bool 的函数（或 mask/index），返回 (NE,) 的 isNedge。
+    规则：isNedge = boundary_edge_flag & (~isDedge)
+    其中 isDedge 通过在 boundary edges 重心处调用 isD_bd 得到。
     """
-    isDedge = boundary_entity_mask(mesh, "edge", isD_bd, name="isD_bd")
     isBd = mesh.boundary_edge_flag()
-    return isBd & (~isDedge)
+    NE = mesh.number_of_edges()
+    bd = bm.where(isBd)[0]
+    out = bm.zeros(NE, dtype=bm.bool)
+
+    if isD_bd is None:
+        # 默认：全边界 Neumann
+        out = bm.set_at(out, bd, True)
+        return out
+
+    # 1) callable：在边界边重心判定
+    if callable(isD_bd):
+        bc = mesh.entity_barycenter('edge', index=bd)  # 2D: edge barycenter
+        flagD = bm.asarray(isD_bd(bc)).astype(bm.bool)
+        if flagD.ndim > 1:
+            flagD = flagD.reshape(-1)
+        if int(flagD.shape[0]) != int(bd.shape[0]):
+            raise ValueError("isD_bd(bc) must return (NEb,) bool mask.")
+        flagN = ~flagD
+        out = bm.set_at(out, bd[flagN], True)
+        return out & isBd
+
+    # 2) array-like
+    arr = bm.asarray(isD_bd)
+    if arr.dtype != bm.bool:
+        arr = arr.astype(bm.bool)
+    if arr.ndim > 1:
+        arr = arr.reshape(-1)
+
+    if int(arr.shape[0]) == NE:
+        return (isBd & (~arr))
+
+    if int(arr.shape[0]) == int(bd.shape[0]):
+        out = bm.set_at(out, bd[~arr], True)
+        return out & isBd
+
+    raise ValueError("isD_bd must be callable or bool mask with length NE or NEb.")
+
 
 
 

@@ -9,7 +9,7 @@ from fealpy.fem.huzhang_stress_integrator import HuZhangStressIntegrator
 from fealpy.fem.huzhang_mix_integrator import HuZhangMixIntegrator
 from fealpy.fem import BilinearForm, LinearForm
 from fealpy.fem import VectorSourceIntegrator
-from fracturex.damagemodel.huzhang_boundary_condition import HuzhangBoundaryCondition, HuzhangBoundaryCondition, HuzhangStressBoundaryCondition, build_isNedge_from_isD
+from fracturex.boundarycondition.huzhang_boundary_condition import HuzhangBoundaryCondition, HuzhangBoundaryCondition, HuzhangStressBoundaryCondition, build_isNedge_from_isD
 
 from fealpy.typing import TensorLike, CoefLike, Threshold
 

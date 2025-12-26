@@ -18,7 +18,7 @@ from fealpy.fem import LinearForm, ScalarSourceIntegrator,BoundaryFaceSourceInte
 from fealpy.fem import DivIntegrator
 from fealpy.fem import BlockForm,LinearBlockForm
 
-from fracturex.damagemodel.huzhang_boundary_condition import HuzhangBoundaryCondition, HuzhangStressBoundaryCondition, build_isNedge_from_isD
+from fracturex.boundarycondition.huzhang_boundary_condition import HuzhangBoundaryCondition, HuzhangStressBoundaryCondition, build_isNedge_from_isD
 
 
 from linear_elastic_pde import LinearElasticPDE
@@ -141,25 +141,23 @@ def solve(pde, N, p):
 
     bform2 = BilinearForm((space1,space0))
     bform2.add_integrator(HuZhangMixIntegrator())
+    
+    M = bform1.assembly()
+    B = bform2.assembly()
 
-    if self.use_relaxation:
-        print("Using relaxation technique for Hu-Zhang element.")
-        M = bform1.assembly()
-        B = bform2.assembly()
+    M = bform1.assembly().to_scipy().tocsr()
+    B = bform2.assembly().to_scipy().tocsr()
+    TM = space0.TM.to_scipy().tocsr()
 
-        M = bform1.assembly().to_scipy().tocsr()
-        B = bform2.assembly().to_scipy().tocsr()
-        TM = space0.TM.to_scipy().tocsr()
+    M2 = TM.T @ M @ TM
+    B2 = TM.T @ B
+    A = bmat([[M2,  B2],
+          [B2.T, None]], format="csr")
 
-        M2 = TM.T @ M @ TM
-        B2 = TM.T @ B
-        A = bmat([[M2,  B2],
-              [B2.T, None]], format="csr")
 
-    else:
-        A = BlockForm([[bform1,bform2],
-                    [bform2.T,None]])
-        A = A.assembly()
+    # A = BlockForm([[bform1,bform2],
+    #                 [bform2.T,None]])
+    # A = A.assembly()
 
     lform1 = LinearForm(space1)
 

@@ -11,7 +11,7 @@ from fealpy.fem.huzhang_mix_integrator import HuZhangMixIntegrator
 from scipy.sparse import bmat
 from scipy.sparse.linalg import spsolve
 
-from fracturex.damagemodel.huzhang_boundary_condition import (
+from fracturex.boundarycondition.huzhang_boundary_condition import (
     HuzhangBoundaryCondition,
     HuzhangStressBoundaryCondition,
     build_isNedge_from_isD,

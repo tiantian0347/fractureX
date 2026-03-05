@@ -70,12 +70,18 @@ class HuZhangElasticAssembler:
         def coef_d(bcs, index=None):
             # DamageStateView 用于统一接口
             view = DamageStateView(d=state.d, sigma=state.sigma, u=state.u, r_hist=state.r_hist, H=state.H)
-            return damage.coef_bary(view, bcs, index=index)
+            return 1.0 / damage.coef_bary(view, bcs, index=index)
 
         lam, mu = self._lame(case.model())
 
+        n = mesh.geo_dimension()   # GD 
+
+        c0 = 1.0/(2.0*mu)
+        c1 = lam/(2.0*mu*(2.0*mu + n*lam))
+
+
         bformM = BilinearForm(space0)
-        bformM.add_integrator(HuZhangStressIntegrator(coef=coef_d, lambda0=lam, lambda1=mu))
+        bformM.add_integrator(HuZhangStressIntegrator(coef=coef_d, lambda0=c0, lambda1=c1))
         M = bformM.assembly().to_scipy().tocsr()
 
         # ---- 2) B ----
@@ -118,15 +124,19 @@ class HuZhangElasticAssembler:
         # 如果 case.neumann_data 返回 (gd, threshold, coord)，就做消元
         nd = case.neumann_data(load)
         if nd is not None:
-            gd, thr, coord = nd
             HSBC = HuzhangStressBoundaryCondition(space=space0, q=self.q)
 
-            # set_essential_bc returns (uh_sigma, isbddof_sigma) in tilde-space or physical?
-            # 约定：HSBC.set_essential_bc 作用在 space0 的“当前自由度编号”（即与 TM 前一致）
-            uh_sig, isBd = HSBC.set_essential_bc(gd, threshold=thr, coord=coord)
+            # 1) 新接口：piecewise list
+            if isinstance(nd, (list, tuple)) and len(nd) > 0 and isinstance(nd[0], (list, tuple)) and len(nd[0]) in (3,4):
+                uh_sig, isBd = HSBC.set_essential_bc(gd=None, piecewise=nd)
 
-            # 消元到全系统（只作用在 sigma 块）
+            # 2) 旧接口：单段 (thr, gd, coord)
+            else:
+                thr, gd, coord = nd
+                uh_sig, isBd = HSBC.set_essential_bc(gd, threshold=thr, coord=coord)
+
             A, F = self.apply_sigma_essential_to_system(A, F, uh_sig, isBd, gdof0)
+
 
         # decode: map solution X -> (sigma,u) functions
         def decode(X):
@@ -140,6 +150,9 @@ class HuZhangElasticAssembler:
             u = space1.function()
             u[:] = u_vec
             return sigma, u
+        
+       
+
 
         meta = dict(gdof_sigma=int(gdof0), gdof_u=int(gdof1))
         return ElasticSystem(A=A, F=F, decode=decode, meta=meta)
@@ -151,7 +164,7 @@ class HuZhangElasticAssembler:
         这段就是你之前脚本里那段通用逻辑的封装版。
         """
         from scipy.sparse import spdiags
-
+  
         total = A.shape[0]
         uh_global = np.zeros(total, dtype=float)
         isbd_global = np.zeros(total, dtype=bool)

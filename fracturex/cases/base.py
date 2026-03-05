@@ -6,12 +6,19 @@ from typing import Callable, List, Optional, Sequence, Tuple, Any, Protocol
 
 from fealpy.backend import backend_manager as bm
 from fealpy.typing import TensorLike
+from dataclasses import dataclass
 
 
 # ---- type aliases ----
 Threshold = Callable[[TensorLike], TensorLike]  # points -> bool mask (N,)
 VectorValue = Callable[[TensorLike], TensorLike]  # points -> (N, GD)
 
+@dataclass(frozen=True)
+class DirichletPiece:
+    threshold: Callable[[TensorLike], TensorLike]   # callable(barycenter)->bool mask
+    value: Any                                      # callable(points)->(…,GD) or constant
+    direction: Optional[str] = None                 # "x"/"y"/"z" or None
+    tag: str = "fix"                                # "fix" or "load" (or other)
 
 class ModelProtocol(Protocol):
     """
@@ -34,6 +41,7 @@ class DirichletPiece:
     threshold: Threshold
     value: VectorValue
     direction: Optional[str] = None
+    tag: Optional[str] = None         # 建议： "fix" / "load" / ...
 
 
 class CaseBase:
@@ -42,6 +50,7 @@ class CaseBase:
     """
 
     name: str = "case"
+    output_enabled: bool = True
 
     # --- mesh / model ---
     def make_mesh(self, **kwargs):
@@ -65,11 +74,11 @@ class CaseBase:
         """
         raise NotImplementedError
 
-    def neumann_data(self, load: float):
+    def neumann_data(self, load: float=0.0):
         """
         可选：返回应力/牵引边界数据
         建议约定返回:
-           (gd, threshold, coord)
+           (threshold, gd, coord)
         其中 coord in {"voigt","nt","auto"} 等
         """
         return None
@@ -101,6 +110,37 @@ class CaseBase:
                 raise RuntimeError("dirichlet_pieces is empty; cannot infer load boundary.")
             return pieces[-1].threshold(points)
         return _thr
+    
+    # ---- 通用：找到“加载段” ----
+    def load_dirichlet_piece(self, load: float) -> DirichletPiece:
+        pcs = self.dirichlet_pieces(load)
+        if len(pcs) == 0:
+            raise RuntimeError("dirichlet_pieces(load) returns empty list.")
+
+        # 1) 优先找 tag="load"
+        for p in pcs:
+            if getattr(p, "tag", None) == "load":
+                return p
+
+        # 2) 退化策略：取最后一段（你当前 square_tension 就是这种顺序）
+        return pcs[-1]
+    
+    # ---- driver 用：返回 (threshold, direction) ----
+    def load_boundary_threshold(self, load: float):
+        p = self.load_dirichlet_piece(load)
+        return p.threshold, (p.direction or None)
+
+    def fix_dirichlet_pieces(self, load: float):
+        """返回所有固定段（tag!='load'），可选。"""
+        return [p for p in self.dirichlet_pieces(load) if getattr(p, "tag", "") != "load"]
+    
+    # 
+    def crack_edge_mask(self, mesh) -> TensorLike:
+        """
+        可选：返回 (NE,) bool，标记裂纹边（用于 BoundaryAugmentedMesh）
+        默认无裂纹边（全 False）
+        """
+        return None
     
 
 

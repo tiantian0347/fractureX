@@ -186,42 +186,74 @@ class LocalNodeDamage(DamageModelBase):
         if getattr(self, "debug", False):
             print("[coef_bary] g min/max:", float(bm.min(g)), float(bm.max(g)))
         return g + self.eps_g
+    
+    def characteristic_length(self):
+        return self.Gc*self.E/(self.ft**2)
+
+    def moderation_parameter(self):
+        lch = self.characteristic_length()
+        return self.l0/(2*lch + self.l0)
 
     # --- main update: after solving (sigma,u) ---
     def update_after_elastic(self, discr, state, case):
         mesh = discr.mesh
+        NC = mesh.number_of_cells()
+        qf = mesh.quadrature_formula(discr.p+3, 'cell')
+        bcs, ws = qf.get_quadrature_points_and_weights()  # (NQ,3), (NQ,)
 
-        # evaluate sigma at nodes
-        sig = self._eval_sigma_at_nodes(state.sigma, mesh)
+        # 1) 在(cell,quad)评估退化应力 sigma
+        sig = state.sigma(bcs, index=bm.arange(NC))        # (NC,NQ,3)
 
+        # 2) 在(cell,quad)评估 d，并构造 g(d)
+        dval = state.d(bcs, index=bm.arange(NC))           # (NC,NQ)
+        dval = bm.clip(dval, 0.0, self.clamp_max)
 
-        r = self._equivalent_measure(sig)
+        # 退化函数（推荐二次）
+        if getattr(self, "degradation", "quadratic") == "linear":
+            g = 1.0 - dval + self.eps_g
+        else:
+            g = (1.0 - dval) ** 2 + self.eps_g
+
+        # 3) 恢复“完好材料应力” bar_sigma = sigma/g
+        sig_eff = sig / g[..., None]                       # (NC,NQ,3)
+
+        # 4) 计算等效应力（Rankine 举例；Mises也行）
+        sxx, sxy, syy = sig_eff[...,0], sig_eff[...,1], sig_eff[...,2]
+        s1 = 0.5*(sxx+syy) + bm.sqrt((0.5*(sxx-syy))**2 + sxy**2)  # max principal stress (NC,NQ)
         if self.tensile_only:
-            r = bm.maximum(r, 0.0)
+            r_q = bm.maximum(s1, 0.0)
+        else:
+            r_q = s1
 
-        # update history
-        if state.r_hist is None:
-            raise RuntimeError("State must provide r_hist for LocalNodeDamage.")
+
+
+        # 5) 把 r_q 投影到节点（面积加权的 cell-average 再 scatter 到3个顶点）
+        cell = mesh.entity("cell")               # (NC,3)
+        area = mesh.entity_measure("cell")       # (NC,)
+        r_cell = bm.einsum('q,cq->c', ws, r_q) / bm.sum(ws)   # (NC,) 先做单元平均
+
+        NN = mesh.number_of_nodes()
+        r_node = bm.zeros((NN,), dtype=r_cell.dtype)
+        w_node = bm.zeros((NN,), dtype=r_cell.dtype)
+        w = area/3.0
+        for lv in range(3):
+            nid = cell[:, lv]
+            bm.add.at(r_node, nid, r_cell*w)
+            bm.add.at(w_node, nid, w)
+        r_node = r_node / w_node
+
+
+        # 6) history + damage update（与你文档一致）
+        r = bm.maximum(r_node, self.ft)               # r_node 是等效应力（未退化）
         state.r_hist[:] = bm.maximum(state.r_hist[:], r)
 
-        ft = float(self.ft)
-        Hd = float(self.Hd)
-
-        x = bm.maximum(state.r_hist[:] - ft, 0.0)
-        dnew = 1.0 - bm.exp(-2.0 * Hd * x / ft)
-
+        rh = state.r_hist[:]
+        dnew = 1.0 - (self.ft / rh) * bm.exp(-2.0 * self.Hd * (rh - self.ft) / self.ft)
         dnew = bm.clip(dnew, 0.0, self.clamp_max)
+        state.d[:] = bm.maximum(state.d[:], dnew)  # 不可逆
 
-        # irreversibility
-        state.d[:] = bm.maximum(state.d[:], dnew)
-
-        if self.debug:
-            print(
-                f"[LocalNodeDamage] max r={float(bm.max(r)):.4e}, "
-                f"max r_hist={float(bm.max(state.r_hist[:])):.4e}, "
-                f"min/max d=({float(bm.min(state.d[:])):.4e}, {float(bm.max(state.d[:])):.4e})"
-            )
         return state.d
+
 
     # -----------------------
     # internal helpers

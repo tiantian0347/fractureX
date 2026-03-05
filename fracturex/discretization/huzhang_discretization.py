@@ -79,13 +79,21 @@ class HuZhangDiscretization:
         else:
             self.mesh = mesh
 
+        extra = None
+        if hasattr(self.case, "crack_edge_mask") and self.case.crack_edge_mask is not None:
+            extra = self.case.crack_edge_mask(self.mesh)   # (NE,) bool
+        from fracturex.utilfuc.mesh_patch import augment_boundary_edges_inplace
+        augment_boundary_edges_inplace(self.mesh, extra)
+
         GD = self.mesh.geo_dimension()
         if GD != 2:
             raise ValueError("HuZhangDiscretization currently expects 2D mesh (GD=2).")
 
         # 1) sigma space: HuZhang, 关键：传入 isD_bd 用于构造 isNedge + corner/TM
 
+        #isNedge, _, _ = self.case.neumann_data()
         isNedge = build_isNedge_from_isD(self.mesh, self.case.isD_bd)
+
 
         self.space_sigma = HuZhangFESpace2d(
             self.mesh,
@@ -94,11 +102,12 @@ class HuZhangDiscretization:
             bd_stress=isNedge,
         )
 
-        # 2) displacement space: (p-1) Lagrange -> TensorFunctionSpace shape=(-1,2)
+
+        # 2) displacement space: (p-1) Lagrange -> TensorFunctionSpace shape=(2, -1)
         if self.u_space_order < 1:
             raise ValueError(f"u_space_order must be >= 1, got {self.u_space_order}")
         u_scalar = LagrangeFESpace(self.mesh, p=self.u_space_order, ctype="D")
-        self.space_u = TensorFunctionSpace(u_scalar, shape=(-1, GD))
+        self.space_u = TensorFunctionSpace(u_scalar, shape=(GD, -1))
 
         # 3) damage space: nodal P1 (continuous) by default
         self.space_d = LagrangeFESpace(self.mesh, p=self.damage_p, ctype="C")

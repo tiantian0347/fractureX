@@ -8,6 +8,7 @@ from fealpy.mesh import TriangleMesh
 from fealpy.typing import TensorLike
 
 from .base import CaseBase, DirichletPiece
+from fracturex.boundarycondition.huzhang_boundary_condition import build_isNedge_from_isD
 
 
 @dataclass
@@ -37,6 +38,11 @@ class SquareTensionCase(CaseBase):
         if self._model is None:
             raise RuntimeError("SquareTensionCase requires _model (material model instance).")
         return self._model
+    
+    # CaseBase / SquareTensionCase
+    def reaction_direction(self):
+        return "y"   # 或 "x"
+
 
     # -----------------------
     # mesh
@@ -50,13 +56,24 @@ class SquareTensionCase(CaseBase):
                 if hasattr(mesh, "uniform_refine"):
                     mesh.uniform_refine()
             self._mark_boundary_sets(mesh)
+            self.mesh = mesh
             return mesh
 
         if nx is None: nx = self.nx
         if ny is None: ny = self.ny
         mesh = TriangleMesh.from_box([x0, x1, y0, y1], nx=nx, ny=ny)
+        self.mesh = mesh
         self._mark_boundary_sets(mesh)  # 统一：box mesh 也标记一下（方便通用）
         return mesh
+    
+    def crack_edge_mask(self, mesh: TriangleMesh) -> TensorLike:
+        mesh = self.mesh
+        NE = mesh.number_of_edges()
+        bc = mesh.entity_barycenter("edge", index=bm.arange(NE))
+        tol = 1e-12
+        # 例：y=0.5 且 x∈[0,0.5]
+        return (bm.abs(bc[:,1] - 0.5) < tol) & (bc[:,0] >= -tol) & (bc[:,0] <= 0.5 + tol)
+
 
     def _mark_boundary_sets(self, mesh: TriangleMesh):
         """
@@ -139,10 +156,25 @@ class SquareTensionCase(CaseBase):
             out[..., 1] = load  # u_y = load
             return out
 
+
         return [
-            DirichletPiece(threshold=self._on_y0, value=u_fix, direction=None),
-            DirichletPiece(threshold=self._on_y1, value=u_load, direction=None),
+            DirichletPiece(threshold=self._on_y0, value=u_fix,  direction=None, tag="fix"),
+            DirichletPiece(threshold=self._on_y1, value=u_load, direction="y",  tag="load"),
         ]
+    
+    def neumann_data(self, load: float = 0.0):
+        # 这段会排除 Dirichlet 边（比如顶边 uy=load 的那条边）
+        isNedge_free = build_isNedge_from_isD(self.mesh, self.isD_bd)
+
+        gd0 = bm.array([0.0, 0.0], dtype=bm.float64)  # (gn,gt) = (0,0) in "nt"
+
+        return [
+            (isNedge_free, gd0, "nt", None),  # 完全自由面：gn=0 & gt=0
+            (self._on_y1,   gd0, "nt", "t"),  # 顶边滑移：只固定 gt=0（x方向 free），gn 不固定
+        ]
+
+
+
 
     # -----------------------
     # boundary: Neumann selector (唯一接口)

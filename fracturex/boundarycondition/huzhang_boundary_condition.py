@@ -72,25 +72,18 @@ def boundary_entity_mask(mesh, etype: str, spec, *, name="spec"):
             return out
         raise ValueError(f"{name} bool mask length must be N={N} or Nb={Nb}, got {L}")
 
-    # index
+    # index: 永远按全局索引处理
     arr = arr.astype(bm.int32)
-    if int(arr.shape[0]) == 0:
-        return bm.zeros((N,), dtype=bm.bool)
-    mx = int(bm.max(arr))
-
     out = bm.zeros((N,), dtype=bm.bool)
-    if mx < Nb:
-        out = bm.set_at(out, bdidx[arr], True)
-    else:
-        out = bm.set_at(out, arr, True)
+    out = bm.set_at(out, arr, True)
 
     if etype == "edge":
         return out & isBd
     else:
-        # face: 仍然只认 boundary_face_index
         tmp = bm.zeros((N,), dtype=bm.bool)
         tmp = bm.set_at(tmp, bdidx, out[bdidx])
         return tmp
+
     
 def build_isNedge_from_isD(mesh, isD_bd, tol=1e-9):
     """
@@ -190,11 +183,13 @@ class HuzhangBoundaryCondition:
         gdof = space.number_of_global_dofs()
 
         bdface = self.get_boundary_faces(mesh, threshold)
+        
         if int(bdface.shape[0]) == 0:
             return bm.zeros(gdof, dtype=space.ftype)
 
         f2c = mesh.face_to_cell()[bdface]
         fn  = mesh.face_unit_normal(index=bdface)
+        
         cell2dof = space.cell_to_dof()[f2c[:, 0]]
         NBF = int(bdface.shape[0])
 
@@ -227,42 +222,101 @@ class HuzhangBoundaryCondition:
 
         mask = boundary_entity_mask(mesh, "face", threshold, name="threshold")
         bdface = mesh.boundary_face_index()
+        
         return bdface[mask[bdface]]
 
         
     def apply_boundary_condition(self, GD, f2c, fn, phin, gval, bcs, mesh, direction, value):
-        """Apply the boundary condition for 2D and 3D meshes dynamically."""
+        """
+        f2c: (NBF, 3) [cell0, cell1, local_face]
+        fn : (NBF, GD) unit normal on boundary faces
+        phin: (NBF, NQ, ldof, nSym)
+        gval: (NBF, NQ, GD)
+        bcs : (NQ, GD) face barycentric coordinates (2D edge:2, 3D face:3)
+        """
 
-
-        # Determine the number of faces per cell based on the geometric dimension
-        num_faces_per_cell = {2: 3, 3: 4}  # This can be expanded for higher dimensions
+        # 每个单元的面数（你现在只用 tri/tet，就先这样；后续可扩展）
+        num_faces_per_cell = {2: 3, 3: 4}
         if GD not in num_faces_per_cell:
-            raise ValueError(f"Unsupported geometric dimension {GD}. Supported dimensions: 2, 3.")
-
+            raise ValueError(f"Unsupported GD={GD}")
         num_faces = num_faces_per_cell[GD]
 
-
-        # Handling the boundary direction (x, y, z)
+        # 方向
         direction_map = {'x': 0, 'y': 1, 'z': 2}
         dir_idx = direction_map.get(direction) if direction else None
 
-        symidx = self.get_symmetry_indices(GD)  # Get the symmetry indices dynamically for GD
-    
-        # Generate the boundary condition for each face (2D and 3D should be handled together)
+        # 对称分量索引
+        symidx = self.get_symmetry_indices(GD)
+
+        # 一个小工具：把 value(points) 的输出规整成 (nf, NQ, GD) 或 (nf, NQ)
+        def _normalize_gv(gv, nf, NQ):
+            gv = bm.asarray(gv)
+            if gv.ndim == 0:  # scalar
+                gv = bm.full((nf, NQ), float(gv), dtype=phin.dtype)
+            if gv.ndim == 1:  # (nf,) -> (nf,1)
+                gv = gv[:, None]
+            if gv.ndim == 2:
+                # (nf,NQ) or (nf,GD) ??? 这里按常见 (nf,NQ) 处理
+                return gv
+            if gv.ndim == 3:
+                return gv
+            raise ValueError(f"Unsupported g value shape {gv.shape}")
+
+        # 主循环：按 local_face 分组
         for i in range(num_faces):
-            flag = f2c[:, 2] == i
-            bcsi = bm.insert(bcs, i, 0, axis=-1)  # Insert boundary coordinates for the current face
-            
+            idx = bm.where(f2c[:, 2] == i)[0]  # 这组边界面在 f2c/fn/phin/gval 中的行号
+            nf = int(idx.shape[0])
+            if nf == 0:
+                continue
 
-            phi = self.space.basis(bcsi)[f2c[flag, 0]]
-            for j in range(len(symidx)):
-                phin[flag, ..., j] = bm.sum(phi[..., symidx[j]] * fn[flag, None, None], axis=-1)
+            cell_idx = f2c[idx, 0]  # (nf,)
 
-            points = mesh.bc_to_point(bcsi)[f2c[flag, 0]]
-            if dir_idx is None:  # Apply to all directions (default behavior)
-                gval[flag] = self.get_boundary_value(points, value)  # No change needed for other directions
-            else:  # Apply only to the specified direction
-                gval[flag, ..., dir_idx] = self.get_boundary_value(points, value)
+            # face bcs -> cell barycentric by inserting 0 at local face i
+            bcsi = bm.insert(bcs, i, 0.0, axis=-1)  # tri: (NQ,3), tet: (NQ,4)
+
+            # 只对这些 cell 取 basis（关键修复点：不要对全 NC 算）
+            try:
+                phi_cell = self.space.basis(bcsi, index=cell_idx)   # (nf,NQ,ldof,TD)
+            except TypeError:
+                phi_cell = self.space.basis(bcsi)[cell_idx]
+
+            nvec = fn[idx][:, None, None, :]  # (nf,1,1,GD)
+
+            # --- basis (强制裁剪到 nf) ---
+            phi_all = self.space.basis(bcsi)          # (NC,NQ,ldof,TD)
+            phi_cell = phi_all[cell_idx, ...]         # (nf,NQ,ldof,TD)
+
+            nvec = fn[idx][:, None, None, :]          # (nf,1,1,GD)
+
+            for j, sidx in enumerate(symidx):
+                phin[idx, ..., j] = bm.sum(phi_cell[..., sidx] * nvec, axis=-1)
+
+            # --- points (同样强制裁剪到 nf) ---
+            pts_all = mesh.bc_to_point(bcsi)          # (NC,NQ,GD)
+            pts = pts_all[cell_idx, ...]           # (nf,NQ,GD)
+
+            gv = self.get_boundary_value(pts, value)
+
+            # ---- 写 gval ----
+            if dir_idx is None:
+                # 允许用户返回 (nf,NQ,GD) 或 (nf,NQ) 或 scalar
+                gv = bm.asarray(gv)
+                if gv.ndim == 3 and gv.shape[-1] == GD:
+                    gval[idx, :, :] = gv
+                else:
+                    gv2 = _normalize_gv(gv, nf, int(bcs.shape[0]))  # (nf,NQ)
+                    # 标量 -> 所有方向同值（更稳妥的默认）
+                    for d in range(GD):
+                        gval[idx, :, d] = gv2
+            else:
+                gv = bm.asarray(gv)
+                if gv.ndim == 3 and gv.shape[-1] == GD:
+                    gval[idx, :, dir_idx] = gv[..., dir_idx]
+                else:
+                    gv2 = _normalize_gv(gv, nf, int(bcs.shape[0]))  # (nf,NQ)
+                    gval[idx, :, dir_idx] = gv2
+
+
 
 
     def get_symmetry_indices(self, GD):
@@ -387,16 +441,22 @@ class HuzhangStressBoundaryCondition:
         isBdDof = bm.zeros((space.number_of_global_dofs(),), dtype=bm.bool)
 
         if piecewise is None:
-            piecewise = [(threshold, gd, coord)]
+            piecewise = [(threshold, gd, coord, None)]  # 默认全分量
 
-        for thr, gdi, ci in piecewise:
+        for item in piecewise:
+            if len(item) == 3:
+                thr, gdi, ci = item
+                comp = None
+            elif len(item) == 4:
+                thr, gdi, ci, comp = item
+            else:
+                raise ValueError("piecewise item must be (thr,gd,coord) or (thr,gd,coord,comp)")
             if thr is None:
                 continue
-            uh, isBdDof = self._apply_one_piece(uh, isBdDof, gdi, thr, ci)
-
+            uh, isBdDof = self._apply_one_piece(uh, isBdDof, gdi, thr, ci, comp)
         return uh, isBdDof
 
-    def _apply_one_piece(self, uh, isBdDof, gd, threshold, coord):
+    def _apply_one_piece(self, uh, isBdDof, gd, threshold, coord, comp=None):
         space = self.space
         mesh = self.mesh
 
@@ -484,14 +544,28 @@ class HuzhangStressBoundaryCondition:
         # --- 6) 写入 uh / isBdDof（覆盖式） ---
         # e2d 的形状通常 (NEsel, edge_dofs_total)；val reshape 对齐即可
         flat = val.reshape(NEsel, -1)
-        # 防御：若 e2d 含 -1（理论上不该），跳过这些位置
-        if bm.any(e2d < 0):
-            good = (e2d >= 0)
-            uh = bm.set_at(uh, e2d[good], flat[good])
-            isBdDof = bm.set_at(isBdDof, e2d[good], True)
+
+        # 先根据 comp 选择要施加的 dof 子集
+        if comp is None:
+            dof = e2d
+            dat = flat
+        elif comp == "t":
+            dof = e2d[:, 1::2]
+            dat = flat[:, 1::2]
+        elif comp == "n":
+            dof = e2d[:, 0::2]
+            dat = flat[:, 0::2]
         else:
-            uh[e2d] = flat
-            isBdDof[e2d] = True
+            raise ValueError(f"Unknown comp={comp}, use None/'n'/'t'.")
+
+        # 再统一处理 -1（corner-relaxation 可能出现）
+        if bm.any(dof < 0):
+            good = (dof >= 0)
+            uh = bm.set_at(uh, dof[good], dat[good])
+            isBdDof = bm.set_at(isBdDof, dof[good], True)
+        else:
+            uh[dof] = dat
+            isBdDof[dof] = True
 
         return uh, isBdDof
     

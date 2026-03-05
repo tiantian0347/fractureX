@@ -1,5 +1,6 @@
 # fracturex/tests/smoke_run_square_tension.py
 from __future__ import annotations
+import matplotlib.pyplot as plt
 
 import numpy as np
 from dataclasses import dataclass
@@ -9,16 +10,17 @@ from fracturex.cases.base import debug_isNedge_on_crack
 from fracturex.discretization.huzhang_discretization import HuZhangDiscretization
 from fracturex.drivers.huzhang_damage_staggered import HuZhangLocalDamageStaggeredDriver
 from fracturex.damage.base import DamageModelBase, DamageStateView
+from fracturex.assemblers.huzhang_elastic_assembler import HuZhangElasticAssembler
+from fracturex.damage.local_node_damage import LocalNodeDamage
 
 from fealpy.backend import backend_manager as bm
 
 @dataclass
 class SimpleMaterial:
-    E: float = 10.0
-    nu: float = 0.3
-    ft: float = 0.01
-    Gc: float = 1.0
-    l0: float = 0.02
+    E: float = 210 # Young's modulus in GPa as KN/mm²
+    nu: float = 0.3 # Poisson's ratio
+    Gc: float = 2.7e-3 # fracture energy in KN/mm
+    l0: float = 0.07 # length scale parameter in mm. 0.015 for phase field
 
     @property
     def mu(self):
@@ -27,7 +29,15 @@ class SimpleMaterial:
     @property
     def lam(self):
         return self.E*self.nu/((1+self.nu)*(1-2*self.nu))
-
+    
+    @property
+    def sigma_c(self):
+        return 9/16*np.sqrt(self.E*self.Gc/(6*self.l0))
+    
+    @property
+    def ft(self):
+        ft = np.sqrt(self.E*self.Gc/(self.l0))
+        return ft
     def characteristic_length(self):
         return self.Gc*self.E/(self.ft**2)
 
@@ -45,65 +55,56 @@ class NoDamage(DamageModelBase):
 
 
 def main():
-    mat = SimpleMaterial(E=10.0, nu=0.3, ft=0.01, Gc=1.0, l0=0.02)
+    mat = SimpleMaterial()
+    print(f"Material sigma_c: {mat.sigma_c:.6f} KN/mm²")
+    print(f"Material ft: {mat.ft:.6f} KN/mm²")
+    print(f"Material characteristic length: {mat.characteristic_length():.6f} mm")
+    print(f"Material moderation parameter Hd: {mat.moderation_parameter():.6f}")
+
+
+    damage = LocalNodeDamage(ft=mat.ft, Hd=mat.moderation_parameter(),
+                        criterion="rankine", lam=mat.lam, mu=mat.mu)
     
+    #damage = NoDamage()
 
-    #case = SquareTensionCase(nx=16, ny=16, _model=mat)
-
-    case = SquareTensionCase(with_fracture=True, refine=0, _model=mat)
-
-    mesh = case.make_mesh()
-
+    case = SquareTensionCase(with_fracture=True, refine=5, _model=damage)
+    #case = SquareTensionCase(with_fracture=False, refine=3, _model=damage)
 
     discr = HuZhangDiscretization(case, p=3, use_relaxation=True).build()
-    damage = NoDamage()
 
-    driver = HuZhangLocalDamageStaggeredDriver(
-        case=case, discr=discr, damage=damage,
-        tol=1e-12, maxit=2, debug=True
-    )
-
-    loads = [0.0, 1e-3]
-    hist = driver.run(loads)
-    #debug_isNedge_on_crack(mesh, discr.isNedge, crack_pred=lambda bc: SquareTensionCase.crack_pred(bc, tol=case.tol))
-
+    # 构造装配器
+    assembler = HuZhangElasticAssembler(discr, case, damage=damage)
     
-    print("\n=== step summary ===")
-    # for s in hist:
-    #     print(s)
 
-    # 若要测局部损伤，取消注释（你工程里要有 LocalNodeDamage）
-    from fracturex.damage.local_node_damage import LocalNodeDamage
-    damage2 = LocalNodeDamage(ft=mat.ft, Hd=mat.moderation_parameter(),
-                             criterion="rankine", lam=mat.lam, mu=mat.mu)
-    print("LocalNodeDamage(ft,Hd) =", float(damage2.ft), float(damage2.Hd))
-
-    driver2 = HuZhangLocalDamageStaggeredDriver(case=case, discr=discr, damage=damage2, tol=1e-8, maxit=30)
-    loads2 = np.linspace(0.0, 0.05, 11).tolist()  # 最高 0.05 => sigma~0.5
-    hist2 = driver2.run(loads2)
-    print("\n=== local damage summary ===")
-    # for s in hist2:
-    #     print(s)
-    print("max d =", float(np.max(discr.state.d[:])))
-
-    case = SquareTensionCase(
-        with_fracture=True,
-        refine=4,
-        debug_mesh=True,
-        _model=mat
+    # 创建驱动程序
+    driver = HuZhangLocalDamageStaggeredDriver(
+        case=case, 
+        discr=discr, 
+        damage=damage, 
+        assembler=assembler, 
+        tol=1e-8, 
+        maxit=50, 
+        debug=True
     )
+    #loads = bm.linspace(0.0, 6e-3, 11)
+    loads = bm.concatenate((bm.linspace(0, 5e-3, 501, dtype=bm.float64), bm.linspace(5e-3, 6.1e-3, 1101, dtype=bm.float64)[1:]))
+    
+    loads_x = bm.linspace(0, 2.2e-2, 2201, dtype=bm.float64)
+    # 运行仿真
+    result = driver.run(loads)
 
-    p_sigma = 3
-    use_relaxation = True
+    # 结果输出到VTK
+    driver._safeve_vtkfile("simulation_output.vtu", cell_mode="mean")
 
-    # damage (local node)
-    ft = 0.01
-    Gc = 1.0
-    l0 = 0.02
+    # 可视化损伤演化
+    damages = [step_info.meta["max_d"] for step_info in result]
 
-    loads = bm.linspace(0.0, 0.05, 21)  # 0~0.05, 20 steps
-
-    driver_options = dict(maxit=10, tol=1e-10, debug=True)
+    plt.plot(loads, damages, label="Damage evolution")
+    plt.xlabel("Load (N)")
+    plt.ylabel("Damage")
+    plt.title("Damage vs Load")
+    plt.legend()
+    plt.show()
 
 
 

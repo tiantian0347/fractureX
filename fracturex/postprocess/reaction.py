@@ -1,71 +1,150 @@
 # fracturex/postprocess/reaction.py
 from __future__ import annotations
+
 from fealpy.backend import backend_manager as bm
 
-def reaction_force_y_from_sigma(mesh, sigma_fun, threshold, q=5, sign=-1.0):
-    """
-    Ry = sign * ∫_{Gamma_sel} (sigma n)_y ds
-    - sigma_fun: HuZhang space function, called by barycentric coords (cell bcs)
-                returns Voigt [sxx, sxy, syy]
-    - threshold: callable(bc)->bool, bc is boundary-edge barycenter (NEb,2)
-    - q: edge quadrature order
-    - sign: for Dirichlet reaction usually take -1.0
-    """
-    if threshold is None:
-        return 0.0
 
+def _as_edge_ids(mesh, threshold):
+    """
+    threshold 支持：
+    - callable(bc)->bool: bc 为 boundary edge barycenter, shape (NEb,GD)
+    - bool mask: 长度 NE 或 NEb
+    - index array: edge ids
+    """
+    NE = mesh.number_of_edges()
     isBd = mesh.boundary_edge_flag()
     bdedge = bm.where(isBd)[0]
-    NEb = int(bdedge.shape[0])
-    if NEb == 0:
+
+    if threshold is None:
+        return bdedge
+
+    # callable(bc)->mask on boundary edges
+    if callable(threshold):
+        bc = mesh.entity_barycenter("edge", index=bdedge)
+        flag = bm.asarray(threshold(bc)).astype(bm.bool)
+        if flag.ndim > 1:
+            flag = flag.reshape(-1)
+        if int(flag.shape[0]) != int(bdedge.shape[0]):
+            raise ValueError("threshold(bc) must return (NEb,) bool.")
+        return bdedge[flag]
+
+    arr = bm.asarray(threshold)
+
+    # bool mask
+    if (getattr(arr, "dtype", None) is not None) and (str(arr.dtype).endswith("bool") or arr.dtype == bm.bool):
+        flag = arr.astype(bm.bool)
+        if flag.ndim > 1:
+            flag = flag.reshape(-1)
+        if int(flag.shape[0]) == NE:
+            return bm.where(flag & isBd)[0]
+        if int(flag.shape[0]) == int(bdedge.shape[0]):
+            return bdedge[flag]
+        raise ValueError("bool mask must be length NE or NEb.")
+
+    # treat as indices
+    return arr.astype(bm.int32)
+
+
+def reaction_from_sigma(
+    mesh,
+    sigma_fun,
+    threshold,
+    *,
+    direction: str = "y",
+    q: int = 5,
+    sign: float = 1.0,
+):
+    r"""
+    通用反力：
+        R_dir = sign * ∫_{Γ} (σ n)·e_dir ds
+    - direction: "x" or "y"（2D）
+    - sigma_fun: HuZhang 的 sigma function，返回 Voigt [sxx, sxy, syy]
+      且支持 sigma_fun(bcs, index=cells) 这种调用（bcs 是 barycentric）
+
+    实现要点：
+    - 先拿到边 eids
+    - 用 face_to_cell() 找到该边属于哪个 cell 以及 local_face id
+    - 对每个 local_face 分组：把 1D bcs 插入一个 0 得到三角形 face 的 2D barycentric
+    - 在对应 cell 上评估 sigma，然后计算 traction 分量
+    """
+    direction = (direction or "y").lower()
+    if direction not in ("x", "y"):
+        raise ValueError("reaction_from_sigma: direction must be 'x' or 'y' (2D).")
+
+    # 1) 选边
+    eids = _as_edge_ids(mesh, threshold)
+    ne = int(eids.shape[0])
+    if ne == 0:
         return 0.0
 
-    bc = mesh.entity_barycenter("edge", index=bdedge)  # (NEb,2)
-    flag = bm.asarray(threshold(bc)).astype(bm.bool_)
-    if flag.ndim > 1:
-        flag = flag.reshape(-1)
-    eids = bdedge[flag]
-    if int(eids.shape[0]) == 0:
-        return 0.0
-
-    # edge->cell adjacency (use the "face_to_cell" convention in your code)
-    f2c = mesh.face_to_cell()[eids]     # (NEsel, 4) for 2D triangles: [c0,c1,loc0,loc1]
+    # 2) 边 -> 相邻单元 + 该单元的局部边号
+    f2c = mesh.face_to_cell()[eids]  # (ne, 3): [cell0, cell1, local_face]
     cells = f2c[:, 0]
-    loc   = f2c[:, 2]                  # local edge id in that cell: 0/1/2
+    locf  = f2c[:, 2]
 
-    # edge normals, measures
-    n = mesh.edge_unit_normal(index=eids)            # (NEsel,2)
-    meas = mesh.entity_measure("edge", index=eids)   # (NEsel,)
+    # 3) 面(边)上的积分点（二维三角形的 face 就是 edge）
+    qf = mesh.quadrature_formula(q, "face")
+    bcs_1d, ws = qf.get_quadrature_points_and_weights()   # bcs_1d: (NQ,2), ws: (NQ,)
+    NQ = int(ws.shape[0])
 
-    # edge quadrature in barycentric on edge: (NQ,2)
-    qf = mesh.quadrature_formula(q, etype="edge")
-    bcs_e, ws = qf.get_quadrature_points_and_weights()   # (NQ,2), (NQ,)
+    # 4) 法向 & 测度
+    try:
+        n = mesh.face_unit_normal(index=eids)  # (ne,2)
+    except TypeError:
+        n = mesh.face_unit_normal()[eids]
+    nx = n[:, 0][:, None]  # (ne,1)
+    ny = n[:, 1][:, None]
 
-    # integrate by grouping local-edge id (avoid per-edge insert)
-    Ry = bm.asarray(0.0, dtype=mesh.ftype)
-    for i in range(3):  # triangle has 3 edges
-        m = (loc == i)
-        if int(bm.sum(m)) == 0:
+    meas = mesh.entity_measure("face", index=eids)  # (ne,)
+
+    # 5) 分组评估 sigma 并组装 traction 分量
+    tdir = bm.zeros((ne, NQ), dtype=mesh.ftype)
+
+    num_faces = 3  # triangle
+    for i in range(num_faces):
+        flag = (locf == i)
+        nf = int(bm.sum(flag))
+        if nf == 0:
             continue
 
-        # convert edge-bcs -> cell-bcs: insert 0 at position i
-        bcsi = bm.insert(bcs_e, i, 0.0, axis=-1)  # (NQ,3)
+        # 1D -> 2D barycentric on that face
+        bcsi = bm.insert(bcs_1d, i, 0.0, axis=-1)  # (NQ,3)
 
-        # evaluate sigma on those cells at bcsi
-        # sigma_fun(bcs, index=cell_ids) is the safest pattern for HuZhang
-        sig = bm.asarray(sigma_fun(bcsi, index=cells[m]))  # (ne_m, NQ, 3)
+        cell_idx = cells[flag]                      # (nflag,)
 
+        # --- try fast path: if sigma_fun supports index properly ---
+        sig = None
+        try:
+            sig_try = bm.asarray(sigma_fun(bcsi, index=cell_idx))  # 希望得到 (nflag,NQ,3)
+            if int(sig_try.shape[0]) == int(cell_idx.shape[0]):
+                sig = sig_try
+        except Exception:
+            pass
+
+        # --- fallback: compute all cells then slice ---
+        if sig is None:
+            sig_all = bm.asarray(sigma_fun(bcsi))   # (NC,NQ,3)
+            sig = sig_all[cell_idx, ...]            # (nflag,NQ,3)
+            
         sxx = sig[..., 0]
         sxy = sig[..., 1]
         syy = sig[..., 2]
 
-        nx = n[m, 0][:, None]  # (ne_m,1)
-        ny = n[m, 1][:, None]
+        # (σ n)_x = sxx*n_x + sxy*n_y
+        # (σ n)_y = sxy*n_x + syy*n_y
+        if direction == "x":
+            tdir[flag, :] = sxx * nx[flag, :] + sxy * ny[flag, :]
+        else:  # "y"
+            tdir[flag, :] = sxy * nx[flag, :] + syy * ny[flag, :]
 
-        # (sigma n)_y = sxy*nx + syy*ny
-        ty = sxy * nx + syy * ny  # (ne_m, NQ)
+    # 6) 边积分：sum_q w_q * tdir * |edge|
+    R_e = bm.einsum("q,eq,e->e", ws, tdir, meas)
+    R = bm.sum(R_e)
+    return float(sign * R)
 
-        Ry_e = bm.einsum("q,eq,e->e", ws, ty, meas[m])
-        Ry = Ry + bm.sum(Ry_e)
 
-    return float(sign * Ry)
+def reaction_vector_from_sigma(mesh, sigma_fun, threshold, *, q: int = 5, sign: float = 1.0):
+    """一次性返回 (Rx, Ry)。"""
+    Rx = reaction_from_sigma(mesh, sigma_fun, threshold, direction="x", q=q, sign=sign)
+    Ry = reaction_from_sigma(mesh, sigma_fun, threshold, direction="y", q=q, sign=sign)
+    return Rx, Ry

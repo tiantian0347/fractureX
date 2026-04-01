@@ -121,7 +121,7 @@ class LocalNodeDamage(DamageModelBase):
     - Hd comes from model.moderation_parameter() (your current signature)
     """
     criterion: str = "rankine"
-    eps_g: float = 1e-15
+    eps_g: float = 1e-6
     clamp_max: float = 0.999999
     tensile_only: bool = True
     debug: bool = False
@@ -193,7 +193,86 @@ class LocalNodeDamage(DamageModelBase):
     def moderation_parameter(self):
         lch = self.characteristic_length()
         return self.l0/(2*lch + self.l0)
+    
 
+    def update_after_elastic(self, discr, state, case):
+        mesh = discr.mesh
+        NC = mesh.number_of_cells()
+        qf = mesh.quadrature_formula(discr.p + 3, 'cell')
+        bcs, ws = qf.get_quadrature_points_and_weights()  # (NQ,3), (NQ,)
+
+        index = bm.arange(NC)
+
+        # -------------------------------------------------
+        # (1) 从位移梯度计算应变 eps(u)
+        # grad_u: (NC,NQ,GD,GD), grad_u[..., i, j] = ∂u_i/∂x_j
+        # -------------------------------------------------
+        grad_u = state.u.grad_value(bcs, index=index)
+
+        exx = grad_u[..., 0, 0]
+        eyy = grad_u[..., 1, 1]
+        exy = 0.5 * (grad_u[..., 0, 1] + grad_u[..., 1, 0])  # tensor shear strain
+
+        # -------------------------------------------------
+        # (2) 计算“完好材料应力” bar_sigma = C:eps(u)
+        # Voigt = [xx, xy, yy], with sigma_xy = 2 mu eps_xy
+        # -------------------------------------------------
+        lam, mu = float(self.lam), float(self.mu)
+        tr = exx + eyy
+
+        sxx = 2.0 * mu * exx + lam * tr
+        syy = 2.0 * mu * eyy + lam * tr
+        sxy = 2.0 * mu * exy
+
+        # -------------------------------------------------
+        # (3) Rankine 等效应力 r_q (NC,NQ)
+        # -------------------------------------------------
+        s1 = 0.5 * (sxx + syy) + bm.sqrt((0.5 * (sxx - syy))**2 + sxy**2)
+        r_q = bm.maximum(s1, 0.0) if self.tensile_only else s1
+
+        # -------------------------------------------------
+        # (4) (cell,quad) -> cell 平均 -> node（面积加权散射）
+        # -------------------------------------------------
+        cell = mesh.entity("cell")          # (NC,3)
+        area = mesh.entity_measure("cell")  # (NC,)
+
+        # 用 quadrature 做单元平均（你原来除 bm.sum(ws) 的写法也可以）
+        r_cell = bm.einsum('q,cq->c', ws, r_q) / bm.sum(ws)  # (NC,)
+
+        NN = mesh.number_of_nodes()
+        r_node = bm.zeros((NN,), dtype=r_cell.dtype)
+        w_node = bm.zeros((NN,), dtype=r_cell.dtype)
+
+        w = area / 3.0
+        for lv in range(3):
+            nid = cell[:, lv]
+            bm.add.at(r_node, nid, r_cell * w)
+            bm.add.at(w_node, nid, w)
+
+        r_node = r_node / w_node
+
+        # -------------------------------------------------
+        # (5) history + damage update（你文档那条）
+        # -------------------------------------------------
+        ft = float(self.ft)
+        Hd = float(self.Hd)
+
+        r = bm.maximum(r_node, ft)
+        state.r_hist[:] = bm.maximum(state.r_hist[:], r)
+
+        rh = state.r_hist[:]
+        dnew = 1.0 - (ft / rh) * bm.exp(-2.0 * Hd * (rh - ft) / ft)
+        dnew = bm.clip(dnew, 0.0, self.clamp_max)
+        state.d[:] = bm.maximum(state.d[:], dnew)
+
+        if self.debug:
+            print("[LocalNodeDamage-u] r_node min/max:",
+                float(bm.min(r_node)), float(bm.max(r_node)),
+                "d min/max:", float(bm.min(state.d[:])), float(bm.max(state.d[:])))
+
+        return state.d
+
+    '''
     # --- main update: after solving (sigma,u) ---
     def update_after_elastic(self, discr, state, case):
         mesh = discr.mesh
@@ -253,6 +332,7 @@ class LocalNodeDamage(DamageModelBase):
         state.d[:] = bm.maximum(state.d[:], dnew)  # 不可逆
 
         return state.d
+    '''
 
 
     # -----------------------
@@ -303,3 +383,5 @@ class LocalNodeDamage(DamageModelBase):
         if c in ("von_mises", "vmises", "mises"):
             return _von_mises(sig_voigt)
         raise ValueError(f"Unknown LocalNodeDamage.criterion={self.criterion}")
+
+

@@ -173,6 +173,8 @@ class SquareTensionCase(CaseBase):
             (self._on_y1,   gd0, "nt", "t"),  # 顶边滑移：只固定 gt=0（x方向 free），gn 不固定
         ]
 
+    def phasefield_dirichlet_data(self, load: float):
+        return None
 
 
 

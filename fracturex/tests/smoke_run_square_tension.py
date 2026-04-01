@@ -87,7 +87,7 @@ def main():
         debug=True
     )
     #loads = bm.linspace(0.0, 6e-3, 11)
-    loads = bm.concatenate((bm.linspace(0, 5e-3, 501, dtype=bm.float64), bm.linspace(5e-3, 6.1e-3, 1101, dtype=bm.float64)[1:]))
+    loads = bm.concatenate((bm.linspace(0, 5e-3, 51, dtype=bm.float64), bm.linspace(5e-3, 6.1e-3, 1101, dtype=bm.float64)[1:]))
     
     loads_x = bm.linspace(0, 2.2e-2, 2201, dtype=bm.float64)
     # 运行仿真

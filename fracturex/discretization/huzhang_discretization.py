@@ -117,14 +117,13 @@ class HuZhangDiscretization:
         u = self.space_u.function()                  # uh
         d = self.space_d.function()                  # damage
         r_hist = self.space_d.function()             # history for local damage
-        H = self.space_d.function()                  # history for phase-field (reserved)
+        H = None                  # history for phase-field (reserved)
 
         # init values
         sigma[:] = 0.0
         u[:] = 0.0
         d[:] = 0.0
         r_hist[:] = 0.0
-        H[:] = 0.0
 
         self.state = HuZhangState(sigma=sigma, u=u, d=d, r_hist=r_hist, H=H)
         return self

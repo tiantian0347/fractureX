@@ -1,1 +1,2 @@
-from .phase_fracture_material import PhaseFractureMaterialFactory
+
+from ..phasefield.phase_fracture_material import PhaseFractureMaterialFactory

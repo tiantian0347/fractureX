@@ -13,12 +13,6 @@ from dataclasses import dataclass
 Threshold = Callable[[TensorLike], TensorLike]  # points -> bool mask (N,)
 VectorValue = Callable[[TensorLike], TensorLike]  # points -> (N, GD)
 
-@dataclass(frozen=True)
-class DirichletPiece:
-    threshold: Callable[[TensorLike], TensorLike]   # callable(barycenter)->bool mask
-    value: Any                                      # callable(points)->(…,GD) or constant
-    direction: Optional[str] = None                 # "x"/"y"/"z" or None
-    tag: str = "fix"                                # "fix" or "load" (or other)
 
 class ModelProtocol(Protocol):
     """
@@ -99,18 +93,6 @@ class CaseBase:
         # 默认无（或全部边界 Neumann），看你项目约定
         return None
     
-    def load_boundary_threshold(self) -> Callable[[TensorLike], TensorLike]:
-        """
-        返回一个 callable(points)->bool，用来选“加载位移所在边界”（边重心输入）
-        默认：用 dirichlet_pieces 里最后一段当加载边界（你也可以改成更明确的规则）
-        """
-        def _thr(points: TensorLike):
-            pieces = self.dirichlet_pieces(load=0.0)
-            if len(pieces) == 0:
-                raise RuntimeError("dirichlet_pieces is empty; cannot infer load boundary.")
-            return pieces[-1].threshold(points)
-        return _thr
-    
     # ---- 通用：找到“加载段” ----
     def load_dirichlet_piece(self, load: float) -> DirichletPiece:
         pcs = self.dirichlet_pieces(load)
@@ -139,6 +121,20 @@ class CaseBase:
         """
         可选：返回 (NE,) bool，标记裂纹边（用于 BoundaryAugmentedMesh）
         默认无裂纹边（全 False）
+        """
+        return None
+    
+    def phasefield_dirichlet_data(self, load: float):
+        """
+        Optional phase-field Dirichlet BCs.
+
+        Return one of:
+            None
+            {"bcdof": threshold, "value": value}
+            [
+                {"bcdof": threshold1, "value": value1},
+                {"bcdof": threshold2, "value": value2},
+            ]
         """
         return None
     

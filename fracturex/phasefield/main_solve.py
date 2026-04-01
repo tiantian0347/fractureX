@@ -22,7 +22,7 @@ from scipy.sparse.linalg import lgmres
 
 from fracturex.phasefield.energy_degradation_function import EnergyDegradationFunction as EDFunc
 from fracturex.phasefield.crack_surface_density_function import CrackSurfaceDensityFunction as CSDFunc
-from fracturex.damage.phase_fracture_material import PhaseFractureMaterialFactory
+from fracturex.phasefield.phase_fracture_material import PhaseFractureMaterialFactory
 from fracturex.adaptivity.adaptive_refinement import AdaptiveRefinement
 from fracturex.phasefield.vector_Dirichlet_bc import VectorDirichletBC
 
@@ -107,7 +107,9 @@ class MainSolve:
                 print('Using cupy solver.')
                 self._solver = 'cupy'
             else:
-                raise ValueError(f"Unknown device type: {bm.device_type(self.uh)}")
+                print('Using scipy solver.')
+                self._solver = 'scipy'
+                #raise ValueError(f"Unknown device type: {bm.device_type(self.uh)}")
 
     def solve(self, method: str = 'lfem', p: int = 1, q: int = None, maxit: int = 50):
         """

@@ -14,7 +14,7 @@ import time
 import matplotlib.pyplot as plt
 
 class square_with_circular_notch():
-    def __init__(self):
+    def __init__(self, ftype = bm.float64):
         """
         @brief 初始化模型参数
         """
@@ -23,6 +23,7 @@ class square_with_circular_notch():
         Gc = 1.0
         l0 = 0.02
         self.params = {'E': E, 'nu': nu, 'Gc': Gc, 'l0': l0}
+        self.ftype = ftype
 
 
     def is_force(self):
@@ -32,8 +33,8 @@ class square_with_circular_notch():
         -----
         这里向量的第 i 个值表示第 i 个时间步的位移的大小
         """
-        return bm.concatenate((bm.linspace(0, 70e-3, 6, dtype=bm.float64), bm.linspace(70e-3,
-            125e-3, 26, dtype=bm.float64)[1:]))
+        return bm.concatenate((bm.linspace(0, 70e-3, 6, dtype=self.ftype), bm.linspace(70e-3,
+            125e-3, 26, dtype=self.ftype)[1:]))
 
     def is_force_boundary(self, p):
         """
@@ -126,15 +127,22 @@ gpu = args.gpu
 tmr = timer()
 next(tmr)
 start = time.time()
-bm.set_backend(backend)
+
 
 if gpu:
-    bm.set_default_device('cuda')
+    bm.set_backend('pytorch')
+    #device = bm.device("mps" if torch.backends.mps.is_available() else "cpu")
+    bm.set_default_device('mps')
+    ftype = bm.float32
 
-model = square_with_circular_notch()
+else:
+    bm.set_backend(backend)
+    ftype = bm.float64
+
+model = square_with_circular_notch(ftype=ftype)
 
 domain = SquareWithCircleHoleDomain(hmin=h) 
-mesh = TriangleMesh.from_domain_distmesh(domain, maxit=100)
+mesh = TriangleMesh.from_domain_distmesh(domain, maxit=100, ftype=ftype)
 
 
 ms = MainSolve(mesh=mesh, material_params=model.params)

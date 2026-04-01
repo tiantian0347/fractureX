@@ -88,8 +88,8 @@ class VectorDirichletBC:
 
         elif isinstance(A, CSRTensor):
             isIDof = bm.logical_not(isDDof)
-            crow = A.crow()
-            col = A.col()
+            crow = A.crow
+            col = A.col
             indices_context = bm.context(col)
             ZERO = bm.array([0], **indices_context)
 
@@ -111,7 +111,7 @@ class VectorDirichletBC:
 
             new_values = bm.empty((NNZ,), **kwargs)
             new_values = bm.set_at(new_values, new_crow[:-1][loc_flag], 1.)
-            new_values = bm.set_at(new_values, non_diag, A.values()[remain_flag])
+            new_values = bm.set_at(new_values, non_diag, A.values[remain_flag])
 
             A = CSRTensor(new_crow, new_col, new_values)
 

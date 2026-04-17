@@ -41,6 +41,10 @@ class PhaseFieldAssembler:
         self.damage = damage
         self.q = q
         self.debug = bool(debug)
+        self._phase_initial_damage_applied = False
+        self._quad_cache = None
+        self._quad_cache_key = None
+        self._g0_const_coef = None
 
     def assemble(self, load: float) -> PhaseFieldSystem:
         discr = self.discr
@@ -50,6 +54,9 @@ class PhaseFieldAssembler:
 
         if state is None:
             raise RuntimeError("Discretization state is None. Call discr.build(...) first.")
+
+        # One-time initialization: mark pre-crack by setting d directly (e.g. d=1 on notch line)
+        self._apply_phase_initial_damage_once(load)
 
         space = discr.space_d
         if space is None:
@@ -64,11 +71,7 @@ class PhaseFieldAssembler:
         # IMPORTANT: phase-field quadrature is tied to damage space, not Hu-Zhang p
         q = discr.damage_p + 3 if self.q is None else self.q
 
-        mesh = discr.mesh
-        NC = mesh.number_of_cells()
-        qf = mesh.quadrature_formula(q, "cell")
-        bcs, ws = qf.get_quadrature_points_and_weights()
-        index = bm.arange(NC)
+        bcs, index = self._get_quadrature_data(q)
 
         # ----------------------------------------------------------
         # update quadrature-history H on exactly the same quadrature
@@ -111,8 +114,9 @@ class PhaseFieldAssembler:
             Hq = bm.maximum(Hq, 0.0)
 
             if hasattr(damage._gfun, "grad_degradation_function_constant_coef"):
-                gc_gd = damage._gfun.grad_degradation_function_constant_coef()
-                return -1.0 * gc_gd * Hq
+                if self._g0_const_coef is None:
+                    self._g0_const_coef = float(damage._gfun.grad_degradation_function_constant_coef())
+                return -1.0 * self._g0_const_coef * Hq
 
             z = bm.zeros_like(Hq)
             g0p = damage.degradation_grad(z)
@@ -121,13 +125,19 @@ class PhaseFieldAssembler:
         # ----------------------------------------------------------
         # assemble A
         # ----------------------------------------------------------
-        bform = BilinearForm(space)
-        bform.add_integrator(
+        bform_const = BilinearForm(space)
+        bform_const.add_integrator(
             ScalarDiffusionIntegrator(coef=diff_coef, q=q),
             ScalarMassIntegrator(coef=mass_coef1, q=q),
+        )
+        A_const = bform_const.assembly()
+
+        bform_hist = BilinearForm(space)
+        bform_hist.add_integrator(
             ScalarMassIntegrator(coef=mass_coef2, q=q),
         )
-        A = bform.assembly()
+        A_hist = bform_hist.assembly()
+        A = A_const + A_hist
 
         # ----------------------------------------------------------
         # assemble rhs
@@ -176,6 +186,91 @@ class PhaseFieldAssembler:
         )
 
         return PhaseFieldSystem(A=A, F=F, decode=decode, meta=meta)
+
+    def _get_quadrature_data(self, q: int):
+        """Cache cell quadrature points/indices for fixed mesh and order."""
+        mesh = self.discr.mesh
+        NC = mesh.number_of_cells()
+        key = (id(mesh), int(q), int(NC))
+        if self._quad_cache is not None and self._quad_cache_key == key:
+            return self._quad_cache["bcs"], self._quad_cache["index"]
+
+        qf = mesh.quadrature_formula(q, "cell")
+        bcs, _ = qf.get_quadrature_points_and_weights()
+        index = bm.arange(NC)
+        self._quad_cache_key = key
+        self._quad_cache = {"bcs": bcs, "index": index}
+        return bcs, index
+
+    def _apply_phase_initial_damage_once(self, load: float):
+        if self._phase_initial_damage_applied:
+            return
+
+        case = self.case
+        discr = self.discr
+        state = discr.state
+        space = discr.space_d
+
+        if state is None or space is None:
+            return
+
+        if not hasattr(case, "phasefield_initial_damage_data"):
+            self._phase_initial_damage_applied = True
+            return
+
+        bcdata = case.phasefield_initial_damage_data(load)
+        if bcdata is None:
+            self._phase_initial_damage_applied = True
+            return
+
+        if isinstance(bcdata, dict):
+            bcdata = [bcdata]
+
+        ip = space.interpolation_points()
+        darr = bm.asarray(state.d[:]).copy()
+
+        if self.debug:
+            print(f"[PhaseFieldAssembler._apply_phase_initial_damage_once] bcdata={bcdata}")
+
+        for item in bcdata:
+            if "bcdof" not in item or "value" not in item:
+                raise ValueError(
+                    "phasefield_initial_damage_data(load) must return dict(s) with keys {'bcdof','value'}."
+                )
+
+            thr = item["bcdof"]
+            val = item["value"]
+
+            if callable(thr):
+                mask = bm.asarray(thr(ip)).astype(bm.bool)
+                idx = bm.where(mask)[0]
+            else:
+                arr = bm.asarray(thr)
+                if getattr(arr, "dtype", None) == bm.bool:
+                    idx = bm.where(arr)[0]
+                else:
+                    idx = arr
+
+            if self.debug:
+                print(f"  Found {len(idx)} DOFs on pre-crack, setting to value={val}")
+                if len(idx) > 0:
+                    print(f"    DOF indices (first 10): {idx[:10]}")
+
+            if callable(val):
+                v = val(ip[idx])
+            else:
+                v = val
+
+            darr = bm.set_at(darr, idx, v)
+
+            if self.debug and len(idx) > 0:
+                print(f"    After set_at: darr[idx] min={bm.min(darr[idx]):.6e}, max={bm.max(darr[idx]):.6e}")
+
+        state.d[:] = bm.clip(darr, 0.0, 1.0)
+        self._phase_initial_damage_applied = True
+        
+        if self.debug:
+            print(f"[PhaseFieldAssembler._apply_phase_initial_damage_once] COMPLETE: state.d min={bm.min(state.d[:]):.6e}, max={bm.max(state.d[:]):.6e}")
 
     def _apply_phase_dirichlet_bc(self, A, F, load: float):
         case = self.case

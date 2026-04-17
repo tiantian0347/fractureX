@@ -138,7 +138,8 @@ class HuzhangBoundaryCondition:
         self.space = space
         self.mesh = space.mesh
         self.p = space.p
-        self.q = q if q is not None else self.p + 3  # Default to p+3 if q is None
+        q0 = self.p + 4
+        self.q = int(q0 if q is None else max(int(q), q0))  # enforce at least p+4
 
 
     def apply(self, u):
@@ -353,7 +354,8 @@ class HuzhangStressBoundaryCondition:
         self.space = space
         self.mesh = space.mesh
         self.p = space.p
-        self.q = q if q is not None else self.p + 3
+        q0 = self.p + 4
+        self.q = int(q0 if q is None else max(int(q), q0))
         self.debug = bool(debug)
 
     def apply_essential_bc_to_system(self, A, F, *,

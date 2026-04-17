@@ -6,7 +6,9 @@ from typing import Optional, Dict, Any, Callable, List
 
 import numpy as np
 import os
+import time
 from scipy.sparse.linalg import spsolve, lgmres
+from fealpy.utils import timer
 
 from fracturex.discretization.huzhang_discretization import HuZhangDiscretization
 from fracturex.assemblers.huzhang_elastic_assembler import HuZhangElasticAssembler
@@ -55,6 +57,7 @@ class HuZhangLocalDamageStaggeredDriver:
         adapt_hook: Optional[Callable[[int, float, HuZhangDiscretization, DamageModelBase], None]] = None,
         cell_mode: str = "mean",
         debug: bool = False,
+        timing: bool = False,
         recorder: Optional[Any] = None,
     ):
         self.case = case
@@ -67,13 +70,35 @@ class HuZhangLocalDamageStaggeredDriver:
         self.tol = float(tol)
         self.maxit = int(maxit)
         self.debug = bool(debug)
+        self.timing = bool(timing)
         self.cell_mode = cell_mode
 
         self.linear_solver = linear_solver if linear_solver is not None else self._default_spsolve
         self.adapt_hook = adapt_hook
+        self._tmr = timer()
+        next(self._tmr)
 
         # init damage model (once after build)
         self._initialized = False
+
+    def _timer_mark(self, tag: Optional[str]):
+        if not self.timing:
+            return
+        try:
+            self._tmr.send(tag)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _relative_residual(A, x, b) -> float:
+        try:
+            Ax = A @ np.asarray(x).reshape(-1)
+            b_ = np.asarray(b).reshape(-1)
+            num = np.linalg.norm(Ax - b_)
+            den = max(np.linalg.norm(b_), 1e-30)
+            return float(num / den)
+        except Exception:
+            return float("nan")
 
     def initialize(self):
         """call once after discr.build()"""
@@ -106,6 +131,7 @@ class HuZhangLocalDamageStaggeredDriver:
                 ),
                 # 材料常数放这里即可（ft 不需要 step 记录）
                 material={k: float(getattr(m, k)) for k in ["lam","mu","E","nu","Gc","ft"] if hasattr(m, k)},
+                timing_enabled=bool(self.timing),
             )
             self.recorder.write_meta(meta)
 
@@ -128,15 +154,30 @@ class HuZhangLocalDamageStaggeredDriver:
 
         converged = False
         max_dd = bm.inf
+        t_step0 = time.perf_counter()
+        t_elastic_assemble = 0.0
+        t_elastic_solve = 0.0
+        t_damage_update = 0.0
+        r_lin_e = float("nan")
 
         # staggered iteration
         for k in range(self.maxit):
+            t_iter0 = time.perf_counter()
             d_old = bm.asarray(state.d[:]).copy()
 
             # (1) assemble and solve elastic system with current d
+            t0 = time.perf_counter()
+            self._timer_mark("elastic_assemble_start")
             sys = self.assembler.assemble(load)
+            self._timer_mark("elastic_assemble_end")
+            t_elastic_assemble += time.perf_counter() - t0
 
+            t0 = time.perf_counter()
+            self._timer_mark("elastic_solve_start")
             X = self.linear_solver(sys.A, sys.F)
+            self._timer_mark("elastic_solve_end")
+            t_elastic_solve += time.perf_counter() - t0
+            r_lin_e = self._relative_residual(sys.A, X, sys.F)
 
             sigma, u = sys.decode(X)
 
@@ -146,10 +187,25 @@ class HuZhangLocalDamageStaggeredDriver:
 
             # (2) update damage (and history) using (sigma,u)
             view = DamageStateView(d=state.d, sigma=state.sigma, u=state.u, r_hist=state.r_hist, H=state.H)
+            t0 = time.perf_counter()
+            self._timer_mark("damage_update_start")
             self.damage.update_after_elastic(discr, view, self.case)
+            self._timer_mark("damage_update_end")
+            t_damage_update += time.perf_counter() - t0
 
             d_new = bm.asarray(state.d[:])
             max_dd = float(bm.max(bm.abs(d_new - d_old)))
+
+            if self.recorder is not None and hasattr(self.recorder, "append_iteration"):
+                self.recorder.append_iteration(dict(
+                    step=int(step),
+                    load=float(load),
+                    iter=int(k + 1),
+                    max_dd=float(max_dd),
+                    max_d=float(bm.max(d_new)),
+                    linear_res_elastic=float(r_lin_e),
+                    t_iter_s=float(time.perf_counter() - t_iter0),
+                ))
 
             if self.debug:
                 print(f"[step {step} load {load:.4e}] iter {k}: max_dd={max_dd:.3e}, max_d={float(bm.max(d_new)):.3e}")
@@ -185,15 +241,23 @@ class HuZhangLocalDamageStaggeredDriver:
             sign=-1,     
         )
 
+        step_walltime = float(time.perf_counter() - t_step0)
+
         # ---- meta（方向通用字段）----
         meta = dict(
             gdof_sigma=int(discr.gdof_sigma),
             gdof_u=int(discr.gdof_u),
             max_d=float(bm.max(bm.asarray(state.d[:]))),
             R=float(R),
+            residual_force=float(R),
             R_dir=dir_load,
             load=float(load),
             load_dir=dir_load,
+            linear_res_elastic=float(r_lin_e),
+            t_step_s=step_walltime,
+            t_elastic_assemble_s=float(t_elastic_assemble),
+            t_elastic_solve_s=float(t_elastic_solve),
+            t_damage_update_s=float(t_damage_update),
         )
 
         # 
@@ -220,7 +284,13 @@ class HuZhangLocalDamageStaggeredDriver:
                 max_dd=float(max_dd),
                 max_d=float(bm.max(bm.asarray(state.d[:]))),
                 R=float(R),
+                residual_force=float(R),
                 R_dir=dir_load,
+                linear_res_elastic=float(r_lin_e),
+                t_step_s=step_walltime,
+                t_elastic_assemble_s=float(t_elastic_assemble),
+                t_elastic_solve_s=float(t_elastic_solve),
+                t_damage_update_s=float(t_damage_update),
                 **{f"reaction_{dir_load}": float(R), f"disp_{dir_load}": float(load)},
             )
             self.recorder.append_history(row)

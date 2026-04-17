@@ -124,7 +124,7 @@ class CaseBase:
         """
         return None
     
-    def phasefield_dirichlet_data(self, load: float):
+    def phasefield_dirichlet_data(self, load: float) -> Optional[Any]:
         """
         Optional phase-field Dirichlet BCs.
 
@@ -135,6 +135,23 @@ class CaseBase:
                 {"bcdof": threshold1, "value": value1},
                 {"bcdof": threshold2, "value": value2},
             ]
+        """
+        return None
+
+    def phasefield_initial_damage_data(self, load: float) -> Optional[Any]:
+        """
+        Optional one-time initialization for phase-field damage d.
+
+        Return one of:
+            None
+            {"bcdof": threshold, "value": value}
+            [
+                {"bcdof": threshold1, "value": value1},
+                {"bcdof": threshold2, "value": value2},
+            ]
+
+        This is applied once before phase-field assembly starts, then
+        regular `phasefield_dirichlet_data(load)` is used in each iteration.
         """
         return None
     

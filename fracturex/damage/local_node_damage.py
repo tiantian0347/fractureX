@@ -198,7 +198,7 @@ class LocalNodeDamage(DamageModelBase):
     def update_after_elastic(self, discr, state, case):
         mesh = discr.mesh
         NC = mesh.number_of_cells()
-        qf = mesh.quadrature_formula(discr.p + 3, 'cell')
+        qf = mesh.quadrature_formula(discr.p + 4, 'cell')
         bcs, ws = qf.get_quadrature_points_and_weights()  # (NQ,3), (NQ,)
 
         index = bm.arange(NC)
@@ -277,7 +277,7 @@ class LocalNodeDamage(DamageModelBase):
     def update_after_elastic(self, discr, state, case):
         mesh = discr.mesh
         NC = mesh.number_of_cells()
-        qf = mesh.quadrature_formula(discr.p+3, 'cell')
+        qf = mesh.quadrature_formula(discr.p+4, 'cell')
         bcs, ws = qf.get_quadrature_points_and_weights()  # (NQ,3), (NQ,)
 
         # 1) 在(cell,quad)评估退化应力 sigma

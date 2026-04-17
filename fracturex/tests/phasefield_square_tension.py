@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import numpy as np
+from fealpy.backend import backend_manager as bm
 
 from fracturex.cases.square_tension import SquareTensionCase
 from fracturex.discretization.huzhang_discretization import HuZhangDiscretization
@@ -42,7 +43,7 @@ def main():
         E=210e3,     # 你可以改成自己的量纲/参数
         nu=0.3,
         Gc=2.7,
-        l0=0.03,
+        l0=0.1,
         ft=3.0,
     )
 
@@ -63,7 +64,7 @@ def main():
     discr = HuZhangDiscretization(
         case=case,
         p=3,                 # 先从低阶开始，先跑通
-        damage_p=1,          # phase-field space order
+        damage_p=2,          # phase-field space order
         use_relaxation=True,
     )
 
@@ -99,6 +100,9 @@ def main():
         phase_assembler=phase_assembler,
         tol=1e-5,
         maxit=30,
+        elastic_krylov="minres",
+        phase_krylov="gmres",
+        phase_precond="ilu",
         debug=True,
     )
 
@@ -106,7 +110,8 @@ def main():
     # 9. 载荷步
     #    先用很小的位移加载，验证程序稳定性
     # --------------------------------------------------------
-    loads = np.linspace(0.0, 1.0e-3, 11).tolist()
+    #loads = np.linspace(0.0, 1.0e-3, 11).tolist()
+    loads = bm.concatenate((bm.linspace(0, 5e-3, 501, dtype=bm.float64), bm.linspace(5e-3, 6.1e-3, 1101, dtype=bm.float64)[1:]))
 
     infos = driver.run(loads)
 

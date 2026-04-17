@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh import TriangleMesh
@@ -173,7 +173,7 @@ class SquareTensionCase(CaseBase):
             (self._on_y1,   gd0, "nt", "t"),  # 顶边滑移：只固定 gt=0（x方向 free），gn 不固定
         ]
 
-    def phasefield_dirichlet_data(self, load: float):
+    def phasefield_dirichlet_data(self, load: float) -> Optional[Any]:
         return None
 
 

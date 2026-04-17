@@ -19,7 +19,9 @@ class RunRecorder:
         os.makedirs(outdir, exist_ok=True)
         os.makedirs(os.path.join(outdir, "checkpoints"), exist_ok=True)
         self.csv_path = os.path.join(outdir, "history.csv")
+        self.iter_csv_path = os.path.join(outdir, "iterations.csv")
         self._csv_header: list[str] | None = None
+        self._iter_csv_header: list[str] | None = None
 
     def write_meta(self, meta: dict):
         path = os.path.join(self.outdir, "meta.json")
@@ -44,6 +46,27 @@ class RunRecorder:
             out = {k: row.get(k, "") for k in self._csv_header}
             with open(self.csv_path, "a", newline="") as f:
                 w = csv.DictWriter(f, fieldnames=self._csv_header)
+                w.writerow(out)
+
+    def write_step(self, row: dict):
+        """Backward-compatible alias used by phase-field driver."""
+        self.append_history(row)
+
+    def append_iteration(self, row: dict):
+        """Append per-inner-iteration diagnostics."""
+        if self._iter_csv_header is None:
+            self._iter_csv_header = list(row.keys())
+            with open(self.iter_csv_path, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=self._iter_csv_header)
+                w.writeheader()
+                w.writerow(row)
+        else:
+            for k in row.keys():
+                if k not in self._iter_csv_header:
+                    self._iter_csv_header.append(k)
+            out = {k: row.get(k, "") for k in self._iter_csv_header}
+            with open(self.iter_csv_path, "a", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=self._iter_csv_header)
                 w.writerow(out)
 
     def save_checkpoint(self, step: int, discr, state):

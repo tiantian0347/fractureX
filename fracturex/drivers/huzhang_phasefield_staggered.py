@@ -6,10 +6,12 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, Callable, List
 
 import os
+import time
 import numpy as np
 from scipy.sparse.linalg import spsolve, lgmres
 
 from fealpy.backend import backend_manager as bm
+from fealpy.utils import timer
 
 from fracturex.cases.base import CaseBase
 from fracturex.discretization.huzhang_discretization import HuZhangDiscretization
@@ -41,12 +43,14 @@ class HuZhangPhaseFieldStaggeredDriver:
         elastic_assembler: Optional[HuZhangElasticAssembler] = None,
         phase_assembler: Optional[PhaseFieldAssembler] = None,
         tol: float = 1e-5,
-        maxit: int = 50,
+        maxit: int = 1000,
+        compute_linear_residual: bool = False,
         elastic_solver: Optional[Callable[[Any, Any], Any]] = None,
         phase_solver: Optional[Callable[[Any, Any], Any]] = None,
         adapt_hook: Optional[Callable[[int, float, HuZhangDiscretization, DamageModelBase], None]] = None,
         cell_mode: str = "mean",
         debug: bool = False,
+        timing: bool = False,
         recorder: Optional[Any] = None,
     ):
         self.case = case
@@ -68,6 +72,8 @@ class HuZhangPhaseFieldStaggeredDriver:
         self.tol = float(tol)
         self.maxit = int(maxit)
         self.debug = bool(debug)
+        self.timing = bool(timing)
+        self.compute_linear_residual = bool(compute_linear_residual)
         self.cell_mode = cell_mode
 
         self.elastic_solver = elastic_solver if elastic_solver is not None else self._default_spsolve
@@ -75,6 +81,76 @@ class HuZhangPhaseFieldStaggeredDriver:
 
         self.adapt_hook = adapt_hook
         self._initialized = False
+        self._tmr = timer() if self.timing else None
+        if self._tmr is not None:
+            next(self._tmr)
+
+    def _timer_mark(self, tag: Optional[str]):
+        if self._tmr is None:
+            return
+        try:
+            self._tmr.send(tag)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _relative_residual(A, x, b) -> float:
+        try:
+            Ax = A @ np.asarray(x).reshape(-1)
+            b_ = np.asarray(b).reshape(-1)
+            num = np.linalg.norm(Ax - b_)
+            den = max(np.linalg.norm(b_), 1e-30)
+            return float(num / den)
+        except Exception:
+            return float("nan")
+
+    @staticmethod
+    def _solver_name(solver: Any) -> str:
+        name = getattr(solver, "__name__", None)
+        if name:
+            return str(name)
+        return solver.__class__.__name__
+
+    @staticmethod
+    def _solve_with_diagnostics(solver: Callable[[Any, Any], Any], A, b):
+        """
+        Normalize linear solver outputs:
+        - x only
+        - (x, info-like) where info-like may carry krylov diagnostics
+        """
+        out = solver(A, b)
+        info = None
+        if isinstance(out, tuple) and len(out) >= 1:
+            x = np.asarray(out[0], dtype=float).reshape(-1)
+            info = out[1] if len(out) > 1 else None
+        else:
+            x = np.asarray(out, dtype=float).reshape(-1)
+
+        diag = dict(
+            solver=HuZhangPhaseFieldStaggeredDriver._solver_name(solver),
+            niter=1,            # direct solve equivalent
+            converged=True,     # direct solve equivalent
+            residual_norm=float("nan"),
+        )
+        if info is not None:
+            if hasattr(info, "solver"):
+                diag["solver"] = str(getattr(info, "solver"))
+            if hasattr(info, "niter"):
+                try:
+                    diag["niter"] = int(getattr(info, "niter"))
+                except Exception:
+                    pass
+            if hasattr(info, "converged"):
+                try:
+                    diag["converged"] = bool(getattr(info, "converged"))
+                except Exception:
+                    pass
+            if hasattr(info, "residual_norm"):
+                try:
+                    diag["residual_norm"] = float(getattr(info, "residual_norm"))
+                except Exception:
+                    pass
+        return x, diag
 
     def initialize(self):
         if self._initialized:
@@ -96,6 +172,7 @@ class HuZhangPhaseFieldStaggeredDriver:
         self._initialized = True
 
     def run(self, loads: List[float]) -> List[StepInfo]:
+        self._timer_mark("run_start")
         self.initialize()
         out: List[StepInfo] = []
 
@@ -115,6 +192,8 @@ class HuZhangPhaseFieldStaggeredDriver:
                     for k in ["lam", "mu", "E", "nu", "Gc", "l0"]
                     if hasattr(m, k)
                 },
+                timing_enabled=bool(self.timing),
+                compute_linear_residual=bool(self.compute_linear_residual),
             )
             self.recorder.write_meta(meta)
 
@@ -126,7 +205,12 @@ class HuZhangPhaseFieldStaggeredDriver:
                 self.adapt_hook(s, float(load), self.discr, self.damage)
                 self.elastic_assembler.discr = self.discr
                 self.phase_assembler.discr = self.discr
+                # future-proof for adaptive remesh: initial-damage mask should be
+                # allowed to re-apply on the rebuilt discretization if needed.
+                if hasattr(self.phase_assembler, "_phase_initial_damage_applied"):
+                    self.phase_assembler._phase_initial_damage_applied = False
 
+        self._timer_mark("run_end")
         return out
 
     def solve_one_step(self, *, step: int, load: float) -> StepInfo:
@@ -141,16 +225,65 @@ class HuZhangPhaseFieldStaggeredDriver:
 
         e0_u = None
         e0_d = None
+        t_step0 = time.perf_counter()
+        t_init_damage = 0.0
+        t_elastic_assemble = 0.0
+        t_elastic_solve = 0.0
+        t_phase_assemble = 0.0
+        t_phase_solve = 0.0
+        r_lin_e = float("nan")
+        r_lin_d = float("nan")
+        lin_solver_e = self._solver_name(self.elastic_solver)
+        lin_solver_d = self._solver_name(self.phase_solver)
+        lin_niter_e = 1
+        lin_niter_d = 1
+        lin_converged_e = True
+        lin_converged_d = True
+        lin_cb_res_e = float("nan")
+        lin_cb_res_d = float("nan")
+        need_iter_stats = bool(self.debug or (self.recorder is not None and hasattr(self.recorder, "append_iteration")))
+
+        # Apply one-time initial damage (e.g. pre-crack d=1) BEFORE
+        # capturing d_old in staggered iterations, so irreversibility
+        # uses the correct baseline.
+        if hasattr(self.phase_assembler, "_apply_phase_initial_damage_once"):
+            t0 = time.perf_counter()
+            self._timer_mark("init_damage_start")
+            self.phase_assembler._apply_phase_initial_damage_once(load)
+            self._timer_mark("init_damage_end")
+            t_init_damage += time.perf_counter() - t0
 
         for k in range(self.maxit):
+            t_iter0 = time.perf_counter()
             u_old = bm.asarray(state.u[:]).copy()
             d_old = bm.asarray(state.d[:]).copy()
+            t_elastic_assemble_iter = 0.0
+            t_elastic_solve_iter = 0.0
+            t_phase_assemble_iter = 0.0
+            t_phase_solve_iter = 0.0
 
             # ----------------------------------------------------------
             # (1) elasticity solve with current d
             # ----------------------------------------------------------
+            t0 = time.perf_counter()
+            self._timer_mark("elastic_assemble_start")
             sys_e = self.elastic_assembler.assemble(load)
-            Xe = self.elastic_solver(sys_e.A, sys_e.F)
+            self._timer_mark("elastic_assemble_end")
+            t_elastic_assemble_iter = float(time.perf_counter() - t0)
+            t_elastic_assemble += t_elastic_assemble_iter
+
+            t0 = time.perf_counter()
+            self._timer_mark("elastic_solve_start")
+            Xe, lin_e = self._solve_with_diagnostics(self.elastic_solver, sys_e.A, sys_e.F)
+            self._timer_mark("elastic_solve_end")
+            t_elastic_solve_iter = float(time.perf_counter() - t0)
+            t_elastic_solve += t_elastic_solve_iter
+            lin_solver_e = str(lin_e["solver"])
+            lin_niter_e = int(lin_e["niter"])
+            lin_converged_e = bool(lin_e["converged"])
+            lin_cb_res_e = float(lin_e["residual_norm"])
+            if self.compute_linear_residual:
+                r_lin_e = self._relative_residual(sys_e.A, Xe, sys_e.F)
 
             sigma, u = sys_e.decode(Xe)
             state.sigma[:] = sigma[:]
@@ -159,8 +292,25 @@ class HuZhangPhaseFieldStaggeredDriver:
             # ----------------------------------------------------------
             # (2) phase-field assembly will update H internally on its own quadrature
             # ----------------------------------------------------------
+            t0 = time.perf_counter()
+            self._timer_mark("phase_assemble_start")
             sys_d = self.phase_assembler.assemble(load)
-            dd = self.phase_solver(sys_d.A, sys_d.F)
+            self._timer_mark("phase_assemble_end")
+            t_phase_assemble_iter = float(time.perf_counter() - t0)
+            t_phase_assemble += t_phase_assemble_iter
+
+            t0 = time.perf_counter()
+            self._timer_mark("phase_solve_start")
+            dd, lin_d = self._solve_with_diagnostics(self.phase_solver, sys_d.A, sys_d.F)
+            self._timer_mark("phase_solve_end")
+            t_phase_solve_iter = float(time.perf_counter() - t0)
+            t_phase_solve += t_phase_solve_iter
+            lin_solver_d = str(lin_d["solver"])
+            lin_niter_d = int(lin_d["niter"])
+            lin_converged_d = bool(lin_d["converged"])
+            lin_cb_res_d = float(lin_d["residual_norm"])
+            if self.compute_linear_residual:
+                r_lin_d = self._relative_residual(sys_d.A, dd, sys_d.F)
 
             d_trial = sys_d.decode(dd)
 
@@ -174,22 +324,67 @@ class HuZhangPhaseFieldStaggeredDriver:
             du_abs = float(bm.linalg.norm(bm.asarray(state.u[:]) - u_old))
             dd_abs = float(bm.linalg.norm(bm.asarray(state.d[:]) - d_old))
 
+            # Follow phasefield/main_solve convergence style:
+            # normalize by the first iteration increment in each load step.
+            # Add a tiny, state-scaled lower bound to avoid pathological
+            # denominator collapse when the first increment is numerically tiny.
             if e0_u is None:
-                e0_u = max(du_abs, 1e-30)
+                u_scale = float(bm.linalg.norm(bm.asarray(state.u[:])))
+                e0_u = max(du_abs, 1e-14 * u_scale, 1e-30)
             if e0_d is None:
-                e0_d = max(dd_abs, 1e-30)
+                d_scale = float(bm.linalg.norm(bm.asarray(state.d[:])))
+                e0_d = max(dd_abs, 1e-14 * d_scale, 1e-30)
 
             err_u = du_abs / e0_u
             err_d = dd_abs / e0_d
+            error = max(err_u, err_d)
+            max_d_iter = float(bm.max(bm.asarray(state.d[:])))
+            gdof_sigma = int(discr.gdof_sigma)
+            gdof_u = int(discr.gdof_u)
+            gdof_d = int(discr.space_d.number_of_global_dofs())
+
+            if need_iter_stats:
+                iter_row = dict(
+                    step=int(step),
+                    load=float(load),
+                    iter=int(k + 1),
+                    gdof_sigma=gdof_sigma,
+                    gdof_u=gdof_u,
+                    gdof_d=gdof_d,
+                    du_abs=float(du_abs),
+                    dd_abs=float(dd_abs),
+                    err_u=float(err_u),
+                    err_d=float(err_d),
+                    max_d=max_d_iter,
+                    linear_solver_elastic=str(lin_solver_e),
+                    linear_solver_phase=str(lin_solver_d),
+                    linear_niter_elastic=int(lin_niter_e),
+                    linear_niter_phase=int(lin_niter_d),
+                    linear_converged_elastic=bool(lin_converged_e),
+                    linear_converged_phase=bool(lin_converged_d),
+                    linear_cb_res_elastic=float(lin_cb_res_e),
+                    linear_cb_res_phase=float(lin_cb_res_d),
+                    linear_res_elastic=float(r_lin_e),
+                    linear_res_phase=float(r_lin_d),
+                    t_elastic_assemble_iter_s=float(t_elastic_assemble_iter),
+                    t_elastic_solve_iter_s=float(t_elastic_solve_iter),
+                    t_phase_assemble_iter_s=float(t_phase_assemble_iter),
+                    t_phase_solve_iter_s=float(t_phase_solve_iter),
+                    t_elastic_iter_total_s=float(t_elastic_assemble_iter + t_elastic_solve_iter),
+                    t_phase_iter_total_s=float(t_phase_assemble_iter + t_phase_solve_iter),
+                    t_iter_s=float(time.perf_counter() - t_iter0),
+                )
+                if self.recorder is not None and hasattr(self.recorder, "append_iteration"):
+                    self.recorder.append_iteration(iter_row)
 
             if self.debug:
                 print(
                     f"[step {step} load {load:.4e}] iter {k}: "
-                    f"err_u={err_u:.3e}, err_d={err_d:.3e}, "
-                    f"max_d={float(bm.max(bm.asarray(state.d[:]))):.3e}"
+                    f"err_u={err_u:.3e}, err_d={err_d:.3e}, error={error:.3e}, "
+                    f"max_d={max_d_iter:.3e}"
                 )
 
-            if max(err_u, err_d) < self.tol:
+            if error < self.tol:
                 converged = True
                 iters = k + 1
                 break
@@ -218,6 +413,8 @@ class HuZhangPhaseFieldStaggeredDriver:
             sign=-1,
         )
 
+        step_walltime = float(time.perf_counter() - t_step0)
+
         meta = dict(
             gdof_sigma=int(discr.gdof_sigma),
             gdof_u=int(discr.gdof_u),
@@ -225,9 +422,26 @@ class HuZhangPhaseFieldStaggeredDriver:
             max_d=float(bm.max(bm.asarray(state.d[:]))),
             max_H=float(bm.max(state.H)) if state.H is not None else 0.0,
             R=float(R),
+            residual_force=float(R),
             R_dir=dir_load,
             load=float(load),
             load_dir=dir_load,
+            linear_solver_elastic=str(lin_solver_e),
+            linear_solver_phase=str(lin_solver_d),
+            linear_niter_elastic=int(lin_niter_e),
+            linear_niter_phase=int(lin_niter_d),
+            linear_converged_elastic=bool(lin_converged_e),
+            linear_converged_phase=bool(lin_converged_d),
+            linear_cb_res_elastic=float(lin_cb_res_e),
+            linear_cb_res_phase=float(lin_cb_res_d),
+            linear_res_elastic=float(r_lin_e),
+            linear_res_phase=float(r_lin_d),
+            t_step_s=step_walltime,
+            t_init_damage_s=float(t_init_damage),
+            t_elastic_assemble_s=float(t_elastic_assemble),
+            t_elastic_solve_s=float(t_elastic_solve),
+            t_phase_assemble_s=float(t_phase_assemble),
+            t_phase_solve_s=float(t_phase_solve),
         )
         meta[f"reaction_{dir_load}"] = float(R)
         meta[f"disp_{dir_load}"] = float(load)
@@ -244,7 +458,8 @@ class HuZhangPhaseFieldStaggeredDriver:
         )
 
         if self.recorder is not None:
-            row = dict(
+            row = dict(info.meta)
+            row.update(
                 step=info.step,
                 load=info.load,
                 iters=info.iters,
@@ -252,9 +467,18 @@ class HuZhangPhaseFieldStaggeredDriver:
                 err_u=info.err_u,
                 err_d=info.err_d,
                 max_d=info.max_d,
-                **info.meta,
+                residual_force=float(R),
+                linear_res_elastic=float(r_lin_e),
+                linear_res_phase=float(r_lin_d),
+                t_step_s=step_walltime,
+                t_init_damage_s=float(t_init_damage),
+                t_elastic_assemble_s=float(t_elastic_assemble),
+                t_elastic_solve_s=float(t_elastic_solve),
+                t_phase_assemble_s=float(t_phase_assemble),
+                t_phase_solve_s=float(t_phase_solve),
             )
             self.recorder.write_step(row)
+            self.recorder.save_checkpoint(step, discr, state)
 
         return info
 
@@ -269,16 +493,37 @@ class HuZhangPhaseFieldStaggeredDriver:
         return spsolve(A_, F_)
 
     @staticmethod
-    def _default_lgmres(A, F, atol=1e-20):
+    def _default_lgmres(
+        A,
+        F,
+        *,
+        atol: float = 1e-20,
+        rtol: float = 1e-10,
+        maxiter: int = 2000,
+        check_rtol: float = 1e-8,
+        fallback_to_spsolve: bool = True,
+    ):
         if hasattr(A, "to_scipy"):
             A_ = A.to_scipy().tocsr()
         else:
             A_ = A.tocsr() if hasattr(A, "tocsr") else A
 
         F_ = np.asarray(F, dtype=float).reshape(-1)
-        x, info = lgmres(A_, F_, atol=atol)
-        if info != 0:
-            print(f"[HuZhangPhaseFieldStaggeredDriver] lgmres info={info}")
+        x, info = lgmres(A_, F_, atol=atol, rtol=rtol, maxiter=maxiter)
+
+        x = np.asarray(x, dtype=float).reshape(-1)
+        bnorm = max(float(np.linalg.norm(F_)), 1e-30)
+        rrel = float(np.linalg.norm(A_ @ x - F_) / bnorm)
+        bad = (info != 0) or (not np.isfinite(x).all()) or (not np.isfinite(rrel)) or (rrel > check_rtol)
+
+        if bad:
+            print(
+                "[HuZhangPhaseFieldStaggeredDriver] "
+                f"lgmres unstable/non-converged: info={info}, relres={rrel:.3e}; "
+                f"fallback_to_spsolve={fallback_to_spsolve}"
+            )
+            if fallback_to_spsolve:
+                return spsolve(A_, F_)
         return x
 
 
@@ -510,9 +755,9 @@ class HuZhangPhaseFieldStaggeredDriver:
         try:
             sig_node = self._sigma_to_nodal(state.sigma, mesh)   # (NN, 3)
             mesh.nodedata["sigma_node"] = sig_node
-            mesh.nodedata["sxx"] = sig_node[:, 0]
-            mesh.nodedata["sxy"] = sig_node[:, 1]
-            mesh.nodedata["syy"] = sig_node[:, 2]
+            mesh.nodedata["sigxx"] = sig_node[:, 0]
+            mesh.nodedata["sigxy"] = sig_node[:, 1]
+            mesh.nodedata["sig2"] = sig_node[:, 2]
 
             s1_node, svm_node = self._voigt2d_principal_and_vm(sig_node)
             mesh.nodedata["s1"] = s1_node

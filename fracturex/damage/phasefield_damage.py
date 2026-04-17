@@ -59,7 +59,7 @@ class PhaseFieldDamageModel(DamageModelBase):
     density_type: str = "AT2"
     degradation_type: str = "quadratic"
     split: str = "hybrid"         # "hybrid", "spectral", "isotropic"
-    eps_g: float = 1e-10
+    eps_g: float = 1e-6
     clamp_max: float = 0.999999
     debug: bool = False
 

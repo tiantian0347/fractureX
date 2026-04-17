@@ -84,6 +84,7 @@ def main():
         assembler=assembler, 
         tol=1e-8, 
         maxit=50, 
+        elastic_krylov="minres",
         debug=True
     )
     #loads = bm.linspace(0.0, 6e-3, 11)

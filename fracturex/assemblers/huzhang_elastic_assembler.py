@@ -48,6 +48,8 @@ class HuZhangElasticAssembler:
         self.case = case
         self.damage = damage
         self.q = q  # 若 None，integrator 内部用默认
+        self._const_cache = None
+        self._const_cache_key = None
 
     def assemble(self, load: float) -> ElasticSystem:
         discr = self.discr
@@ -84,29 +86,17 @@ class HuZhangElasticAssembler:
         bformM.add_integrator(HuZhangStressIntegrator(coef=coef_d, lambda0=c0, lambda1=c1))
         M = bformM.assembly().to_scipy().tocsr()
 
-        # ---- 2) B ----
-        bformB = BilinearForm((space1, space0))
-        bformB.add_integrator(HuZhangMixIntegrator())
-        B = bformB.assembly().to_scipy().tocsr()
-
-        # ---- 3) TM transform ----
-        TM = space0.TM.to_scipy().tocsr()
+        const = self._prepare_constant_blocks(load)
+        TM = const["TM"]
+        B2 = const["B2"]
+        b_vec = const["b_vec"]
         M2 = TM.T @ M @ TM
-        B2 = TM.T @ B
 
         A = bmat([[M2, B2],
                   [B2.T, None]], format="csr")
 
         # ---- 4) RHS: body force on u eqn ----
-        lform = LinearForm(space1)
-
-        @cartesian
-        def f_body(x, index=None):
-            return case.body_force(x)
-
-        lform.add_integrator(VectorSourceIntegrator(source=f_body))
-        b = lform.assembly()  # (gdof1,)
-        b = np.asarray(b, dtype=float).reshape(-1)
+        b = b_vec
 
         # ---- 5) RHS: Dirichlet displacement contributes to sigma equation ----
         HBC = HuzhangBoundaryCondition(space=space0, q=self.q)
@@ -140,7 +130,9 @@ class HuZhangElasticAssembler:
 
         # decode: map solution X -> (sigma,u) functions
         def decode(X):
-            X = np.asarray(X).reshape(-1)
+            if isinstance(X, (tuple, list)):
+                X = X[0]
+            X = bm.asarray(X).reshape(-1)
             sig_tilde = X[:gdof0]
             u_vec = X[gdof0:]
 
@@ -156,6 +148,52 @@ class HuZhangElasticAssembler:
 
         meta = dict(gdof_sigma=int(gdof0), gdof_u=int(gdof1))
         return ElasticSystem(A=A, F=F, decode=decode, meta=meta)
+
+    def _prepare_constant_blocks(self, load: float):
+        """
+        Cache d-independent components:
+        - TM, B2
+        - body-force vector on displacement equation
+        """
+        discr = self.discr
+        case = self.case
+        mesh = discr.mesh
+        space0 = discr.space_sigma
+        space1 = discr.space_u
+
+        assert mesh is not None and space0 is not None and space1 is not None
+
+        key = (
+            id(mesh),
+            int(space0.number_of_global_dofs()),
+            int(space1.number_of_global_dofs()),
+        )
+        if self._const_cache is not None and self._const_cache_key == key:
+            return self._const_cache
+
+        bformB = BilinearForm((space1, space0))
+        bformB.add_integrator(HuZhangMixIntegrator())
+        B = bformB.assembly().to_scipy().tocsr()
+        TM = space0.TM.to_scipy().tocsr()
+        B2 = TM.T @ B
+
+        lform = LinearForm(space1)
+
+        @cartesian
+        def f_body(x, index=None):
+            return case.body_force(x)
+
+        lform.add_integrator(VectorSourceIntegrator(source=f_body))
+        b_vec = lform.assembly()
+        b_vec = np.asarray(b_vec, dtype=float).reshape(-1)
+
+        self._const_cache_key = key
+        self._const_cache = {
+            "TM": TM,
+            "B2": B2,
+            "b_vec": b_vec,
+        }
+        return self._const_cache
 
     @staticmethod
     def apply_sigma_essential_to_system(A, F, uh_sigma, isBd_sigma, gdof_sigma: int):

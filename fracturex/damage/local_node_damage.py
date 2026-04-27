@@ -133,6 +133,15 @@ class LocalNodeDamage(DamageModelBase):
     mu: Optional[float] = None
 
     def on_build(self, discr, state, case):
+        """Initialize local damage parameters and state fields.
+
+        Inputs:
+            discr: Discretization object containing mesh/spaces.
+            state: Damage state view (`d`, `r_hist`, `u`, `sigma`).
+            case: Case object that provides material model.
+        Output:
+            None. Updates `self.ft/self.Hd` and initializes state history values.
+        """
         model = case.model()
         self.lam, self.mu = _material_lame_from_model(model)
 
@@ -188,14 +197,37 @@ class LocalNodeDamage(DamageModelBase):
         return g + self.eps_g
     
     def characteristic_length(self):
+        """Return characteristic length `lch = Gc*E/ft^2`.
+
+        Input:
+            self: Damage model with `Gc`, `E`, `ft`.
+        Output:
+            Characteristic length scalar.
+        """
         return self.Gc*self.E/(self.ft**2)
 
     def moderation_parameter(self):
+        """Return moderation parameter from local damage model constants.
+
+        Input:
+            self: Damage model with `l0` and `characteristic_length`.
+        Output:
+            Scalar moderation parameter in damage evolution law.
+        """
         lch = self.characteristic_length()
         return self.l0/(2*lch + self.l0)
     
 
     def update_after_elastic(self, discr, state, case):
+        """Update nodal history and damage after elastic solve.
+
+        Inputs:
+            discr: Discretization containing mesh/space information.
+            state: State with current `u`, `d`, `r_hist`.
+            case: Case object (reserved for extensions).
+        Output:
+            Updated nodal damage field `state.d`.
+        """
         mesh = discr.mesh
         NC = mesh.number_of_cells()
         qf = mesh.quadrature_formula(discr.p + 4, 'cell')
@@ -377,6 +409,13 @@ class LocalNodeDamage(DamageModelBase):
 
 
     def _equivalent_measure(self, sig_voigt):
+        """Dispatch equivalent stress measure by configured criterion.
+
+        Input:
+            sig_voigt: Stress in Voigt form.
+        Output:
+            Equivalent scalar stress array (Rankine or von Mises).
+        """
         c = (self.criterion or "rankine").lower()
         if c in ("rankine", "max_principal_stress", "s1"):
             return _rankine(sig_voigt)

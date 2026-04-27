@@ -36,6 +36,17 @@ class PhaseFieldAssembler:
     """
 
     def __init__(self, discr, case, damage, *, q: Optional[int] = None, debug: bool = False):
+        """Create phase-field assembler with quadrature-history formulation.
+
+        Inputs:
+            discr: Discretization containing damage space/state.
+            case: Case object for BC and initial-crack data.
+            damage: Damage model providing `H` update and constitutive functions.
+            q: Optional quadrature order (defaults to `damage_p + 3`).
+            debug: Verbose diagnostics switch.
+        Output:
+            None. Initializes caches and load-step state.
+        """
         self.discr = discr
         self.case = case
         self.damage = damage
@@ -45,8 +56,40 @@ class PhaseFieldAssembler:
         self._quad_cache = None
         self._quad_cache_key = None
         self._g0_const_coef = None
+        self._aconst_cache = None
+        self._aconst_cache_key = None
+        # Per load-step: phase-field Dirichlet descriptor and quadrature pre-warm.
+        self._load_step_value: Optional[float] = None
+        self._pf_bcdata_cache: Any = None
+
+    def begin_load_step(self, load: float) -> None:
+        """
+        Cache `case.phasefield_dirichlet_data(load)` and pre-warm quadrature for the
+        current damage order — unchanged during staggered iterations at fixed `load`.
+
+        Safe to skip: `assemble` falls back to the previous on-the-fly path.
+        """
+        self._load_step_value = float(load)
+        case = self.case
+        if hasattr(case, "phasefield_dirichlet_data"):
+            self._pf_bcdata_cache = case.phasefield_dirichlet_data(load)
+        else:
+            self._pf_bcdata_cache = None
+        discr = self.discr
+        if discr is None or discr.space_d is None or discr.mesh is None:
+            return
+        q = int(discr.damage_p + 3 if self.q is None else self.q)
+        self._get_quadrature_data(q)
 
     def assemble(self, load: float) -> PhaseFieldSystem:
+        """Assemble one phase-field linearized increment system.
+
+        Input:
+            load: Current scalar load value (for BC and one-time crack seeding logic).
+        Output:
+            `PhaseFieldSystem(A, F, decode, meta)`, where `decode(dd)` returns
+            clipped updated damage field `d_new`.
+        """
         discr = self.discr
         case = self.case
         damage = self.damage
@@ -125,12 +168,23 @@ class PhaseFieldAssembler:
         # ----------------------------------------------------------
         # assemble A
         # ----------------------------------------------------------
-        bform_const = BilinearForm(space)
-        bform_const.add_integrator(
-            ScalarDiffusionIntegrator(coef=diff_coef, q=q),
-            ScalarMassIntegrator(coef=mass_coef1, q=q),
-        )
-        A_const = bform_const.assembly()
+        # Terms independent of H can be cached and reused across solves.
+        # For built-in AT1/AT2 crack-density models, h''(d), c_d are constants,
+        # so A_const does not change over staggered iterations.
+        aconst_key = (id(discr.mesh), int(gdof), int(q), float(Gc), float(l0), str(getattr(damage, "density_type", "unknown")))
+        cacheable_aconst = str(getattr(damage, "density_type", "")).lower() in ("at1", "at2")
+        if cacheable_aconst and self._aconst_cache is not None and self._aconst_cache_key == aconst_key:
+            A_const = self._aconst_cache
+        else:
+            bform_const = BilinearForm(space)
+            bform_const.add_integrator(
+                ScalarDiffusionIntegrator(coef=diff_coef, q=q),
+                ScalarMassIntegrator(coef=mass_coef1, q=q),
+            )
+            A_const = bform_const.assembly()
+            if cacheable_aconst:
+                self._aconst_cache_key = aconst_key
+                self._aconst_cache = A_const
 
         bform_hist = BilinearForm(space)
         bform_hist.add_integrator(
@@ -203,6 +257,13 @@ class PhaseFieldAssembler:
         return bcs, index
 
     def _apply_phase_initial_damage_once(self, load: float):
+        """Apply one-time initial damage constraints (pre-crack).
+
+        Input:
+            load: Current load used to query case initial-damage descriptor.
+        Output:
+            None. Updates `state.d` in place once and sets internal applied flag.
+        """
         if self._phase_initial_damage_applied:
             return
 
@@ -273,13 +334,25 @@ class PhaseFieldAssembler:
             print(f"[PhaseFieldAssembler._apply_phase_initial_damage_once] COMPLETE: state.d min={bm.min(state.d[:]):.6e}, max={bm.max(state.d[:]):.6e}")
 
     def _apply_phase_dirichlet_bc(self, A, F, load: float):
+        """Apply phase-field Dirichlet boundary conditions to linear system.
+
+        Inputs:
+            A: Phase-field system matrix.
+            F: Phase-field rhs vector.
+            load: Current load used to query case BC descriptors.
+        Output:
+            Tuple `(A_bc, F_bc)` after Dirichlet elimination.
+        """
         case = self.case
         space = self.discr.space_d
 
         if not hasattr(case, "phasefield_dirichlet_data"):
             return A, F
 
-        bcdata = case.phasefield_dirichlet_data(load)
+        if self._load_step_value is not None and float(load) == float(self._load_step_value) and self._pf_bcdata_cache is not None:
+            bcdata = self._pf_bcdata_cache
+        else:
+            bcdata = case.phasefield_dirichlet_data(load)
         if bcdata is None:
             return A, F
 

@@ -150,7 +150,7 @@ class HuzhangBoundaryCondition:
     def __call__(self, u):
         return self.apply(u)
     
-    def displacement_boundary_condition(self, value=0.0, threshold=None, direction=None, piecewise=None):
+    def displacement_boundary_condition(self, value=0.0, threshold=None, direction=None, piecewise=None, coef=None):
         """
         支持单段 (value, threshold) 或多段 piecewise=[(thr,val,dir),...]
         返回用于 σ 方程 RHS 的向量 r。
@@ -171,11 +171,11 @@ class HuzhangBoundaryCondition:
         for thr, val, direc in piecewise:
             if thr is None:
                 continue
-            r += self._displacement_bc_one_piece(val, thr, direc)
+            r += self._displacement_bc_one_piece(val, thr, direc, coef=coef)
 
         return r
     
-    def _displacement_bc_one_piece(self, value, threshold, direction):
+    def _displacement_bc_one_piece(self, value, threshold, direction, coef=None):
         mesh, space = self.mesh, self.space
         q = self.q
 
@@ -201,13 +201,33 @@ class HuzhangBoundaryCondition:
 
         phin = bm.zeros((NBF, NQ, ldof, GD), dtype=space.ftype)
         gval = bm.zeros((NBF, NQ, GD), dtype=space.ftype)
+        wcoef = bm.ones((NBF, NQ), dtype=space.ftype)
 
         # 
         self.apply_boundary_condition(
             GD, f2c, fn, phin, gval, bcs, mesh, direction, value
         )
 
-        b = bm.einsum('q, c, cqld, cqd -> cl', ws, cellmeasure, phin, gval)
+        # Optional boundary weight (e.g. degradation g(d) for effective-stress coupling).
+        if coef is not None:
+            num_faces = 3 if GD == 2 else 4
+            for i in range(num_faces):
+                idx = bm.where(f2c[:, 2] == i)[0]
+                if int(idx.shape[0]) == 0:
+                    continue
+                cell_idx = f2c[idx, 0]
+                bcsi = bm.insert(bcs, i, 0.0, axis=-1)
+                cval = bm.asarray(coef(bcsi, index=cell_idx))
+                if cval.ndim == 1:
+                    cval = cval[:, None]
+                if cval.ndim == 2 and int(cval.shape[0]) == int(idx.shape[0]):
+                    wcoef[idx, :] = cval
+                elif cval.ndim >= 2 and int(cval.shape[0]) == 1:
+                    wcoef[idx, :] = cval[0]
+                else:
+                    raise ValueError(f"Unsupported boundary coef shape: {cval.shape}")
+
+        b = bm.einsum('q, c, cqld, cqd, cq -> cl', ws, cellmeasure, phin, gval, wcoef)
         r = bm.zeros(gdof, dtype=space.ftype)
         bm.add.at(r, cell2dof, b)
         return r

@@ -53,6 +53,19 @@ class HuZhangPhaseFieldStaggeredDriver:
         timing: bool = False,
         recorder: Optional[Any] = None,
     ):
+        """Initialize staggered HuZhang + phase-field solver driver.
+
+        Inputs:
+            case/discr/damage: Core case, discretization and damage model objects.
+            elastic_assembler/phase_assembler: Optional custom assemblers.
+            tol/maxit: Nonlinear staggered convergence tolerance and max iterations.
+            compute_linear_residual: Whether to compute `||Ax-b||/||b||` diagnostics.
+            elastic_solver/phase_solver: Linear solver callbacks `(A, b) -> x` or `(x, info)`.
+            adapt_hook: Optional callback after each load step.
+            cell_mode/debug/timing/recorder: Output and diagnostics switches.
+        Output:
+            None. Stores configuration; real initialization happens in `initialize`.
+        """
         self.case = case
         self.discr = discr
         self.damage = damage
@@ -81,6 +94,7 @@ class HuZhangPhaseFieldStaggeredDriver:
 
         self.adapt_hook = adapt_hook
         self._initialized = False
+        self._sigma_physical_eval = None
         self._tmr = timer() if self.timing else None
         if self._tmr is not None:
             next(self._tmr)
@@ -153,6 +167,13 @@ class HuZhangPhaseFieldStaggeredDriver:
         return x, diag
 
     def initialize(self):
+        """Initialize damage model with current discretization state.
+
+        Inputs:
+            None (uses `self.discr`, `self.damage`, `self.case`).
+        Output:
+            None. Calls `damage.on_build(...)` once and sets initialized flag.
+        """
         if self._initialized:
             return
 
@@ -172,6 +193,13 @@ class HuZhangPhaseFieldStaggeredDriver:
         self._initialized = True
 
     def run(self, loads: List[float]) -> List[StepInfo]:
+        """Run the full staggered solve over all load steps.
+
+        Input:
+            loads: List of prescribed load values per step.
+        Output:
+            List of `StepInfo`, one item per load step.
+        """
         self._timer_mark("run_start")
         self.initialize()
         out: List[StepInfo] = []
@@ -182,6 +210,8 @@ class HuZhangPhaseFieldStaggeredDriver:
                 case=self.case.name,
                 p=int(self.discr.p),
                 use_relaxation=bool(self.discr.use_relaxation),
+                elastic_formulation=str(getattr(self.elastic_assembler, "formulation", "standard")),
+                history_source=str(getattr(self.damage, "history_source", "from_u")),
                 mesh=dict(
                     NN=int(self.discr.mesh.number_of_nodes()),
                     NE=int(self.discr.mesh.number_of_edges()),
@@ -214,6 +244,14 @@ class HuZhangPhaseFieldStaggeredDriver:
         return out
 
     def solve_one_step(self, *, step: int, load: float) -> StepInfo:
+        """Solve one load step using staggered elastic/phase iterations.
+
+        Inputs:
+            step: Load step index.
+            load: Current scalar load/displacement value.
+        Output:
+            `StepInfo` including convergence stats and postprocess metadata.
+        """
         discr = self.discr
         state = discr.state
         if state is None:
@@ -253,6 +291,14 @@ class HuZhangPhaseFieldStaggeredDriver:
             self._timer_mark("init_damage_end")
             t_init_damage += time.perf_counter() - t0
 
+        # Debug/validation switch: disable per-load-step cache optimization to
+        # compare against the legacy path when investigating symmetry issues.
+        disable_step_cache = os.environ.get("FRACTUREX_DISABLE_LOADSTEP_CACHE", "0") == "1"
+        if (not disable_step_cache) and hasattr(self.elastic_assembler, "begin_load_step"):
+            self.elastic_assembler.begin_load_step(load)
+        if (not disable_step_cache) and hasattr(self.phase_assembler, "begin_load_step"):
+            self.phase_assembler.begin_load_step(load)
+
         for k in range(self.maxit):
             t_iter0 = time.perf_counter()
             u_old = bm.asarray(state.u[:]).copy()
@@ -285,9 +331,10 @@ class HuZhangPhaseFieldStaggeredDriver:
             if self.compute_linear_residual:
                 r_lin_e = self._relative_residual(sys_e.A, Xe, sys_e.F)
 
-            sigma, u = sys_e.decode(Xe)
+            sigma, u, sigma_physical = sys_e.decode(Xe)
             state.sigma[:] = sigma[:]
             state.u[:] = u[:]
+            self._sigma_physical_eval = sigma_physical
 
             # ----------------------------------------------------------
             # (2) phase-field assembly will update H internally on its own quadrature
@@ -377,12 +424,12 @@ class HuZhangPhaseFieldStaggeredDriver:
                 if self.recorder is not None and hasattr(self.recorder, "append_iteration"):
                     self.recorder.append_iteration(iter_row)
 
-            if self.debug:
-                print(
-                    f"[step {step} load {load:.4e}] iter {k}: "
-                    f"err_u={err_u:.3e}, err_d={err_d:.3e}, error={error:.3e}, "
-                    f"max_d={max_d_iter:.3e}"
-                )
+            # Always print nonlinear iteration progress for realtime monitoring.
+            print(
+                f"[step {step} load {load:.4e}] iter {k + 1}: "
+                f"err_u={err_u:.3e}, err_d={err_d:.3e}, error={error:.3e}, "
+                f"max_d={max_d_iter:.3e}"
+            )
 
             if error < self.tol:
                 converged = True
@@ -397,6 +444,7 @@ class HuZhangPhaseFieldStaggeredDriver:
                 f"results/{self.case.name}_step_{step:03d}.vtu",
                 cell_mode=self.cell_mode,
                 q=q,
+                sigma_eval=self._sigma_physical_eval,
             )
 
         lp = self.case.load_dirichlet_piece(load)
@@ -404,9 +452,10 @@ class HuZhangPhaseFieldStaggeredDriver:
         if dir_load not in ("x", "y", "z"):
             dir_load = "y"
 
+        sigma_react = self._sigma_physical_eval if self._sigma_physical_eval is not None else state.sigma
         R = reaction_from_sigma(
             self.discr.mesh,
-            state.sigma,
+            sigma_react,
             lp.threshold,
             direction=dir_load,
             q=q,
@@ -419,6 +468,8 @@ class HuZhangPhaseFieldStaggeredDriver:
             gdof_sigma=int(discr.gdof_sigma),
             gdof_u=int(discr.gdof_u),
             gdof_d=int(discr.space_d.number_of_global_dofs()),
+            elastic_formulation=str(getattr(self.elastic_assembler, "formulation", "standard")),
+            history_source=str(getattr(self.damage, "history_source", "from_u")),
             max_d=float(bm.max(bm.asarray(state.d[:]))),
             max_H=float(bm.max(state.H)) if state.H is not None else 0.0,
             R=float(R),
@@ -484,6 +535,14 @@ class HuZhangPhaseFieldStaggeredDriver:
 
     @staticmethod
     def _default_spsolve(A, F):
+        """Default direct linear solver wrapper.
+
+        Inputs:
+            A: Sparse matrix in SciPy/compatible format.
+            F: Right-hand-side vector.
+        Output:
+            Solution vector from `scipy.sparse.linalg.spsolve`.
+        """
         if hasattr(A, "to_scipy"):
             A_ = A.to_scipy().tocsr()
         else:
@@ -503,6 +562,16 @@ class HuZhangPhaseFieldStaggeredDriver:
         check_rtol: float = 1e-8,
         fallback_to_spsolve: bool = True,
     ):
+        """Default iterative solver wrapper with stability fallback.
+
+        Inputs:
+            A/F: Linear system matrix and rhs.
+            atol/rtol/maxiter: LGMRES stopping controls.
+            check_rtol: Extra posterior residual threshold.
+            fallback_to_spsolve: Whether to fallback to direct solve on instability.
+        Output:
+            Solution vector; may come from LGMRES or fallback direct solve.
+        """
         if hasattr(A, "to_scipy"):
             A_ = A.to_scipy().tocsr()
         else:
@@ -678,7 +747,7 @@ class HuZhangPhaseFieldStaggeredDriver:
         return s1, svm
 
 
-    def _save_vtkfile(self, fname: str, *, cell_mode: str = "mean", q: Optional[int] = None):
+    def _save_vtkfile(self, fname: str, *, cell_mode: str = "mean", q: Optional[int] = None, sigma_eval=None):
         """
         Save phase-field / displacement / stress results to vtk.
 
@@ -700,6 +769,7 @@ class HuZhangPhaseFieldStaggeredDriver:
 
         mesh = self.discr.mesh
         state = self.discr.state
+        sigma_fun = sigma_eval if sigma_eval is not None else state.sigma
 
         # --------------------------------------------------
         # damage
@@ -737,7 +807,7 @@ class HuZhangPhaseFieldStaggeredDriver:
         # stress: cell barycenter
         # --------------------------------------------------
         try:
-            sig_cell = self._sigma_to_cell_barycenter(state.sigma, mesh)  # (NC, 3)
+            sig_cell = self._sigma_to_cell_barycenter(sigma_fun, mesh)  # (NC, 3)
             mesh.celldata["sigma_cell"] = sig_cell
             mesh.celldata["sxx_cell"] = sig_cell[:, 0]
             mesh.celldata["sxy_cell"] = sig_cell[:, 1]
@@ -753,7 +823,7 @@ class HuZhangPhaseFieldStaggeredDriver:
         # stress: nodal recovery
         # --------------------------------------------------
         try:
-            sig_node = self._sigma_to_nodal(state.sigma, mesh)   # (NN, 3)
+            sig_node = self._sigma_to_nodal(sigma_fun, mesh)   # (NN, 3)
             mesh.nodedata["sigma_node"] = sig_node
             mesh.nodedata["sigxx"] = sig_node[:, 0]
             mesh.nodedata["sigxy"] = sig_node[:, 1]

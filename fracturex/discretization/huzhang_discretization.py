@@ -51,6 +51,17 @@ class HuZhangDiscretization:
         damage_p: int = 1,                 # d/r_hist/H 的空间阶次（局部损伤一般 P1）
         u_space_order: Optional[int] = None,  # 位移空间阶次默认 p-1（与你之前一致）
     ):
+        """Create HuZhang discretization container.
+
+        Inputs:
+            case: Problem case object (geometry/boundary/material access).
+            p: Polynomial order of HuZhang stress space.
+            use_relaxation: Whether to enable corner relaxation in stress space.
+            damage_p: Order of scalar damage/history space.
+            u_space_order: Order of displacement scalar base space (`p-1` by default).
+        Output:
+            None. Initializes container fields; call `build()` to allocate spaces/state.
+        """
         self.case = case
         self.p = int(p)
         self.use_relaxation = bool(use_relaxation)
@@ -73,6 +84,12 @@ class HuZhangDiscretization:
         构建 mesh + spaces + state
         - mesh 可以外部传入（自适应/读入网格等）
         - 否则用 case.make_mesh(nx,ny)
+
+        Inputs:
+            nx, ny: Optional mesh resolution controls used by `case.make_mesh`.
+            mesh: Optional externally supplied mesh. If provided, `nx/ny` are ignored.
+        Output:
+            `self` with initialized mesh, FE spaces and state fields.
         """
         if mesh is None:
             self.mesh = self.case.make_mesh(nx=nx, ny=ny)
@@ -133,6 +150,12 @@ class HuZhangDiscretization:
         自适应/换网格后重建 spaces/state。
         transfer(old_discr, new_discr, old_state, new_state) 可选：
         - 用于把 d / r_hist / H 从旧网格转移到新网格（并做 max 保不可逆）
+
+        Inputs:
+            new_mesh: Rebuilt mesh object.
+            transfer: Optional state transfer callback between old/new discretizations.
+        Output:
+            `self` after rebuild (and optional transfer).
         """
         old_discr = self.snapshot()
         old_state = self.state
@@ -150,6 +173,11 @@ class HuZhangDiscretization:
     def snapshot(self):
         """
         给 transfer / adaptivity 用的轻量快照（不复制大数组）。
+
+        Input:
+            None.
+        Output:
+            Dict containing mesh/space metadata references for transfer logic.
         """
         return dict(
             mesh=self.mesh,

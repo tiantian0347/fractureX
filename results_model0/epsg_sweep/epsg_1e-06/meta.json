@@ -1,0 +1,20 @@
+{
+  "case": "model0_circular_notch",
+  "p": 3,
+  "use_relaxation": true,
+  "mesh": {
+    "NN": 570,
+    "NE": 1580,
+    "NC": 1010
+  },
+  "material": {
+    "lam": 55.55555555555556,
+    "mu": 83.33333333333334,
+    "E": 200.0,
+    "nu": 0.2,
+    "Gc": 1.0,
+    "l0": 0.05
+  },
+  "timing_enabled": true,
+  "compute_linear_residual": true
+}

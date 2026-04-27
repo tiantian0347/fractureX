@@ -37,6 +37,7 @@
 ## 参考入口
 
 - 主说明： [README.md](README.md)
+- Hu-Zhang 混合元 + 相场架构（与纯 FEALPy 对照、中英双文）： [docs/HUZHANG_PHASEFIELD_ARCHITECTURE.md](docs/HUZHANG_PHASEFIELD_ARCHITECTURE.md) / [docs/HUZHANG_PHASEFIELD_ARCHITECTURE.en.md](docs/HUZHANG_PHASEFIELD_ARCHITECTURE.en.md)（结构变更后跑 `python3 scripts/verify_huzhang_docs.py`）
 - AI 指南： [​.github/copilot-instructions.md](.github/copilot-instructions.md)
 - 命名规范： [Develop_note.md](Develop_note.md)
 - 典型测试： [test/mesh/test_triangle_mesh.py](test/mesh/test_triangle_mesh.py)

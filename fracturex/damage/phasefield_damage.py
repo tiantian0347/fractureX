@@ -13,6 +13,14 @@ from fracturex.phasefield.crack_surface_density_function import CrackSurfaceDens
 
 
 def _material_lame_from_model(model) -> Tuple[float, float]:
+    """Infer Lamé parameters from a material-like object.
+
+    Input:
+        model: Object or dict containing `(lam, mu)` / `(lambda0, lambda1)`
+            or `(E, nu)`.
+    Output:
+        Tuple `(lam, mu)` as floats.
+    """
     if hasattr(model, "lam") and hasattr(model, "mu"):
         return float(model.lam), float(model.mu)
     if hasattr(model, "lambda0") and hasattr(model, "lambda1"):
@@ -38,6 +46,15 @@ def _material_lame_from_model(model) -> Tuple[float, float]:
 
 
 def _model_get(model, name: str, default=None):
+    """Get parameter from object/dict model with fallback.
+
+    Inputs:
+        model: Material object or dict.
+        name: Attribute/key name.
+        default: Fallback value if not found.
+    Output:
+        Resolved value or `default`.
+    """
     if hasattr(model, name):
         return getattr(model, name)
     if isinstance(model, dict) and name in model:
@@ -59,7 +76,9 @@ class PhaseFieldDamageModel(DamageModelBase):
     density_type: str = "AT2"
     degradation_type: str = "quadratic"
     split: str = "hybrid"         # "hybrid", "spectral", "isotropic"
-    eps_g: float = 1e-6
+    # How ψ^+ for history H is built in update_history_on_quadrature. Only "from_u" is implemented.
+    history_source: str = "from_u"
+    eps_g: float = 1e-10
     clamp_max: float = 0.999999
     debug: bool = False
 
@@ -72,6 +91,15 @@ class PhaseFieldDamageModel(DamageModelBase):
     _hfun: Optional[Any] = None
 
     def on_build(self, discr, state, case):
+        """Initialize model constants and internal helpers.
+
+        Inputs:
+            discr: Current discretization object.
+            state: Damage state view containing `d`, `H`, etc.
+            case: Case object providing material model.
+        Output:
+            None. Updates `self` constants and resets/initializes `state.H`.
+        """
         model = case.model()
 
         self.lam, self.mu = _material_lame_from_model(model)
@@ -95,14 +123,30 @@ class PhaseFieldDamageModel(DamageModelBase):
         # NEW: H is quadrature-history, not FE function
         state.H = None
 
+        if str(self.history_source).lower() not in ("from_u",):
+            raise NotImplementedError(
+                "PhaseFieldDamageModel.update_history_on_quadrature only implements history_source='from_u' "
+                f"(got {self.history_source!r})."
+            )
+
         if self.debug:
             print(
                 f"[PhaseFieldDamageModel] on_build: "
                 f"Gc={self.Gc}, l0={self.l0}, lam={self.lam}, mu={self.mu}, "
-                f"density={self.density_type}, degradation={self.degradation_type}, split={self.split}"
+                f"density={self.density_type}, degradation={self.degradation_type}, split={self.split}, "
+                f"history_source={self.history_source}"
             )
 
     def on_mesh_changed(self, old_discr, new_discr, old_state, new_state, case):
+        """Refresh damage parameters after remeshing.
+
+        Inputs:
+            old_discr/new_discr: Discretization objects before/after mesh change.
+            old_state/new_state: States before/after rebuild.
+            case: Case object with material model.
+        Output:
+            None. Rebinds material constants and clears `new_state.H`.
+        """
         model = case.model()
         self.lam, self.mu = _material_lame_from_model(model)
 
@@ -126,6 +170,15 @@ class PhaseFieldDamageModel(DamageModelBase):
     # elasticity degradation
     # ------------------------------------------------------------
     def coef_bary(self, state, bcs, index=None):
+        """Evaluate degradation coefficient `g(d)` at quadrature points.
+
+        Inputs:
+            state: Damage state view with nodal field `d`.
+            bcs: Barycentric quadrature points.
+            index: Optional cell indices.
+        Output:
+            Quadrature-wise degradation coefficient array with lower bound `eps_g`.
+        """
         dval = state.d(bcs, index=index)
         dval = bm.clip(dval, 0.0, self.clamp_max)
 
@@ -143,6 +196,13 @@ class PhaseFieldDamageModel(DamageModelBase):
     # crack density / degradation helpers
     # ------------------------------------------------------------
     def crack_density(self, d):
+        """Return crack density value h(d).
+
+        Input:
+            d: Damage variable array/scalar.
+        Output:
+            Crack density value and model constant from backend function.
+        """
         return self._hfun.density_function(d)
 
     def crack_density_grad(self, d):
@@ -152,6 +212,13 @@ class PhaseFieldDamageModel(DamageModelBase):
         return self._hfun.grad_grad_density_function(d)
 
     def degradation(self, d):
+        """Return energy degradation function g(d).
+
+        Input:
+            d: Damage variable array/scalar.
+        Output:
+            Degradation value g(d).
+        """
         return self._gfun.degradation_function(d)
 
     def degradation_grad(self, d):
@@ -172,6 +239,12 @@ class PhaseFieldDamageModel(DamageModelBase):
         bcs : quadrature barycentric points
         index : cell indices
         """
+        if str(self.history_source).lower() != "from_u":
+            raise NotImplementedError(
+                "Only history_source='from_u' is implemented (strain from u.grad_value). "
+                f"Got history_source={self.history_source!r}."
+            )
+
         grad_u = state.u.grad_value(bcs, index=index)               # (NC,NQ,GD,GD)
         strain = 0.5 * (grad_u + bm.swapaxes(grad_u, -2, -1))
 
@@ -214,6 +287,13 @@ class PhaseFieldDamageModel(DamageModelBase):
     # energy density
     # ------------------------------------------------------------
     def _isotropic_energy_density(self, strain):
+        """Compute isotropic elastic energy density from strain.
+
+        Input:
+            strain: Symmetric strain tensor array `(..., GD, GD)`.
+        Output:
+            Scalar energy density array `(...)`.
+        """
         lam = float(self.lam)
         mu = float(self.mu)
         tr = bm.einsum("...ii", strain)
@@ -222,6 +302,13 @@ class PhaseFieldDamageModel(DamageModelBase):
         return psi
 
     def _spectral_positive_energy_density(self, strain):
+        """Compute tensile part of spectral-split energy density.
+
+        Input:
+            strain: Symmetric strain tensor array `(..., GD, GD)`.
+        Output:
+            Positive energy density array used as history driving force.
+        """
         lam = float(self.lam)
         mu = float(self.mu)
 
@@ -234,12 +321,26 @@ class PhaseFieldDamageModel(DamageModelBase):
         return psi_plus
 
     def _macaulay_operation(self, alpha):
+        """Apply Macaulay split `<alpha>+` and `<alpha>-`.
+
+        Input:
+            alpha: Scalar/tensor-like backend array.
+        Output:
+            Tuple `(positive_part, negative_part)`.
+        """
         val = bm.abs(alpha)
         p = 0.5 * (alpha + val)
         m = 0.5 * (alpha - val)
         return p, m
 
     def _strain_pm_eig_decomposition(self, s):
+        """Eigen-split strain tensor into positive/negative parts.
+
+        Input:
+            s: Strain tensor array `(..., GD, GD)`.
+        Output:
+            Tuple `(s_plus, s_minus)` with same shape as `s`.
+        """
         w, v = bm.linalg.eigh(s)
         p, m = self._macaulay_operation(w)
 

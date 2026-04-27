@@ -10,6 +10,11 @@ Welcome to the fractureX, an open-source software package designed for the simul
 - **AI Techniques**: Incorporate artificial intelligence methods to enhance simulation efficiency.
 - **Open-Source**: Fully open-source, encouraging collaboration and contributions from the community.
 
+## Documentation
+
+- **FractureX overall introduction (Chinese)**: [docs/HUZHANG_PHASEFIELD_ARCHITECTURE.md](docs/HUZHANG_PHASEFIELD_ARCHITECTURE.md). This now covers repository architecture, technical routes, core abstractions, and keeps Hu–Zhang + phase-field as a key section.
+- **Hu–Zhang mixed element + phase-field focused version (English)**: [docs/HUZHANG_PHASEFIELD_ARCHITECTURE.en.md](docs/HUZHANG_PHASEFIELD_ARCHITECTURE.en.md).
+- After refactors, run `python3 scripts/verify_huzhang_docs.py` to ensure listed paths still exist.
 
 ## Contact
 

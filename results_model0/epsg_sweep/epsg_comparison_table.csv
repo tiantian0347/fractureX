@@ -1,0 +1,2 @@
+eps_g,n_load_steps,n_converged_steps,step_convergence_rate,total_wall_s,avg_step_s,avg_elastic_assemble_s,avg_elastic_solve_s,avg_phase_assemble_s,avg_phase_solve_s,avg_nonlinear_iters,reaction_force_final_abs,reaction_force_peak_abs,damage_max_final
+1e-06,31,31,1.0,227.14127358281985,7.326563962299617,1.3161462701466535,5.662678003551498,0.22991238152908702,0.03232309037458993,10.419354838709678,5.535125404885341e-05,11.099158040933927,1.0

@@ -13,6 +13,15 @@ class RunRecorder:
     """
 
     def __init__(self, outdir: str, *, save_npz: bool = True, save_every: int = 1):
+        """Create persistent run recorder.
+
+        Inputs:
+            outdir: Output directory path.
+            save_npz: Whether to save checkpoint `.npz` snapshots.
+            save_every: Save checkpoint every `save_every` load steps.
+        Output:
+            None. Creates output directories and initializes CSV headers.
+        """
         self.outdir = outdir
         self.save_npz = bool(save_npz)
         self.save_every = int(save_every)
@@ -24,11 +33,25 @@ class RunRecorder:
         self._iter_csv_header: list[str] | None = None
 
     def write_meta(self, meta: dict):
+        """Write run-level metadata to `meta.json`.
+
+        Input:
+            meta: Metadata dictionary.
+        Output:
+            None. Overwrites `meta.json`.
+        """
         path = os.path.join(self.outdir, "meta.json")
         with open(path, "w") as f:
             json.dump(meta, f, indent=2)
 
     def append_history(self, row: dict):
+        """Append one load-step record to `history.csv`.
+
+        Input:
+            row: Per-step metrics row.
+        Output:
+            None. Creates file/header on first call, then appends rows.
+        """
         # Keep a stable header from the first row
         if self._csv_header is None:
             self._csv_header = list(row.keys())
@@ -53,7 +76,13 @@ class RunRecorder:
         self.append_history(row)
 
     def append_iteration(self, row: dict):
-        """Append per-inner-iteration diagnostics."""
+        """Append one nonlinear-iteration diagnostics row.
+
+        Input:
+            row: Per-iteration metrics row.
+        Output:
+            None. Writes to `iterations.csv`.
+        """
         if self._iter_csv_header is None:
             self._iter_csv_header = list(row.keys())
             with open(self.iter_csv_path, "w", newline="") as f:
@@ -70,6 +99,15 @@ class RunRecorder:
                 w.writerow(out)
 
     def save_checkpoint(self, step: int, discr, state):
+        """Save checkpoint snapshot (`npz`) for current step.
+
+        Inputs:
+            step: Load step index.
+            discr: Discretization object (for mesh metadata).
+            state: Current FE state (`sigma`, `u`, `d`, `r_hist`, `H`).
+        Output:
+            None. Writes compressed checkpoint file when enabled.
+        """
         if (not self.save_npz) or (step % self.save_every != 0):
             return
         path = os.path.join(self.outdir, "checkpoints", f"step_{step:03d}.npz")

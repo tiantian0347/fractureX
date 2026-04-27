@@ -66,6 +66,16 @@ def reaction_from_sigma(
     - 用 face_to_cell() 找到该边属于哪个 cell 以及 local_face id
     - 对每个 local_face 分组：把 1D bcs 插入一个 0 得到三角形 face 的 2D barycentric
     - 在对应 cell 上评估 sigma，然后计算 traction 分量
+
+    Inputs:
+        mesh: FE mesh object.
+        sigma_fun: Stress evaluator callable in Voigt form `[sxx, sxy, syy]`.
+        threshold: Edge selector (callable/mask/index).
+        direction: Force component direction (`"x"` or `"y"`).
+        q: Face quadrature order.
+        sign: Sign convention multiplier.
+    Output:
+        Scalar reaction force in the selected direction.
     """
     direction = (direction or "y").lower()
     if direction not in ("x", "y"):
@@ -123,7 +133,18 @@ def reaction_from_sigma(
 
         # --- fallback: compute all cells then slice ---
         if sig is None:
-            sig_all = bm.asarray(sigma_fun(bcsi))   # (NC,NQ,3)
+            NC = int(mesh.number_of_cells())
+            try:
+                sig_all = bm.asarray(sigma_fun(bcsi, index=bm.arange(NC)))   # (NC,NQ,3)
+            except Exception:
+                sig_all = bm.asarray(sigma_fun(bcsi))
+
+            # Some callable wrappers may still return shape (1,NQ,3).
+            # Expand to all cells so slicing by global cell ids is safe.
+            if sig_all.ndim >= 1 and int(sig_all.shape[0]) == 1 and NC > 1:
+                reps = [NC] + [1] * (sig_all.ndim - 1)
+                sig_all = bm.tile(sig_all, reps)
+
             sig = sig_all[cell_idx, ...]            # (nflag,NQ,3)
             
         sxx = sig[..., 0]
@@ -144,7 +165,17 @@ def reaction_from_sigma(
 
 
 def reaction_vector_from_sigma(mesh, sigma_fun, threshold, *, q: int = 5, sign: float = 1.0):
-    """一次性返回 (Rx, Ry)。"""
+    """Return reaction vector components `(Rx, Ry)`.
+
+    Inputs:
+        mesh: FE mesh object.
+        sigma_fun: Stress evaluator callable.
+        threshold: Edge selector.
+        q: Face quadrature order.
+        sign: Sign convention multiplier.
+    Output:
+        Tuple `(Rx, Ry)` as floats.
+    """
     Rx = reaction_from_sigma(mesh, sigma_fun, threshold, direction="x", q=q, sign=sign)
     Ry = reaction_from_sigma(mesh, sigma_fun, threshold, direction="y", q=q, sign=sign)
     return Rx, Ry

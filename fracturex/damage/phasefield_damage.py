@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Optional, Tuple
+import warnings
 
 from fealpy.backend import backend_manager as bm
 
@@ -127,6 +128,13 @@ class PhaseFieldDamageModel(DamageModelBase):
             raise NotImplementedError(
                 "PhaseFieldDamageModel.update_history_on_quadrature only implements history_source='from_u' "
                 f"(got {self.history_source!r})."
+            )
+        if str(self.split).lower() == "hybrid":
+            warnings.warn(
+                "PhaseFieldDamageModel split='hybrid' currently reuses the same positive "
+                "energy implementation as 'spectral'.",
+                RuntimeWarning,
+                stacklevel=2,
             )
 
         if self.debug:

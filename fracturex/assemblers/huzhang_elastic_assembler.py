@@ -112,6 +112,7 @@ class HuZhangElasticAssembler:
         self._neumann_data_raw: Any = None
         self._neumann_uh_sig: Optional[Any] = None
         self._neumann_is_bd: Optional[Any] = None
+        self._sigma_essential_mask_cache = {}
 
     def begin_load_step(self, load: float) -> None:
         """
@@ -449,8 +450,7 @@ class HuZhangElasticAssembler:
         ).tocsr()
         return TM.T @ Bc
 
-    @staticmethod
-    def apply_sigma_essential_to_system(A, F, uh_sigma, isBd_sigma, gdof_sigma: int):
+    def apply_sigma_essential_to_system(self, A, F, uh_sigma, isBd_sigma, gdof_sigma: int):
         """
         把 σ 的本质边界值（uh_sigma, isBd_sigma）扩展到全系统并消元。
         这段就是你之前脚本里那段通用逻辑的封装版。
@@ -470,10 +470,17 @@ class HuZhangElasticAssembler:
         F[isbd_global] = uh_global[isbd_global]
 
         # A modification
-        bdIdx = np.zeros(total, dtype=int)
-        bdIdx[isbd_global] = 1
-        Tbd = spdiags(bdIdx, 0, total, total)
-        T = spdiags(1 - bdIdx, 0, total, total)
+        isbd_key = np.asarray(isbd_global, dtype=np.bool_).tobytes()
+        cache_key = (int(total), isbd_key)
+        cached = self._sigma_essential_mask_cache.get(cache_key)
+        if cached is None:
+            bdIdx = np.zeros(total, dtype=int)
+            bdIdx[isbd_global] = 1
+            Tbd = spdiags(bdIdx, 0, total, total)
+            T = spdiags(1 - bdIdx, 0, total, total)
+            self._sigma_essential_mask_cache[cache_key] = (T, Tbd)
+        else:
+            T, Tbd = cached
         A = T @ A @ T + Tbd
 
         return A, F

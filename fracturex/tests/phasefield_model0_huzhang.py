@@ -81,6 +81,9 @@ def main() -> None:
     release_elastic_iterative_only = False
     use_fast_coarse_test = False  # True 仅用于提速冒烟，不用于结果对比
     eps_g = 1e-6
+    # Phase subproblem: GMRES/LGMRES without preconditioner (A x = b).
+    # Can also be enabled by env: FRACTUREX_PHASE_GMRES_NOPREC=1
+    use_phase_gmres_no_precond = os.environ.get("FRACTUREX_PHASE_GMRES_NOPREC", "0") == "1"
 
     # Verbose progress inside solve_huzhang_block_gmres_auxspace (see linear_solvers._auxspace_log).
     if release_elastic_iterative_only:
@@ -103,12 +106,16 @@ def main() -> None:
     print(f"elastic_formulation = {elastic_formulation}")
     print(f"release_elastic_iterative_only = {release_elastic_iterative_only}")
     print(f"use_fast_coarse_test= {use_fast_coarse_test}")
+    print(f"use_phase_gmres_no_precond = {use_phase_gmres_no_precond}")
     print(f"performance_mode   = {performance_mode}")
     print(f"material l0         = {mat.l0}")
     print(f"mesh hmin           = {hmin}")
     print(f"eps_g               = {eps_g}")
 
-    outdir = "results_model0/standard_elastic_direct"
+    disable_step_cache = os.environ.get("FRACTUREX_DISABLE_LOADSTEP_CACHE", "0") == "1"
+    solver_tag = "direct" if (use_direct_solver and not release_elastic_iterative_only) else "iterative"
+    cache_tag = "cache_off" if disable_step_cache else "cache_on"
+    outdir = f"results_model0/{elastic_formulation}_{solver_tag}_{cache_tag}"
     tag = f"epsg_{eps_g:.0e}"
     print(f"\n===== running case: {tag} =====")
 
@@ -191,7 +198,11 @@ def main() -> None:
             tol=1e-5,
             maxit=1000,
             elastic_solver=elastic_solver,
-            phase_solver=HuZhangPhaseFieldStaggeredDriver._default_spsolve,
+            phase_solver=(
+                HuZhangPhaseFieldStaggeredDriver._default_lgmres
+                if use_phase_gmres_no_precond
+                else HuZhangPhaseFieldStaggeredDriver._default_spsolve
+            ),
             compute_linear_residual=True,
             debug=False,
             timing=True,
@@ -206,6 +217,11 @@ def main() -> None:
             phase_assembler=phase_assembler,
             tol=1e-5,
             maxit=1000,
+            phase_solver=(
+                HuZhangPhaseFieldStaggeredDriver._default_lgmres
+                if use_phase_gmres_no_precond
+                else HuZhangPhaseFieldStaggeredDriver._default_spsolve
+            ),
             debug=False,
             timing=True,
             recorder=recorder,
@@ -229,9 +245,13 @@ def main() -> None:
         outdir=os.path.join(outdir, tag),
         total_wall_s=total_wall_s,
         solver_mode=(
-            f"{elastic_formulation}:direct/spsolve"
+            f"{elastic_formulation}:direct/"
+            f"{'phase_lgmres_no_precond' if use_phase_gmres_no_precond else 'phase_spsolve'}"
             if use_direct_solver and not release_elastic_iterative_only
-            else f"{elastic_formulation}:mixed/iterative"
+            else (
+                f"{elastic_formulation}:mixed/"
+                f"{'phase_lgmres_no_precond' if use_phase_gmres_no_precond else 'phase_default'}"
+            )
         ),
         history_source=str(damage.history_source),
     )

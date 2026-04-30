@@ -11,6 +11,7 @@ import numpy as np
 from scipy.sparse.linalg import spsolve, lgmres
 
 from fealpy.backend import backend_manager as bm
+from fealpy.mesh import TriangleMesh
 from fealpy.utils import timer
 
 from fracturex.cases.base import CaseBase
@@ -19,6 +20,10 @@ from fracturex.damage.base import DamageStateView, DamageModelBase
 from fracturex.assemblers.huzhang_elastic_assembler import HuZhangElasticAssembler
 from fracturex.assemblers.phasefield_assembler import PhaseFieldAssembler
 from fracturex.postprocess.reaction import reaction_from_sigma
+from fracturex.utilfuc.vtk_lagrange_writer import (
+    sample_fields_for_lagrange_triangle,
+    write_lagrange_triangle_vtu,
+)
 
 
 @dataclass
@@ -849,3 +854,247 @@ class HuZhangPhaseFieldStaggeredDriver:
                 print(f"[vtk] H_cell output failed: {e}")
 
         mesh.to_vtk(fname=fname)
+
+    @staticmethod
+    def _reference_triangle_subdivision(level: int):
+        """
+        Build reference-triangle sampling points and sub-triangle connectivity.
+
+        Parameters
+        ----------
+        level : int
+            Subdivision level per edge. level=1 means no subdivision.
+
+        Returns
+        -------
+        bcs : (Np, 3)
+            Barycentric coordinates on the reference triangle.
+        subcell : (Nsub, 3)
+            Connectivity of reference sub-triangles using local point indices.
+        """
+        level = int(max(level, 1))
+        idx_map = {}
+        bcs = []
+        cursor = 0
+        for i in range(level + 1):
+            for j in range(level + 1 - i):
+                k = level - i - j
+                bcs.append([i / level, j / level, k / level])
+                idx_map[(i, j)] = cursor
+                cursor += 1
+        bcs = np.asarray(bcs, dtype=float)
+
+        subcell = []
+        for i in range(level):
+            for j in range(level - i):
+                v0 = idx_map[(i, j)]
+                v1 = idx_map[(i + 1, j)]
+                v2 = idx_map[(i, j + 1)]
+                subcell.append([v0, v1, v2])
+                if j < level - i - 1:
+                    v3 = idx_map[(i + 1, j + 1)]
+                    subcell.append([v1, v3, v2])
+        subcell = np.asarray(subcell, dtype=np.int64)
+        return bcs, subcell
+
+    @staticmethod
+    def _eval_on_cells(fun, bcs, NC: int):
+        """Evaluate FE function on all cells at given barycentric points."""
+        val = fun(bm.asarray(bcs), index=bm.arange(NC))
+        val = np.asarray(val)
+        if val.ndim == 3 and val.shape[1] == 1:
+            val = val[:, 0, ...]
+        return val
+
+    def save_vtkfile_highorder(self, fname: str, *, vis_order: int = 4, sigma_eval=None):
+        """
+        Export high-order visualization by intra-cell resampling + sub-triangulation.
+
+        This writes a linear VTU mesh built from sampled points inside each original
+        triangle, so ParaView can show smooth high-order variation without requiring
+        high-order VTK cell support.
+
+        Parameters
+        ----------
+        fname : str
+            Output VTU path.
+        vis_order : int, optional
+            Subdivision level per original cell edge. Higher value gives richer detail.
+        sigma_eval : optional
+            Optional stress evaluator (defaults to current state stress function).
+        """
+        os.makedirs(os.path.dirname(fname), exist_ok=True)
+
+        mesh = self.discr.mesh
+        state = self.discr.state
+        if state is None:
+            raise RuntimeError("Discretization state is empty; cannot export VTK.")
+
+        cell = np.asarray(mesh.entity("cell"), dtype=np.int64)
+        node = np.asarray(mesh.entity("node"), dtype=float)
+        if cell.ndim != 2 or cell.shape[1] != 3:
+            raise NotImplementedError("save_vtkfile_highorder currently supports 2D triangles only.")
+
+        NC = int(mesh.number_of_cells())
+        GD = int(mesh.geo_dimension())
+
+        bcs, subcell_ref = self._reference_triangle_subdivision(vis_order)
+        Np = int(bcs.shape[0])
+        Nsub = int(subcell_ref.shape[0])
+
+        v0 = node[cell[:, 0], :]
+        v1 = node[cell[:, 1], :]
+        v2 = node[cell[:, 2], :]
+        p0 = bcs[:, 0][None, :, None]
+        p1 = bcs[:, 1][None, :, None]
+        p2 = bcs[:, 2][None, :, None]
+        xyz = p0 * v0[:, None, :] + p1 * v1[:, None, :] + p2 * v2[:, None, :]
+        node_vis = xyz.reshape(NC * Np, GD)
+
+        offset = (np.arange(NC, dtype=np.int64)[:, None] * Np)
+        cell_vis = (subcell_ref[None, :, :] + offset[:, None, :]).reshape(NC * Nsub, 3)
+
+        vis_mesh = TriangleMesh(bm.asarray(node_vis), bm.asarray(cell_vis))
+
+        sigma_fun = sigma_eval if sigma_eval is not None else state.sigma
+
+        # Evaluate fields on each sampled point in each original cell.
+        try:
+            d_samp = self._eval_on_cells(state.d, bcs, NC).reshape(-1)
+            vis_mesh.nodedata["damage"] = bm.asarray(d_samp)
+        except Exception as e:
+            print(f"[vtk-highorder] damage sampling failed: {e}")
+
+        try:
+            u_samp = self._eval_on_cells(state.u, bcs, NC)
+            if u_samp.ndim == 2:
+                u_samp = u_samp[:, :, None]
+            u_flat = u_samp.reshape(-1, u_samp.shape[-1])
+            vis_mesh.nodedata["uh"] = bm.asarray(u_flat)
+            vis_mesh.nodedata["ux"] = bm.asarray(u_flat[:, 0])
+            if u_flat.shape[1] > 1:
+                vis_mesh.nodedata["uy"] = bm.asarray(u_flat[:, 1])
+            if u_flat.shape[1] > 2:
+                vis_mesh.nodedata["uz"] = bm.asarray(u_flat[:, 2])
+            vis_mesh.nodedata["u_norm"] = bm.asarray(np.linalg.norm(u_flat, axis=1))
+        except Exception as e:
+            print(f"[vtk-highorder] displacement sampling failed: {e}")
+
+        try:
+            sig_samp = self._eval_on_cells(sigma_fun, bcs, NC)
+            if sig_samp.ndim == 2:
+                sig_samp = sig_samp[:, :, None]
+            sig_flat = sig_samp.reshape(-1, sig_samp.shape[-1])
+            vis_mesh.nodedata["sigma_node"] = bm.asarray(sig_flat)
+            if sig_flat.shape[1] >= 3:
+                vis_mesh.nodedata["sigxx"] = bm.asarray(sig_flat[:, 0])
+                vis_mesh.nodedata["sigxy"] = bm.asarray(sig_flat[:, 1])
+                vis_mesh.nodedata["sig2"] = bm.asarray(sig_flat[:, 2])
+                s1, svm = self._voigt2d_principal_and_vm(bm.asarray(sig_flat[:, :3]))
+                vis_mesh.nodedata["s1"] = s1
+                vis_mesh.nodedata["svm"] = svm
+        except Exception as e:
+            print(f"[vtk-highorder] stress sampling failed: {e}")
+
+        # Keep quadrature-history output as cell quantity on original mesh if available.
+        if state.H is not None:
+            try:
+                H_cell = np.mean(np.asarray(state.H), axis=1).reshape(-1)
+                vis_mesh.celldata["H_cell_parent"] = bm.asarray(np.repeat(H_cell, Nsub))
+            except Exception as e:
+                print(f"[vtk-highorder] H_cell projection failed: {e}")
+
+        vis_mesh.to_vtk(fname=fname)
+
+    def save_vtkfile_lagrange(
+        self,
+        fname: str,
+        *,
+        order: int = 3,
+        sigma_eval=None,
+        fallback_linear: bool = True,
+        fallback_vis_order: Optional[int] = None,
+        always_write_fallback: bool = False,
+    ):
+        """
+        Export VTU using native VTK_LAGRANGE_TRIANGLE high-order cells.
+
+        Parameters
+        ----------
+        fname : str
+            Output VTU path.
+        order : int, optional
+            Lagrange order of output cells (>=1).
+        sigma_eval : optional
+            Optional stress evaluator; defaults to current state stress function.
+        fallback_linear : bool, optional
+            If True, write a linear sub-triangulated fallback VTU when Lagrange
+            export fails.
+        fallback_vis_order : int, optional
+            Subdivision order used by fallback writer. Defaults to max(2, order+1).
+        always_write_fallback : bool, optional
+            If True, always write fallback VTU in addition to Lagrange VTU.
+        """
+        state = self.discr.state
+        if state is None:
+            raise RuntimeError("Discretization state is empty; cannot export VTK.")
+
+        sigma_fun = sigma_eval if sigma_eval is not None else state.sigma
+        sampled = sample_fields_for_lagrange_triangle(
+            mesh=self.discr.mesh,
+            order=order,
+            field_specs=(
+                ("damage", state.d),
+                ("uh", state.u),
+                ("sigma_node", sigma_fun),
+            ),
+        )
+
+        # Derived fields for convenient ParaView coloring.
+        if sampled["uh"].ndim == 2 and sampled["uh"].shape[1] >= 2:
+            u = sampled["uh"]
+            sampled["ux"] = u[:, 0]
+            sampled["uy"] = u[:, 1]
+            sampled["u_norm"] = np.linalg.norm(u[:, :2], axis=1)
+            if u.shape[1] > 2:
+                sampled["uz"] = u[:, 2]
+        if sampled["sigma_node"].ndim == 2 and sampled["sigma_node"].shape[1] >= 3:
+            sig = sampled["sigma_node"][:, :3]
+            sampled["sigxx"] = sig[:, 0]
+            sampled["sigxy"] = sig[:, 1]
+            sampled["sig2"] = sig[:, 2]
+            s1, svm = self._voigt2d_principal_and_vm(bm.asarray(sig))
+            sampled["s1"] = np.asarray(s1)
+            sampled["svm"] = np.asarray(svm)
+
+        lag_ok = False
+        lag_err = None
+        try:
+            write_lagrange_triangle_vtu(
+                fname=fname,
+                mesh=self.discr.mesh,
+                order=order,
+                point_data=sampled,
+            )
+            lag_ok = True
+        except Exception as e:
+            lag_err = e
+            print(f"[vtk-lagrange] export failed: {e}")
+
+        need_fallback = bool(always_write_fallback or (fallback_linear and (not lag_ok)))
+        if need_fallback:
+            vis_order = int(max(1, fallback_vis_order if fallback_vis_order is not None else max(2, order + 1)))
+            root, ext = os.path.splitext(fname)
+            ext = ext or ".vtu"
+            fallback_name = f"{root}.fallback_linear_o{vis_order}{ext}"
+            self.save_vtkfile_highorder(
+                fallback_name,
+                vis_order=vis_order,
+                sigma_eval=sigma_eval,
+            )
+            if lag_ok:
+                print(f"[vtk-lagrange] fallback also written: {fallback_name}")
+            else:
+                print(f"[vtk-lagrange] fallback written due to lagrange failure: {fallback_name}")
+                if lag_err is not None:
+                    print(f"[vtk-lagrange] original error: {lag_err}")

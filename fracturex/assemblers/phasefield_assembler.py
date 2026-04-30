@@ -61,6 +61,7 @@ class PhaseFieldAssembler:
         # Per load-step: phase-field Dirichlet descriptor and quadrature pre-warm.
         self._load_step_value: Optional[float] = None
         self._pf_bcdata_cache: Any = None
+        self._pf_bcdof_cache: Any = None
 
     def begin_load_step(self, load: float) -> None:
         """
@@ -75,6 +76,7 @@ class PhaseFieldAssembler:
             self._pf_bcdata_cache = case.phasefield_dirichlet_data(load)
         else:
             self._pf_bcdata_cache = None
+        self._pf_bcdof_cache = self._resolve_phase_dirichlet_bc(self._pf_bcdata_cache)
         discr = self.discr
         if discr is None or discr.space_d is None or discr.mesh is None:
             return
@@ -351,15 +353,14 @@ class PhaseFieldAssembler:
 
         if self._load_step_value is not None and float(load) == float(self._load_step_value) and self._pf_bcdata_cache is not None:
             bcdata = self._pf_bcdata_cache
+            bcdata_resolved = self._pf_bcdof_cache
         else:
             bcdata = case.phasefield_dirichlet_data(load)
+            bcdata_resolved = self._resolve_phase_dirichlet_bc(bcdata)
         if bcdata is None:
             return A, F
 
-        if isinstance(bcdata, dict):
-            bcdata = [bcdata]
-
-        for item in bcdata:
+        for item in bcdata_resolved:
             if "bcdof" not in item or "value" not in item:
                 raise ValueError(
                     "phasefield_dirichlet_data(load) must return dict(s) with keys {'bcdof','value'}."
@@ -368,3 +369,33 @@ class PhaseFieldAssembler:
             A, F = bc.apply(A, F)
 
         return A, F
+
+    def _resolve_phase_dirichlet_bc(self, bcdata):
+        """Resolve phase Dirichlet threshold descriptors to concrete DOF indices."""
+        if bcdata is None:
+            return None
+        if isinstance(bcdata, dict):
+            bc_items = [bcdata]
+        else:
+            bc_items = bcdata
+
+        space = self.discr.space_d
+        ip = space.interpolation_points()
+        resolved = []
+        for item in bc_items:
+            if "bcdof" not in item or "value" not in item:
+                raise ValueError(
+                    "phasefield_dirichlet_data(load) must return dict(s) with keys {'bcdof','value'}."
+                )
+            thr = item["bcdof"]
+            if callable(thr):
+                mask = bm.asarray(thr(ip)).astype(bm.bool)
+                bcdof = bm.where(mask)[0]
+            else:
+                arr = bm.asarray(thr)
+                if getattr(arr, "dtype", None) == bm.bool:
+                    bcdof = bm.where(arr)[0]
+                else:
+                    bcdof = arr
+            resolved.append({"bcdof": bcdof, "value": item["value"]})
+        return resolved

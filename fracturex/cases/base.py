@@ -44,7 +44,9 @@ class CaseBase:
     """
 
     name: str = "case"
-    output_enabled: bool = True
+    # Per-step VTK is written only when the driver has a resolved output_dir
+    # (see fracturex.postprocess.run_paths); keep False to avoid results/ clashes.
+    output_enabled: bool = False
 
     # --- mesh / model ---
     def make_mesh(self, **kwargs):

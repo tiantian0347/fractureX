@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
+import os
 import numpy as np
 
 from fracturex.cases.square_tension_precrack import SquareTensionPreCrackCase
@@ -110,8 +111,11 @@ def main():
 	print("max(H) =", float(np.max(cast(Any, state.H)[:])) if state.H is not None else 0.0)
 	
 	# 保存VTK来可视化
-	driver._save_vtkfile("results/test_domain_precrack_final.vtu", cell_mode="mean")
-	print("\nVTK file saved to: results/test_domain_precrack_final.vtu")
+	from fracturex.postprocess.run_paths import phasefield_tag_dir, vtk_dir
+	tag_dir = phasefield_tag_dir(case.name, "test_domain_precrack", eps_g=1e-6, mkdir=True)
+	vtk_path = os.path.join(vtk_dir(tag_dir), "final.vtu")
+	driver._save_vtkfile(vtk_path, cell_mode="mean")
+	print(f"\nVTK file saved to: {vtk_path}")
 	
 	# 额外调试：检查预裂纹线上的d值
 	print("\n===== pre-crack line d values (debugging) =====")

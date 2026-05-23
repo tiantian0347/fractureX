@@ -33,13 +33,15 @@ HuZhangDiscretization (mesh + FE spaces + HuZhangState)
 HuZhangPhaseFieldStaggeredDriver (load steps + staggered iteration + optional record/timing)
         │
         ├── elastic_solver(A, F)   # default SciPy spsolve; override with GMRES/FEALPy etc.
-        ├── phase_solver(A, F)
+        ├── phase_solver(A, F)     # default no-preconditioner LGMRES
         │
         ▼
 RunRecorder / reaction (CSV, NPZ, reactions)
 ```
 
 **Principles**: the **Case** only describes physics and boundaries; **Discretization** only manages mesh and DOFs; **Assemblers** only build algebraic systems from `state` + `case`; the **Driver** sequences load steps and staggered iteration and calls solvers.
+
+**Performance tuning**: optional **cell parallel assembly**, **`TMᵀ M TM`** block products, overlapped **effective-stress `B2`** branches, batched **history** updates, **`FRACTUREX_PROFILE_HISTORY_UPDATE`**, and **VTK high-order sampling** defaults are documented in **§5.5** / **§3.5** (Chinese **§7.1**). Treat **`save_vtkfile_highorder`** sampling time as **post-processing only**, not core solve benchmarks.
 
 ---
 
@@ -108,6 +110,8 @@ Conceptual steps:
 
 **`begin_load_step(load)`**: caches `phasefield_dirichlet_data(load)` and warms quadrature data to avoid repeated case queries in the same load step.
 
+**History update performance**: Step 2 is dominated by large tensor work (`grad_u`, spectral split, `maximum`, etc.). When **`assembly_parallel`** is enabled on `PhaseFieldAssembler`, Step 2 uses **batched cell-parallel** updates by default (override with **`FRACTUREX_HISTORY_UPDATE_PARALLEL=0`**). Compare with BLAS/OpenMP thread settings if scalability is unclear; optional wall-clock line per call: **`FRACTUREX_PROFILE_HISTORY_UPDATE=1`** (§5.5).
+
 ### 3.6 Boundary conditions: `fracturex/boundarycondition/huzhang_boundary_condition.py`
 
 - From `CaseBase.isD_bd` and the mesh, build **Neumann stress edge** sets (`build_isNedge_from_isD`) for the Hu–Zhang space.
@@ -131,7 +135,7 @@ Conceptual steps:
 | Parameter | Meaning |
 |-----------|---------|
 | `tol`, `maxit` | Staggered outer tolerance and max iterations |
-| `elastic_solver`, `phase_solver` | Injectable `(A, F) -> x` or `(x, info)`; default `spsolve` |
+| `elastic_solver`, `phase_solver` | Injectable `(A, F) -> x` or `(x, info)`; defaults: elastic `spsolve`, phase no-preconditioner `lgmres` |
 | `compute_linear_residual` | Whether to record linear residual of the last solve |
 | `debug`, `timing` | Debug and FEALPy `timer` tags |
 | `recorder` | `RunRecorder` (below) |
@@ -178,15 +182,29 @@ Block **ILU-preconditioned GMRES**, **block Krylov** (optional FEALPy `gmres`/`m
 ### 5.3 Elastic formulation in assembly
 
 - **`formulation="standard"`** vs **`"effective_stress"`** (see `HuZhangElasticAssembler` docstring and code).
+- **Mutually exclusive degradation placement**: `standard` puts **g(d)** on the stress block **M**; `effective_stress` puts **g(d)** on the coupling block **B** — never both at once.
 
 ### 5.4 Solvers
 
-- **Default**: SciPy **`spsolve`** for both elastic and phase-field.
+- **Default**: elastic uses SciPy **`spsolve`**; phase-field uses no-preconditioner SciPy **`lgmres`**.
 - **Extensions**: pass custom **`elastic_solver` / `phase_solver`** to `HuZhangPhaseFieldStaggeredDriver` (e.g. FEALPy Krylov, `solve_huzhang_block_gmres_auxspace` from this repo).
+- **GMRES preconditioners** (`linear_solvers.py`): pass the same **`elastic_formulation`** as the assembler, plus **`damage`** and **`state`** when using weighted coarse diffusion. **`weighted_aux=True`** applies **g(d)²** on the P1 coarse Laplacian only for **`standard`**; for **`effective_stress`** the coarse Laplacian stays unweighted and damage enters via the Schur block from **B(d)**. See `docs/HUZHANG_INTERFACE_TEST_MANUAL.md` §3 (Chinese).
+- **Standard Schur**: for fixed \(d_h\), \(\mathcal K_h=[[A(d_h),B^\top],[B,0]]\), \(S(d_h)=B A(d_h)^{-1}B^\top\); code builds \(\widehat S=B\,\mathrm{diag}(A)^{-1}B^\top\) and approximates \(B_A\), \(B_S\) (manual §3.0).
 
-### 5.5 Environment variables (aux-space, etc.)
+### 5.5 Environment variables (aux-space, assembly parallel, history profiling)
 
-Some iterative solvers and preconditioners can emit detailed logs via env vars (e.g. `FRACTUREX_AUXSPACE_DEBUG`; see `linear_solvers._auxspace_log` and related comments). For external communication: **switchable Krylov + preconditioning and detailed logs** for reproducibility.
+| Variable | Role |
+|----------|------|
+| **`FRACTUREX_ASSEMBLY_PARALLEL`** | When `1` / `true` / `yes` / `on`, enables **cell-chunk parallel assembly** where implemented: `HuZhangElasticAssembler` (e.g. standard `M(d)` block), `PhaseFieldAssembler` (`A_const`, `A_hist`, RHS), and **`effective_stress`** B2-related blocks. Assembler kwargs `assembly_parallel` / `assembly_nproc` override the env defaults when set. |
+| **`FRACTUREX_ASSEMBLY_NPROC`** | Cap on worker threads (positive integer); defaults toward available CPUs if unset. |
+| **`FRACTUREX_PROFILE_HISTORY_UPDATE`** | When enabled, `PhaseFieldAssembler.assemble` prints one line per **`update_history_on_quadrature`** call (`wall_s`, `NC`, `NQ`, `split`) for quick comparisons across meshes and thread settings. |
+| **`FRACTUREX_HISTORY_UPDATE_PARALLEL`** | If `0` / `false` / `off`, forces a **serial** quadrature history update even when **`assembly_parallel`** is on (A/B testing). Otherwise history uses **batched cell-parallel** threads when assembly parallel is enabled (via `PhaseFieldAssembler` kwargs). |
+| **`FRACTUREX_VTK_HIGHORDER_PARALLEL`** | Chunk-parallel FE sampling inside **`save_vtkfile_highorder`**; **default on** (`1`). Set `0` to disable. This cost is **visualization-only** and should **not** be folded into core staggered-solve / assembly timings in papers. |
+| **`FRACTUREX_AUXSPACE_DEBUG`** (and related) | Iterative solvers / aux-space preconditioners may emit detailed logs (see `linear_solvers._auxspace_log` and related comments). |
+
+**Also when `assembly_parallel` is on**: **standard** elasticity builds **`M2 = TMᵀ M TM`** with **column-block parallel sparse matmul** (two stages, fallback on failure); **effective-stress** **`B2`** overlaps **g·div assembly + `TMᵀ·`** with the **∇g correction** branch on **two threads**.
+
+For reproducibility and tuning: combine **switchable Krylov + preconditioning**, the env flags above, and optional **history profiling**; compare batched history updates vs. BLAS-only parallelism if needed.
 
 ---
 
@@ -218,7 +236,7 @@ FractureX does **not** replace FEALPy; it adds a **domain layer** on top. Rough 
 | `HuZhangStressIntegrator` / `HuZhangMixIntegrator` | Inside `HuZhangElasticAssembler` via `BilinearForm` |
 | `BilinearForm` / `LinearForm` / `DirichletBC` | Elastic and phase-field assembly and BCs |
 | `backend_manager as bm` | Tensor/mesh entity conventions match FEALPy |
-| `spsolve` or `fealpy.solver.*` | Injected `elastic_solver` / `phase_solver` in `HuZhangPhaseFieldStaggeredDriver`; this repo’s `fracturex/utilfuc/linear_solvers.py` adds block Krylov, aux-space, etc. |
+| `spsolve`, `lgmres`, or `fealpy.solver.*` | Injected `elastic_solver` / `phase_solver` in `HuZhangPhaseFieldStaggeredDriver`; this repo’s `fracturex/utilfuc/linear_solvers.py` adds block Krylov, aux-space, etc. |
 
 **Relation to the non–Hu–Zhang phase-field main line**: `fracturex/phasefield/main_solve.py` targets **standard displacement–Lagrange phase field**, while **`HuZhangPhaseFieldStaggeredDriver` + `HuZhangDiscretization`** form a **mixed + phase-field** stack. They can be read side by side but are not interchangeable as one `main` class.
 
@@ -228,7 +246,7 @@ FractureX does **not** replace FEALPy; it adds a **domain layer** on top. Rough 
 
 ## 9. English/Chinese sync and maintenance
 
-- **English (this file)** and **Chinese** [HUZHANG_PHASEFIELD_ARCHITECTURE.md](HUZHANG_PHASEFIELD_ARCHITECTURE.md) are maintained with the **same section structure**.
+- **English (this file)** and **Chinese** [HUZHANG_PHASEFIELD_ARCHITECTURE.md](HUZHANG_PHASEFIELD_ARCHITECTURE.md) are maintained **in sync on substance** (section numbering differs; Chinese **§7.1** ↔ English **§3.5** history notes + **§5.5** env table).
 - **Automated check (not auto-generated prose)**: from the repo root run  
   `python scripts/verify_huzhang_docs.py`  
   to verify that **key source paths** listed in the script still exist. When you **add or move modules**, update both `.md` files and the manifest at the top of the script.

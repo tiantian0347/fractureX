@@ -1,0 +1,9 @@
+# Runtime dependencies for fractureX (Hu-Zhang + phase-field).
+# Installed by: pip install -e .
+#
+# FEALPy is NOT listed here — install it separately first (see README).
+
+numpy>=1.20,<3
+scipy>=1.7
+matplotlib>=3.5
+pyamg>=5.0

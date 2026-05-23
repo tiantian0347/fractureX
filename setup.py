@@ -42,7 +42,8 @@ setup(
     zip_safe=False,
     extras_require={
         "doc": ["sphinx", "sphinx-rtd-theme"],  # Documentation dependencies
-        "dev": ["pytest", "pytest-cov"],  # Development dependencies
+        "dev": ["pytest", "pytest-cov", "ipdb"],
+        "direct": ["pypardiso"],  # optional Intel MKL PARDISO (MUMPS: install separately)
         # Add any optional dependencies here
     },
     include_package_data=True,

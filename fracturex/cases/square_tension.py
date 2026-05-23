@@ -26,8 +26,9 @@ class SquareTensionCase(CaseBase):
     # mesh options
     nx: int = 16
     ny: int = 16
-    with_fracture: bool = False   # use TriangleMesh.from_square_domain_with_fracture
-    refine: int = 0               # uniform refine times for fracture mesh
+    # Legacy geometric notch mesh; prefer SquareTensionPreCrackCase for Hu-Zhang (corner issues).
+    with_fracture: bool = False
+    refine: int = 0
 
     # debug
     debug_mesh: bool = False

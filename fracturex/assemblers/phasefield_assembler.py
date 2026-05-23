@@ -4,9 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Dict
+import os
+import time
+from concurrent.futures import ThreadPoolExecutor
+import numpy as np
+from scipy.sparse import coo_matrix
 
 from fealpy.backend import backend_manager as bm
 from fealpy.decorator import barycentric
+from fealpy.sparse.csr_tensor import CSRTensor
 from fealpy.fem import (
     BilinearForm,
     LinearForm,
@@ -25,6 +31,319 @@ class PhaseFieldSystem:
     meta: Dict[str, Any]
 
 
+def _default_assembly_nproc() -> int:
+    return max(1, int(os.cpu_count() or 1))
+
+
+def _bl_integrator_coef(integ: Any):
+    return getattr(integ, "coef", getattr(integ, "c", None))
+
+
+def _source_integrand(src_int: Any):
+    return getattr(src_int, "source", getattr(src_int, "f", None))
+
+
+def _space_ldof(space) -> int:
+    if hasattr(space, "number_of_local_dofs"):
+        return int(space.number_of_local_dofs())
+    return int(space.dof.number_of_local_dofs())
+
+
+def _to_numpy_float_array(val: Any) -> np.ndarray:
+    if isinstance(val, (int, float, np.integer, np.floating)):
+        return np.array(float(val), dtype=np.float64)
+    return np.asarray(bm.to_numpy(val), dtype=np.float64)
+
+
+def _coef_at_quadrature(mesh, coef: Any, bcs, index_sl) -> Any:
+    """Evaluate coefficient at quadrature points (FEALPy-style callable rules)."""
+    if coef is None:
+        return None
+    if callable(coef):
+        if hasattr(coef, "coordtype"):
+            ct = getattr(coef, "coordtype")
+            if ct == "cartesian":
+                ps = mesh.bc_to_point(bcs, index=index_sl)
+                val = coef(ps)
+            elif ct == "barycentric":
+                val = coef(bcs, index=index_sl)
+            else:
+                ps = mesh.bc_to_point(bcs, index=index_sl)
+                val = coef(ps)
+        else:
+            ps = mesh.bc_to_point(bcs, index=index_sl)
+            val = coef(ps)
+    else:
+        val = coef
+    if isinstance(val, (int, float, np.integer, np.floating)):
+        return float(val)
+    return _to_numpy_float_array(val)
+
+
+def _cell_quadrature(mesh, q: int):
+    """Return cell quadrature points/weights without triggering FEALPy deprecation warnings."""
+    if hasattr(mesh, "quadrature_formula"):
+        qf = mesh.quadrature_formula(int(q), "cell")
+    else:
+        qf = mesh.integrator(int(q), "cell")
+    return qf.get_quadrature_points_and_weights()
+
+
+def _as_q_cell_values(values: Any, *, nc: int, nq: int, name: str) -> np.ndarray:
+    """Normalize coefficient samples to FEALPy's legacy quadrature layout: (NQ, NC)."""
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim >= 3 and arr.shape[-1] == 1:
+        arr = arr[..., 0]
+    if arr.shape == (nq, nc):
+        return arr
+    if arr.shape == (nc, nq):
+        return arr.T
+    if arr.shape == (1, nq):
+        return np.broadcast_to(arr.T, (nq, nc))
+    if arr.shape == (nq, 1):
+        return np.broadcast_to(arr, (nq, nc))
+    if arr.shape == (1, nc):
+        return np.broadcast_to(arr, (nq, nc))
+    if arr.shape == (nc, 1):
+        return np.broadcast_to(arr.T, (nq, nc))
+    raise ValueError(f"Unsupported {name} shape {arr.shape}, expected (NQ, NC) or (NC, NQ).")
+
+
+def _phi_grad_nq_nc_ld(space, bcs, index_sl, nc: int) -> np.ndarray:
+    phi_g = bm.asarray(space.grad_basis(bcs, index=index_sl))
+    phi_c = np.asarray(bm.to_numpy(_as_cell_first(phi_g, nc)), dtype=np.float64)
+    return np.transpose(phi_c, (1, 0, 2, 3))
+
+
+def _phi_basis_nq_nc_ld(space, bcs, index_sl, nc: int) -> np.ndarray:
+    phi_b = bm.asarray(space.basis(bcs, index=index_sl))
+    phi_c = np.asarray(bm.to_numpy(_as_cell_first(phi_b, nc)), dtype=np.float64)
+    return np.transpose(phi_c, (1, 0, 2))
+
+
+def _explicit_scalar_diffusion_cell(space, coef: Any, q: int, index_sl, out_cm: np.ndarray) -> None:
+    mesh = space.mesh
+    cellmeasure = np.asarray(bm.to_numpy(mesh.entity_measure("cell", index=index_sl)), dtype=np.float64)
+    nc = int(cellmeasure.shape[0])
+    bcs, ws = _cell_quadrature(mesh, int(q))
+    ws = np.asarray(bm.to_numpy(ws), dtype=np.float64)
+    nq = int(ws.shape[0])
+    phi_q = _phi_grad_nq_nc_ld(space, bcs, index_sl, nc)
+
+    if coef is None:
+        out_cm += np.einsum("q,qcid,qcjd,c->cij", ws, phi_q, phi_q, cellmeasure, optimize=True)
+        return
+
+    cvals = _coef_at_quadrature(mesh, coef, bcs, index_sl)
+    if isinstance(cvals, float):
+        out_cm += cvals * np.einsum("q,qcid,qcjd,c->cij", ws, phi_q, phi_q, cellmeasure, optimize=True)
+        return
+
+    cvals = np.asarray(cvals, dtype=np.float64)
+    if cvals.shape == (nc,):
+        out_cm += np.einsum("q,c,qcid,qcjd,c->cij", ws, cvals, phi_q, phi_q, cellmeasure, optimize=True)
+    elif cvals.ndim == 2:
+        c_qc = _as_q_cell_values(cvals, nc=nc, nq=nq, name="diffusion coef")
+        out_cm += np.einsum("q,qc,qcid,qcjd,c->cij", ws, c_qc, phi_q, phi_q, cellmeasure, optimize=True)
+    else:
+        GD = int(phi_q.shape[-1])
+        if cvals.shape == (GD, GD):
+            out_cm += np.einsum("q,dn,qcin,qcjd,c->cij", ws, cvals, phi_q, phi_q, cellmeasure, optimize=True)
+        elif cvals.ndim == 3 and cvals.shape[-2:] == (GD, GD):
+            out_cm += np.einsum("q,cdn,qcin,qcjd,c->cij", ws, cvals, phi_q, phi_q, cellmeasure, optimize=True)
+        elif cvals.ndim == 4:
+            if cvals.shape[:2] == (nc, nq):
+                cvals = np.transpose(cvals, (1, 0, 2, 3))
+            out_cm += np.einsum("q,qcdn,qcin,qcjd,c->cij", ws, cvals, phi_q, phi_q, cellmeasure, optimize=True)
+        else:
+            raise ValueError(f"Unsupported diffusion coef shape {cvals.shape}")
+
+
+def _explicit_scalar_mass_cell(space, coef: Any, q: int, index_sl, out_cm: np.ndarray) -> None:
+    mesh = space.mesh
+    cellmeasure = np.asarray(bm.to_numpy(mesh.entity_measure("cell", index=index_sl)), dtype=np.float64)
+    nc = int(cellmeasure.shape[0])
+    bcs, ws = _cell_quadrature(mesh, int(q))
+    ws = np.asarray(bm.to_numpy(ws), dtype=np.float64)
+    nq = int(ws.shape[0])
+    phi_q = _phi_basis_nq_nc_ld(space, bcs, index_sl, nc)
+
+    if coef is None:
+        out_cm += np.einsum("q,qci,qcj,c->cij", ws, phi_q, phi_q, cellmeasure, optimize=True)
+        return
+
+    cvals = _coef_at_quadrature(mesh, coef, bcs, index_sl)
+    if isinstance(cvals, float):
+        out_cm += cvals * np.einsum("q,qci,qcj,c->cij", ws, phi_q, phi_q, cellmeasure, optimize=True)
+        return
+
+    cvals = np.asarray(cvals, dtype=np.float64)
+    if cvals.shape == (nc,):
+        out_cm += np.einsum("q,c,qci,qcj,c->cij", ws, cvals, phi_q, phi_q, cellmeasure, optimize=True)
+    else:
+        c_qc = _as_q_cell_values(cvals, nc=nc, nq=nq, name="mass coef")
+        out_cm += np.einsum("q,qc,qci,qcj,c->cij", ws, c_qc, phi_q, phi_q, cellmeasure, optimize=True)
+
+
+def _explicit_scalar_source_cell(space, f: Any, q: int, index_sl, out_bb: np.ndarray) -> None:
+    mesh = space.mesh
+    cellmeasure = np.asarray(bm.to_numpy(mesh.entity_measure("cell", index=index_sl)), dtype=np.float64)
+    nc = int(cellmeasure.shape[0])
+    bcs, ws = _cell_quadrature(mesh, int(q))
+    ws = np.asarray(bm.to_numpy(ws), dtype=np.float64)
+    nq = int(ws.shape[0])
+    phi_q = _phi_basis_nq_nc_ld(space, bcs, index_sl, nc)
+
+    val = _coef_at_quadrature(mesh, f, bcs, index_sl)
+    if isinstance(val, float):
+        out_bb += val * np.einsum("q,qci,c->ci", ws, phi_q, cellmeasure, optimize=True)
+        return
+
+    val = np.asarray(val, dtype=np.float64)
+    if val.shape == (nc,):
+        out_bb += np.einsum("q,c,qci,c->ci", ws, val, phi_q, cellmeasure, optimize=True)
+    else:
+        val_qc = _as_q_cell_values(val, nc=nc, nq=nq, name="source value")
+        out_bb += np.einsum("q,qc,qci,c->ci", ws, val_qc, phi_q, cellmeasure, optimize=True)
+
+
+def _call_scalar_integrator_cell_matrix(integrator, space, index_sl, out_cm: np.ndarray, *, accumulate: bool) -> None:
+    fn = getattr(integrator, "assembly_cell_matrix", None)
+    if fn is None:
+        raise AttributeError("assembly_cell_matrix")
+    mesh = space.mesh
+    cm = np.asarray(bm.to_numpy(mesh.entity_measure("cell", index=index_sl)), dtype=np.float64)
+    last_err: Optional[BaseException] = None
+    for thunk in (
+        lambda: fn(space, index=index_sl, out=out_cm, cellmeasure=cm),
+        lambda: fn(space, index=index_sl, cellmeasure=cm, out=out_cm),
+        lambda: fn(space, index=index_sl, out=out_cm),
+    ):
+        try:
+            thunk()
+            return
+        except TypeError as e:
+            last_err = e
+    try:
+        R = fn(space, index=index_sl)
+        R = np.asarray(R, dtype=out_cm.dtype)
+        if accumulate:
+            out_cm += R
+        else:
+            out_cm[:] = R
+    except Exception as e:
+        raise TypeError(f"assembly_cell_matrix incompatible: {last_err!r}; return fallbacks failed: {e!r}") from e
+
+
+def _call_scalar_integrator_cell_vector(integrator, space, index_sl, out_bb: np.ndarray) -> None:
+    fn = getattr(integrator, "assembly_cell_vector", None)
+    if fn is None:
+        raise AttributeError("assembly_cell_vector")
+    mesh = space.mesh
+    cm = np.asarray(bm.to_numpy(mesh.entity_measure("cell", index=index_sl)), dtype=np.float64)
+    last_err: Optional[BaseException] = None
+    for thunk in (
+        lambda: fn(space, index=index_sl, out=out_bb, cellmeasure=cm),
+        lambda: fn(space, index=index_sl, cellmeasure=cm, out=out_bb),
+        lambda: fn(space, index=index_sl, out=out_bb),
+    ):
+        try:
+            thunk()
+            return
+        except TypeError as e:
+            last_err = e
+    try:
+        R = fn(space, index=index_sl)
+        R = np.asarray(R, dtype=out_bb.dtype)
+        out_bb += R
+    except Exception as e:
+        raise TypeError(f"assembly_cell_vector incompatible: {last_err!r}; return fallbacks failed: {e!r}") from e
+
+
+def _assemble_phase_aconst_chunk(args):
+    """Cell-slice assembly for diffusion + mass_coef1 (A_const block)."""
+    space, diff_int, mass_int, i0, i1 = args
+    sl = slice(int(i0), int(i1))
+    nc = int(i1) - int(i0)
+    ldof = int(_space_ldof(space))
+    ftype = np.dtype(np.float64)
+    if hasattr(space, "ftype"):
+        ftype = np.dtype(space.ftype)
+    CM = np.zeros((nc, ldof, ldof), dtype=ftype)
+    try:
+        _call_scalar_integrator_cell_matrix(diff_int, space, sl, CM, accumulate=False)
+        _call_scalar_integrator_cell_matrix(mass_int, space, sl, CM, accumulate=True)
+    except (AttributeError, TypeError, ValueError):
+        CM.fill(0)
+        qd = diff_int.q if getattr(diff_int, "q", None) is not None else space.p + 1
+        qm = mass_int.q if getattr(mass_int, "q", None) is not None else space.p + 1
+        _explicit_scalar_diffusion_cell(space, _bl_integrator_coef(diff_int), int(qd), sl, CM)
+        _explicit_scalar_mass_cell(space, _bl_integrator_coef(mass_int), int(qm), sl, CM)
+
+    cell2dof = np.asarray(space.cell_to_dof()[sl], dtype=np.int64)
+    I = np.broadcast_to(cell2dof[:, :, None], (nc, ldof, ldof)).reshape(-1)
+    J = np.broadcast_to(cell2dof[:, None, :], (nc, ldof, ldof)).reshape(-1)
+    V = np.asarray(CM.reshape(-1), dtype=np.float64)
+    return I, J, V
+
+
+def _assemble_phase_rhs_chunk(args):
+    """Cell-slice assembly for ScalarSourceIntegrator."""
+    space, src_int, i0, i1 = args
+    sl = slice(int(i0), int(i1))
+    nc = int(i1) - int(i0)
+    ldof = int(_space_ldof(space))
+    ftype = np.dtype(np.float64)
+    if hasattr(space, "ftype"):
+        ftype = np.dtype(space.ftype)
+    bb = np.zeros((nc, ldof), dtype=ftype)
+    try:
+        _call_scalar_integrator_cell_vector(src_int, space, sl, bb)
+    except (AttributeError, TypeError, ValueError):
+        bb.fill(0)
+        qp = src_int.q if getattr(src_int, "q", None) is not None else space.p + 3
+        _explicit_scalar_source_cell(space, _source_integrand(src_int), int(qp), sl, bb)
+
+    c2d = np.asarray(space.cell_to_dof()[sl], dtype=np.int64)
+    return np.asarray(bb, dtype=np.float64), c2d
+
+
+def _assemble_scalar_mass_chunk(args):
+    phi_chunk, coef_chunk, ws, cm_chunk, cell2dof_chunk = args
+    phi_chunk = bm.asarray(phi_chunk)
+    coef_chunk = bm.asarray(coef_chunk)
+    ws = bm.asarray(ws)
+    cm_chunk = bm.asarray(cm_chunk)
+    cell2dof_chunk = bm.asarray(cell2dof_chunk)
+    local = bm.einsum("q,c,cq,cql,cqm->clm", ws, cm_chunk, coef_chunk, phi_chunk, phi_chunk)
+    nc, ldof = int(local.shape[0]), int(local.shape[1])
+    I = bm.broadcast_to(cell2dof_chunk[:, :, None], (nc, ldof, ldof)).reshape(-1)
+    J = bm.broadcast_to(cell2dof_chunk[:, None, :], (nc, ldof, ldof)).reshape(-1)
+    V = local.reshape(-1)
+    return (
+        bm.to_numpy(I).astype(np.int64, copy=False),
+        bm.to_numpy(J).astype(np.int64, copy=False),
+        bm.to_numpy(V).astype(np.float64, copy=False),
+    )
+
+
+def _as_cell_first(arr, nc: int):
+    """Normalize FEALPy arrays to cell-first layout: (NC, ...).
+
+    FEALPy may return one template slice as (1,NQ,...), implicitly broadcast to all NC cells.
+    """
+    arr = bm.asarray(arr)
+    if arr.ndim < 2:
+        raise ValueError(f"Expected tensor with ndim>=2, got shape={arr.shape}, nc={nc}.")
+    if int(arr.shape[0]) == nc:
+        return arr
+    if int(arr.shape[1]) == nc:
+        return bm.moveaxis(arr, 1, 0)
+    if int(arr.shape[0]) == 1 and nc > 1:
+        return bm.broadcast_to(arr, (nc,) + tuple(int(s) for s in arr.shape[1:]))
+    raise ValueError(f"Cannot infer cell axis for shape={arr.shape}, nc={nc}.")
+
+
 class PhaseFieldAssembler:
     """
     Quadrature-history version of phase-field assembler.
@@ -35,7 +354,17 @@ class PhaseFieldAssembler:
       3) assemble phase-field system using state.H directly as (NC,NQ)
     """
 
-    def __init__(self, discr, case, damage, *, q: Optional[int] = None, debug: bool = False):
+    def __init__(
+        self,
+        discr,
+        case,
+        damage,
+        *,
+        q: Optional[int] = None,
+        debug: bool = False,
+        assembly_parallel: Optional[bool] = None,
+        assembly_nproc: Optional[int] = None,
+    ):
         """Create phase-field assembler with quadrature-history formulation.
 
         Inputs:
@@ -52,6 +381,14 @@ class PhaseFieldAssembler:
         self.damage = damage
         self.q = q
         self.debug = bool(debug)
+        env_parallel = str(os.getenv("FRACTUREX_ASSEMBLY_PARALLEL", "")).strip().lower() in ("1", "true", "yes", "on")
+        self.assembly_parallel = env_parallel if assembly_parallel is None else bool(assembly_parallel)
+        env_nproc = os.getenv("FRACTUREX_ASSEMBLY_NPROC")
+        try:
+            env_nproc_val = int(env_nproc) if env_nproc is not None else _default_assembly_nproc()
+        except (TypeError, ValueError):
+            env_nproc_val = _default_assembly_nproc()
+        self.assembly_nproc = max(1, env_nproc_val if assembly_nproc is None else int(assembly_nproc))
         self._phase_initial_damage_applied = False
         self._quad_cache = None
         self._quad_cache_key = None
@@ -121,13 +458,31 @@ class PhaseFieldAssembler:
         # ----------------------------------------------------------
         # update quadrature-history H on exactly the same quadrature
         # ----------------------------------------------------------
+        _prof_hist = str(os.getenv("FRACTUREX_PROFILE_HISTORY_UPDATE", "")).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        if _prof_hist:
+            t_hist0 = time.perf_counter()
         damage.update_history_on_quadrature(
             discr=discr,
             state=state,
             case=case,
             bcs=bcs,
             index=index,
+            parallel=self.assembly_parallel,
+            nproc=self.assembly_nproc,
         )
+        if _prof_hist:
+            dt_hist = time.perf_counter() - t_hist0
+            nc = int(discr.mesh.number_of_cells())
+            nq = int(state.H.shape[1]) if state.H is not None and state.H.ndim >= 2 else -1
+            print(
+                "[PhaseFieldAssembler] update_history_on_quadrature "
+                f"wall_s={dt_hist:.4e} NC={nc} NQ={nq} split={getattr(damage, 'split', '')}"
+            )
 
         if state.H is None:
             raise RuntimeError("state.H is None after update_history_on_quadrature.")
@@ -178,31 +533,49 @@ class PhaseFieldAssembler:
         if cacheable_aconst and self._aconst_cache is not None and self._aconst_cache_key == aconst_key:
             A_const = self._aconst_cache
         else:
-            bform_const = BilinearForm(space)
-            bform_const.add_integrator(
-                ScalarDiffusionIntegrator(coef=diff_coef, q=q),
-                ScalarMassIntegrator(coef=mass_coef1, q=q),
-            )
-            A_const = bform_const.assembly()
+            diff_int = ScalarDiffusionIntegrator(coef=diff_coef, q=q)
+            mass_int = ScalarMassIntegrator(coef=mass_coef1, q=q)
+            if self.assembly_parallel:
+                try:
+                    A_const = self._assemble_A_const_parallel(space, diff_int, mass_int)
+                except Exception as exc:
+                    print(f"[PhaseFieldAssembler] parallel A_const assembly failed, fallback to serial: {exc}")
+                    bform_const = BilinearForm(space)
+                    bform_const.add_integrator(
+                        ScalarDiffusionIntegrator(coef=diff_coef, q=q),
+                        ScalarMassIntegrator(coef=mass_coef1, q=q),
+                    )
+                    A_const = bform_const.assembly()
+            else:
+                bform_const = BilinearForm(space)
+                bform_const.add_integrator(
+                    ScalarDiffusionIntegrator(coef=diff_coef, q=q),
+                    ScalarMassIntegrator(coef=mass_coef1, q=q),
+                )
+                A_const = bform_const.assembly()
             if cacheable_aconst:
                 self._aconst_cache_key = aconst_key
                 self._aconst_cache = A_const
 
-        bform_hist = BilinearForm(space)
-        bform_hist.add_integrator(
-            ScalarMassIntegrator(coef=mass_coef2, q=q),
-        )
-        A_hist = bform_hist.assembly()
+        A_hist = self._assemble_A_hist(space, q, mass_coef2)
         A = A_const + A_hist
 
         # ----------------------------------------------------------
         # assemble rhs
         # ----------------------------------------------------------
-        lform = LinearForm(space)
-        lform.add_integrator(
-            ScalarSourceIntegrator(source=source_coef, q=q)
-        )
-        rhs = lform.assembly()
+        src_int = ScalarSourceIntegrator(source=source_coef, q=q)
+        if self.assembly_parallel:
+            try:
+                rhs = self._assemble_rhs_parallel(space, src_int)
+            except Exception as exc:
+                print(f"[PhaseFieldAssembler] parallel RHS assembly failed, fallback to serial: {exc}")
+                lform = LinearForm(space)
+                lform.add_integrator(ScalarSourceIntegrator(source=source_coef, q=q))
+                rhs = lform.assembly()
+        else:
+            lform = LinearForm(space)
+            lform.add_integrator(src_int)
+            rhs = lform.assembly()
 
         # residual / increment form: A dd = rhs - A d_old
         F = rhs - A @ d_old[:]
@@ -242,6 +615,97 @@ class PhaseFieldAssembler:
         )
 
         return PhaseFieldSystem(A=A, F=F, decode=decode, meta=meta)
+
+    def _assemble_A_const_parallel(self, space, diff_int: ScalarDiffusionIntegrator, mass_int: ScalarMassIntegrator):
+        mesh = self.discr.mesh
+        nc = int(mesh.number_of_cells())
+        gdof = int(space.number_of_global_dofs())
+        nproc = min(int(self.assembly_nproc), nc)
+        if nproc <= 1 or nc < 2:
+            I, J, V = _assemble_phase_aconst_chunk((space, diff_int, mass_int, 0, nc))
+        else:
+            edges = np.linspace(0, nc, nproc + 1, dtype=int)
+            tasks = []
+            for k in range(nproc):
+                i0, i1 = int(edges[k]), int(edges[k + 1])
+                if i1 <= i0:
+                    continue
+                tasks.append((space, diff_int, mass_int, i0, i1))
+            workers = min(int(self.assembly_nproc), len(tasks))
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+                parts = list(pool.map(_assemble_phase_aconst_chunk, tasks))
+            I = np.concatenate([p[0] for p in parts], axis=0)
+            J = np.concatenate([p[1] for p in parts], axis=0)
+            V = np.concatenate([p[2] for p in parts], axis=0)
+        A_sp = coo_matrix((V, (I, J)), shape=(gdof, gdof)).tocsr()
+        return CSRTensor.from_scipy(A_sp)
+
+    def _assemble_rhs_parallel(self, space, src_int: ScalarSourceIntegrator):
+        mesh = self.discr.mesh
+        nc = int(mesh.number_of_cells())
+        gdof = int(space.number_of_global_dofs())
+        rhs = np.zeros((gdof,), dtype=np.float64)
+        nproc = min(int(self.assembly_nproc), nc)
+        if nproc <= 1 or nc < 2:
+            bb, c2d = _assemble_phase_rhs_chunk((space, src_int, 0, nc))
+            np.add.at(rhs, c2d, bb)
+        else:
+            edges = np.linspace(0, nc, nproc + 1, dtype=int)
+            tasks = []
+            for k in range(nproc):
+                i0, i1 = int(edges[k]), int(edges[k + 1])
+                if i1 <= i0:
+                    continue
+                tasks.append((space, src_int, i0, i1))
+            workers = min(int(self.assembly_nproc), len(tasks))
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+                parts = list(pool.map(_assemble_phase_rhs_chunk, tasks))
+            for bb, c2d in parts:
+                np.add.at(rhs, c2d, bb)
+        return rhs
+
+    def _assemble_A_hist(self, space, q: int, coef_callable):
+        if self.assembly_parallel:
+            try:
+                return self._assemble_A_hist_parallel(space, q, coef_callable)
+            except Exception as exc:
+                print(f"[PhaseFieldAssembler] parallel A_hist assembly failed, fallback to serial: {exc}")
+        bform_hist = BilinearForm(space)
+        bform_hist.add_integrator(ScalarMassIntegrator(coef=coef_callable, q=q))
+        return bform_hist.assembly()
+
+    def _assemble_A_hist_parallel(self, space, q: int, coef_callable):
+        mesh = self.discr.mesh
+        qf = mesh.quadrature_formula(q, "cell")
+        bcs, ws = qf.get_quadrature_points_and_weights()
+        ws = bm.asarray(ws)
+        cm = bm.asarray(mesh.entity_measure("cell"))
+        cell2dof = bm.asarray(space.cell_to_dof())
+        nc = int(cell2dof.shape[0])
+        phi = _as_cell_first(bm.asarray(space.basis(bcs)), nc)
+        coef = _as_cell_first(bm.asarray(coef_callable(bcs, index=bm.arange(nc))), nc)
+
+        nproc = min(int(self.assembly_nproc), nc)
+        if nproc <= 1 or nc < 2:
+            I, J, V = _assemble_scalar_mass_chunk((phi, coef, ws, cm, cell2dof))
+        else:
+            edges = np.linspace(0, nc, nproc + 1, dtype=int)
+            tasks = []
+            for k in range(nproc):
+                i0, i1 = int(edges[k]), int(edges[k + 1])
+                if i1 <= i0:
+                    continue
+                tasks.append((phi[i0:i1], coef[i0:i1], ws, cm[i0:i1], cell2dof[i0:i1]))
+            workers = min(int(self.assembly_nproc), len(tasks))
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+                parts = list(pool.map(_assemble_scalar_mass_chunk, tasks))
+            I = np.concatenate([p[0] for p in parts], axis=0)
+            J = np.concatenate([p[1] for p in parts], axis=0)
+            V = np.concatenate([p[2] for p in parts], axis=0)
+
+        gdof = int(space.number_of_global_dofs())
+        A_sp = coo_matrix((V, (I, J)), shape=(gdof, gdof)).tocsr()
+        return CSRTensor.from_scipy(A_sp)
 
     def _get_quadrature_data(self, q: int):
         """Cache cell quadrature points/indices for fixed mesh and order."""
@@ -365,9 +829,65 @@ class PhaseFieldAssembler:
                 raise ValueError(
                     "phasefield_dirichlet_data(load) must return dict(s) with keys {'bcdof','value'}."
                 )
-            bc = DirichletBC(space, gd=item["value"], threshold=item["bcdof"])
-            A, F = bc.apply(A, F)
+            A, F = self._apply_phase_dirichlet_by_dof(A, F, bcdof=item["bcdof"], value=item["value"])
 
+        return A, F
+
+    def _apply_phase_dirichlet_by_dof(self, A, F, bcdof, value):
+        """Apply Dirichlet elimination for explicit dof-index boundary set.
+
+        This path avoids sparse triple-products like `T @ A @ T + Tbd`.
+        We enforce BC by directly modifying matrix rows/columns in sparse format.
+        """
+        if hasattr(A, "to_scipy"):
+            A = A.to_scipy().tocsr(copy=True)
+        else:
+            A = A.tocsr(copy=True)
+        F = np.asarray(F, dtype=float).reshape(-1)
+
+        idx = np.asarray(bcdof, dtype=np.int64).reshape(-1)
+        if idx.size == 0:
+            return A, F
+        idx = np.unique(idx)
+
+        gdof = int(A.shape[0])
+        if np.any(idx < 0) or np.any(idx >= gdof):
+            raise ValueError(f"Dirichlet dof index out of range [0, {gdof}): {idx}.")
+        ip = bm.asarray(self.discr.space_d.interpolation_points())
+        pts = ip[idx]
+        if callable(value):
+            vals = np.asarray(bm.asarray(value(pts)), dtype=float).reshape(-1)
+        else:
+            vals = np.asarray(value, dtype=float).reshape(-1)
+
+        if vals.size == 1:
+            vals = np.full(idx.shape[0], float(vals[0]), dtype=float)
+        elif vals.size == gdof:
+            vals = vals[idx]
+        elif vals.size != idx.shape[0]:
+            raise ValueError(f"Dirichlet value shape mismatch: got {vals.size}, expect 1, gdof({gdof}) or len(bcdof)({idx.shape[0]}).")
+
+        # Residual correction from known Dirichlet values:
+        # F <- F - A[:, idx] * vals
+        # then overwrite boundary rhs with prescribed values.
+        F = F - A[:, idx] @ vals
+        F[idx] = vals
+
+        # Zero constrained columns first (for all rows), using CSC for fast column access.
+        A_csc = A.tocsc(copy=False)
+        for j in idx:
+            p0, p1 = A_csc.indptr[j], A_csc.indptr[j + 1]
+            if p1 > p0:
+                A_csc.data[p0:p1] = 0.0
+        A = A_csc.tocsr(copy=False)
+
+        # Zero constrained rows and set unit diagonal to enforce d = value on boundary dofs.
+        for i in idx:
+            p0, p1 = A.indptr[i], A.indptr[i + 1]
+            if p1 > p0:
+                A.data[p0:p1] = 0.0
+            A[i, i] = 1.0
+        A.eliminate_zeros()
         return A, F
 
     def _resolve_phase_dirichlet_bc(self, bcdata):

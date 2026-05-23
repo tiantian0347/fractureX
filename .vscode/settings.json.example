@@ -1,0 +1,30 @@
+{
+    "python.defaultInterpreterPath": "${env:HOME}/venv_fealpy3/bin/python",
+    "python.terminal.activateEnvironment": true,
+    "python.linting.enabled": true,
+    "python.linting.pylintEnabled": false,
+    "python.formatting.provider": "black",
+    "[python]": {
+        "editor.formatOnSave": false,
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+        }
+    },
+    "terminal.integrated.inheritEnv": false,
+    "terminal.integrated.env.osx": {
+        "VIRTUAL_ENV": "${env:HOME}/venv_fealpy3",
+        "PATH": "${env:HOME}/venv_fealpy3/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/usr/bin:/bin:/usr/sbin:/sbin:${env:HOME}/.local/bin",
+        "CONDA_AUTO_ACTIVATE_BASE": "false"
+    },
+    "terminal.integrated.profiles.osx": {
+        "fealpy zsh (no conda rc)": {
+            "path": "/bin/zsh",
+            "args": ["-f"],
+            "icon": "terminal-bash",
+            "env": {
+                "PROMPT": "%F{cyan}venv_fealpy3%f %~ %# "
+            }
+        }
+    },
+    "terminal.integrated.defaultProfile.osx": "fealpy zsh (no conda rc)"
+}

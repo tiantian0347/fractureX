@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 
 
 # VTK enum for high-order triangle cell.
 VTK_LAGRANGE_TRIANGLE = 69
+VTK_QUAD = 9
+VTK_HEXAHEDRON = 12
 
 
 def _triangle_lagrange_barycentric_order(order: int) -> np.ndarray:
@@ -95,7 +97,9 @@ def write_lagrange_triangle_vtu(
     - `point_data` arrays must have shape (NC * Np,) or (NC * Np, ncomp), where
       Np=(order+1)*(order+2)//2.
     """
-    os.makedirs(os.path.dirname(fname), exist_ok=True)
+    d = os.path.dirname(fname)
+    if d:
+        os.makedirs(d, exist_ok=True)
 
     order = int(order)
     if order < 1:
@@ -214,16 +218,338 @@ def sample_fields_for_lagrange_triangle(
     """
     order = int(order)
     bcs = _triangle_lagrange_barycentric_order(order)
+    npts = (order + 1) * (order + 2) // 2
     NC = int(mesh.number_of_cells())
     out: Dict[str, np.ndarray] = {}
     for name, fun in field_specs:
         raw = fun(bcs, index=np.arange(NC, dtype=np.int64))
         arr = np.asarray(raw)
         if arr.ndim == 3:
-            arr = arr.reshape(NC * arr.shape[1], arr.shape[2])
+            if arr.shape[0] == NC and arr.shape[1] == npts:
+                arr = arr.reshape(NC * npts, arr.shape[2])
+            elif arr.shape[0] == npts and arr.shape[1] == NC:
+                arr = np.transpose(arr, (1, 0, 2)).reshape(NC * npts, arr.shape[2])
+            else:
+                arr = arr.reshape(NC * arr.shape[1], arr.shape[2])
         elif arr.ndim == 2:
-            arr = arr.reshape(NC * arr.shape[1])
+            if arr.shape[0] == NC and arr.shape[1] == npts:
+                arr = arr.reshape(NC * npts)
+            elif arr.shape[0] == npts and arr.shape[1] == NC:
+                arr = arr.T.reshape(NC * npts)
+            elif arr.shape[0] == NC * npts:
+                pass
+            else:
+                raise ValueError(
+                    f"Unsupported 2D sampled shape for field {name}: {arr.shape}, "
+                    f"expected ({NC}, {npts}), ({npts}, {NC}), or ({NC * npts}, *)"
+                )
+        elif arr.ndim == 1:
+            if arr.size != NC * npts:
+                raise ValueError(
+                    f"Unsupported 1D sampled shape for field {name}: {arr.shape}, "
+                    f"expected total size {NC * npts}"
+                )
         else:
             raise ValueError(f"Unsupported sampled shape for field {name}: {arr.shape}")
+        if arr.shape[0] != NC * npts:
+            raise ValueError(
+                f"Field `{name}` first dimension mismatch: expected {NC * npts}, got {arr.shape[0]}"
+            )
         out[name] = arr
     return out
+
+
+def _interval_lagrange_barycentric(order: int) -> np.ndarray:
+    """
+    1D reference Lagrange nodes as fealpy-style barycentric pairs (lambda0, lambda1),
+    degree ``order`` (same convention as ``Mesh.multi_index_matrix(p, 1) / p``).
+    """
+    p = int(order)
+    if p < 1:
+        raise ValueError(f"order must be >= 1, got {order}")
+    ldof = p + 1
+    multi_index = np.zeros((ldof, 2), dtype=np.float64)
+    multi_index[:, 0] = np.arange(p, -1, -1, dtype=np.float64)
+    multi_index[:, 1] = p - multi_index[:, 0]
+    return multi_index / float(p)
+
+
+def sample_fields_tensor_product_fe(
+    *,
+    mesh,
+    order: int,
+    cell_dim: int,
+    field_specs: Iterable[Tuple[str, object]],
+) -> Dict[str, np.ndarray]:
+    """
+    Sample scalar / vector FE functions on a tensor product of 1D Lagrange nodes
+    (per cell), matching fealpy ``QuadrangleMesh`` / ``HexahedronMesh`` shape
+    evaluation with ``bc = (line, line[, line])``.
+
+    Parameters
+    ----------
+    mesh
+        Quadrilateral (``cell_dim == 2``) or hexahedral (``cell_dim == 3``) mesh.
+    order : int
+        Polynomial degree ``p`` (number of 1D nodes = ``p + 1``).
+    cell_dim : int
+        2 for quads, 3 for hexes.
+    field_specs : iterable of (name, fe_function)
+        Each ``fe_function`` must support ``fun(bcs, index=...)`` with tuple ``bcs``.
+    """
+    order = int(order)
+    line = _interval_lagrange_barycentric(order)
+    if cell_dim == 2:
+        bcs = (line, line)
+        npts = (order + 1) ** 2
+    elif cell_dim == 3:
+        bcs = (line, line, line)
+        npts = (order + 1) ** 3
+    else:
+        raise ValueError("cell_dim must be 2 or 3")
+
+    nc = int(mesh.number_of_cells())
+    idx = np.arange(nc, dtype=np.int64)
+    out: Dict[str, np.ndarray] = {}
+    for name, fun in field_specs:
+        raw = fun(bcs, index=idx)
+        arr = np.asarray(raw)
+        if arr.ndim == 3:
+            if arr.shape[0] == nc and arr.shape[1] == npts:
+                arr = arr.reshape(nc * npts, arr.shape[2])
+            elif arr.shape[0] == npts and arr.shape[1] == nc:
+                arr = np.transpose(arr, (1, 0, 2)).reshape(nc * npts, arr.shape[2])
+            else:
+                arr = arr.reshape(nc * arr.shape[1], arr.shape[2])
+        elif arr.ndim == 2:
+            if arr.shape[0] == nc and arr.shape[1] == npts:
+                arr = arr.reshape(nc * npts)
+            elif arr.shape[0] == npts and arr.shape[1] == nc:
+                arr = arr.T.reshape(nc * npts)
+            elif arr.shape[0] == nc * npts:
+                pass
+            else:
+                raise ValueError(
+                    f"Unsupported 2D sampled shape for field {name}: {arr.shape}, "
+                    f"expected ({nc}, {npts}), ({npts}, {nc}), or ({nc * npts}, *)"
+                )
+        elif arr.ndim == 1:
+            if arr.size != nc * npts:
+                raise ValueError(
+                    f"Unsupported 1D sampled shape for field {name}: {arr.shape}, "
+                    f"expected total size {nc * npts}"
+                )
+        else:
+            raise ValueError(f"Unsupported sampled shape for field {name}: {arr.shape}")
+        if arr.shape[0] != nc * npts:
+            raise ValueError(
+                f"Field `{name}` first dimension mismatch: expected {nc * npts}, got {arr.shape[0]}"
+            )
+        out[name] = arr
+    return out
+
+
+def _parent_dir_makedirs(fname: str) -> None:
+    d = os.path.dirname(fname)
+    if d:
+        os.makedirs(d, exist_ok=True)
+
+
+def _write_unstructured_vtu_ascii(
+    fname: str,
+    points_xyz: np.ndarray,
+    connectivity: np.ndarray,
+    offsets: np.ndarray,
+    types: np.ndarray,
+    point_data: Dict[str, np.ndarray],
+    *,
+    higher_order_degrees: Optional[np.ndarray] = None,
+) -> None:
+    """Minimal ASCII VTU writer (single Piece, linear or high-order cells)."""
+    _parent_dir_makedirs(fname)
+    points_xyz = np.asarray(points_xyz, dtype=float)
+    connectivity = np.asarray(connectivity, dtype=np.int64)
+    offsets = np.asarray(offsets, dtype=np.int64)
+    types = np.asarray(types, dtype=np.uint8)
+    np_pts = int(points_xyz.shape[0])
+    np_cells = int(connectivity.shape[0])
+
+    pts_flat = points_xyz.reshape(-1)
+    points_txt = " ".join(f"{float(v):.16e}" for v in pts_flat)
+    conn_txt = " ".join(str(int(v)) for v in connectivity.reshape(-1))
+    off_txt = " ".join(str(int(v)) for v in offsets)
+    type_txt = " ".join(str(int(v)) for v in types)
+
+    pieces: List[str] = []
+    pieces.append('<?xml version="1.0"?>\n')
+    pieces.append(
+        '<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndian" header_type="UInt64">\n'
+    )
+    pieces.append("  <UnstructuredGrid>\n")
+    pieces.append(f'    <Piece NumberOfPoints="{np_pts}" NumberOfCells="{np_cells}">\n')
+    pieces.append("      <Points>\n")
+    pieces.append(
+        '        <DataArray type="Float64" NumberOfComponents="3" format="ascii">\n'
+        f"          {points_txt}\n"
+        "        </DataArray>\n"
+    )
+    pieces.append("      </Points>\n")
+    pieces.append("      <Cells>\n")
+    pieces.append(
+        '        <DataArray type="Int64" Name="connectivity" format="ascii">\n'
+        f"          {conn_txt}\n"
+        "        </DataArray>\n"
+    )
+    pieces.append(
+        '        <DataArray type="Int64" Name="offsets" format="ascii">\n'
+        f"          {off_txt}\n"
+        "        </DataArray>\n"
+    )
+    pieces.append(
+        '        <DataArray type="UInt8" Name="types" format="ascii">\n'
+        f"          {type_txt}\n"
+        "        </DataArray>\n"
+    )
+    if higher_order_degrees is not None:
+        hod = np.asarray(higher_order_degrees, dtype=np.int64)
+        deg_txt = " ".join(str(int(v)) for v in hod)
+        pieces.append(
+            '        <DataArray type="Int64" Name="HigherOrderDegrees" format="ascii">\n'
+            f"          {deg_txt}\n"
+            "        </DataArray>\n"
+        )
+    pieces.append("      </Cells>\n")
+    pieces.append("      <PointData>\n")
+    for k, v in point_data.items():
+        pieces.append(_format_data_array(k, np.asarray(v)))
+    pieces.append("      </PointData>\n")
+    pieces.append("    </Piece>\n")
+    pieces.append("  </UnstructuredGrid>\n")
+    pieces.append("</VTKFile>\n")
+    with open(fname, "w", encoding="utf-8") as f:
+        f.write("".join(pieces))
+
+
+def write_subdivided_quadrilateral_mesh_vtu(
+    *,
+    fname: str,
+    mesh,
+    order: int,
+    point_data: Dict[str, np.ndarray],
+) -> None:
+    """
+    Write a **linear** quad VTU that refines each Q_p macro-cell into ``p*p``
+    bilinear quads on the tensor grid of interpolation points (duplicated per cell).
+
+    ``point_data`` values must have length ``NC * (p+1)^2``, in the same order as
+    :func:`sample_fields_tensor_product_fe` with ``cell_dim=2``.
+    """
+    order = int(order)
+    if order < 1:
+        raise ValueError(f"order must be >= 1, got {order}")
+    cell = np.asarray(mesh.entity("cell"), dtype=np.int64)
+    if cell.ndim != 2 or cell.shape[1] != 4:
+        raise NotImplementedError("write_subdivided_quadrilateral_mesh_vtu expects 2D quad cells (4 vertices).")
+
+    p = order
+    nc = int(mesh.number_of_cells())
+    npp = (p + 1) * (p + 1)
+    gd = int(mesh.geo_dimension())
+
+    ip = np.asarray(mesh.interpolation_points(p), dtype=float)
+    c2d = np.asarray(mesh.cell_to_ipoint(p), dtype=np.int64)
+    pts = ip[c2d].reshape(nc * npp, gd)
+    pts3 = np.zeros((pts.shape[0], 3), dtype=float)
+    pts3[:, : min(gd, 3)] = pts[:, : min(gd, 3)]
+
+    for key, val in point_data.items():
+        arr = np.asarray(val)
+        if arr.shape[0] != nc * npp:
+            raise ValueError(
+                f"Point data `{key}` first dimension mismatch: expected {nc * npp}, got {arr.shape[0]}"
+            )
+
+    n_sub = nc * p * p
+    conn = np.empty((n_sub, 4), dtype=np.int64)
+    row = 0
+    base = 0
+    for _ic in range(nc):
+        for i in range(p):
+            for j in range(p):
+                conn[row, 0] = base + i * (p + 1) + j
+                conn[row, 1] = base + i * (p + 1) + (j + 1)
+                conn[row, 2] = base + (i + 1) * (p + 1) + (j + 1)
+                conn[row, 3] = base + (i + 1) * (p + 1) + j
+                row += 1
+        base += npp
+
+    types = np.full((n_sub,), VTK_QUAD, dtype=np.uint8)
+    offsets = np.arange(1, n_sub + 1, dtype=np.int64) * 4
+    _write_unstructured_vtu_ascii(fname, pts3, conn, offsets, types, point_data)
+
+
+def write_subdivided_hexahedron_mesh_vtu(
+    *,
+    fname: str,
+    mesh,
+    order: int,
+    point_data: Dict[str, np.ndarray],
+) -> None:
+    """
+    Write a **linear** hex VTU that refines each Q_p macro-cell into ``p^3``
+    trilinear hexes on the tensor grid of interpolation points (duplicated per cell).
+
+    ``point_data`` values must have length ``NC * (p+1)^3``, same order as
+    :func:`sample_fields_tensor_product_fe` with ``cell_dim=3``.
+    """
+    order = int(order)
+    if order < 1:
+        raise ValueError(f"order must be >= 1, got {order}")
+    cell = np.asarray(mesh.entity("cell"), dtype=np.int64)
+    if cell.ndim != 2 or cell.shape[1] != 8:
+        raise NotImplementedError("write_subdivided_hexahedron_mesh_vtu expects 3D hex cells (8 vertices).")
+
+    p = order
+    nc = int(mesh.number_of_cells())
+    npp = (p + 1) ** 3
+    gd = int(mesh.geo_dimension())
+    if gd != 3:
+        raise NotImplementedError("write_subdivided_hexahedron_mesh_vtu currently supports GD==3 only.")
+
+    ip = np.asarray(mesh.interpolation_points(p), dtype=float)
+    c2d = np.asarray(mesh.cell_to_ipoint(p), dtype=np.int64)
+    pts3 = ip[c2d].reshape(nc * npp, 3)
+
+    for key, val in point_data.items():
+        arr = np.asarray(val)
+        if arr.shape[0] != nc * npp:
+            raise ValueError(
+                f"Point data `{key}` first dimension mismatch: expected {nc * npp}, got {arr.shape[0]}"
+            )
+
+    n_sub = nc * p * p * p
+    conn = np.empty((n_sub, 8), dtype=np.int64)
+    row = 0
+    base = 0
+
+    def _loc(ii: int, jj: int, kk: int) -> int:
+        return ii * (p + 1) * (p + 1) + jj * (p + 1) + kk
+
+    for ic in range(nc):
+        for i in range(p):
+            for j in range(p):
+                for k in range(p):
+                    conn[row, 0] = base + _loc(i, j, k)
+                    conn[row, 1] = base + _loc(i + 1, j, k)
+                    conn[row, 2] = base + _loc(i + 1, j + 1, k)
+                    conn[row, 3] = base + _loc(i, j + 1, k)
+                    conn[row, 4] = base + _loc(i, j, k + 1)
+                    conn[row, 5] = base + _loc(i + 1, j, k + 1)
+                    conn[row, 6] = base + _loc(i + 1, j + 1, k + 1)
+                    conn[row, 7] = base + _loc(i, j + 1, k + 1)
+                    row += 1
+        base += npp
+
+    types = np.full((n_sub,), VTK_HEXAHEDRON, dtype=np.uint8)
+    offsets = np.arange(1, n_sub + 1, dtype=np.int64) * 8
+    _write_unstructured_vtu_ascii(fname, pts3, conn, offsets, types, point_data)

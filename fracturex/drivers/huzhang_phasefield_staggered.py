@@ -5,8 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, Callable, List
 
+import functools
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 from scipy.sparse.linalg import spsolve, lgmres
 
@@ -20,6 +23,8 @@ from fracturex.damage.base import DamageStateView, DamageModelBase
 from fracturex.assemblers.huzhang_elastic_assembler import HuZhangElasticAssembler
 from fracturex.assemblers.phasefield_assembler import PhaseFieldAssembler
 from fracturex.postprocess.reaction import reaction_from_sigma
+from fracturex.postprocess.run_paths import resolve_vtk_step_path
+from fracturex.utilfuc.sparse_direct_backends import solve_direct_mumps, solve_direct_pardiso
 from fracturex.utilfuc.vtk_lagrange_writer import (
     sample_fields_for_lagrange_triangle,
     write_lagrange_triangle_vtu,
@@ -57,6 +62,10 @@ class HuZhangPhaseFieldStaggeredDriver:
         debug: bool = False,
         timing: bool = False,
         recorder: Optional[Any] = None,
+        output_dir: Optional[str] = None,
+        save_vtu_per_step: bool = False,
+        stagger_print_interval: Optional[int] = None,
+        d_relaxation: Optional[float] = None,
     ):
         """Initialize staggered HuZhang + phase-field solver driver.
 
@@ -66,8 +75,23 @@ class HuZhangPhaseFieldStaggeredDriver:
             tol/maxit: Nonlinear staggered convergence tolerance and max iterations.
             compute_linear_residual: Whether to compute `||Ax-b||/||b||` diagnostics.
             elastic_solver/phase_solver: Linear solver callbacks `(A, b) -> x` or `(x, info)`.
+                Use :meth:`linear_solver` with ``'pardiso'`` (``pypardiso``) or ``'mumps'``
+                (``python-mumps``) for direct solves, same backends as ``MainSolve``.
             adapt_hook: Optional callback after each load step.
             cell_mode/debug/timing/recorder: Output and diagnostics switches.
+            output_dir: Directory for per-step VTK (``<dir>/vtk/step_XXX.vtu``).
+                Defaults to ``recorder.outdir`` when omitted.
+            save_vtu_per_step: Write VTK after each load step when an output dir exists.
+                Legacy: also enabled when ``case.output_enabled`` is True.
+            stagger_print_interval: Nonlinear staggered progress print stride.
+                ``None`` reads env ``FRACTUREX_STAGGER_PRINT_INTERVAL`` (default ``1``).
+                ``<= 0``: suppress periodic prints; still prints when ``debug`` is True,
+                when the step converges, or on the last iteration if ``maxit`` is reached.
+                ``N >= 1``: print every ``N`` iterations and always on converge / last iter.
+            d_relaxation: Under-relaxation for the damage field in ``(0, 1]``.
+                Update uses ``max(d_old, ω·d_trial + (1-ω)·d_old)`` then clip to ``[0,1]``.
+                ``ω=1`` recovers the original map; ``ω<1`` dampens oscillations when ``d→1``.
+                ``None`` reads env ``FRACTUREX_D_RELAXATION`` (default ``1.0``).
         Output:
             None. Stores configuration; real initialization happens in `initialize`.
         """
@@ -75,6 +99,8 @@ class HuZhangPhaseFieldStaggeredDriver:
         self.discr = discr
         self.damage = damage
         self.recorder = recorder
+        self.output_dir = str(output_dir) if output_dir else None
+        self.save_vtu_per_step = bool(save_vtu_per_step)
 
         self.elastic_assembler = (
             elastic_assembler
@@ -95,14 +121,41 @@ class HuZhangPhaseFieldStaggeredDriver:
         self.cell_mode = cell_mode
 
         self.elastic_solver = elastic_solver if elastic_solver is not None else self._default_spsolve
-        self.phase_solver = phase_solver if phase_solver is not None else self._default_spsolve
+        # Unified default for phase-field subproblem: no-preconditioner LGMRES.
+        self.phase_solver = phase_solver if phase_solver is not None else self._default_lgmres
 
         self.adapt_hook = adapt_hook
+        self._stagger_print_interval = self._resolve_stagger_print_interval(stagger_print_interval)
+        self._d_relaxation = self._resolve_d_relaxation(d_relaxation)
         self._initialized = False
         self._sigma_physical_eval = None
         self._tmr = timer() if self.timing else None
         if self._tmr is not None:
             next(self._tmr)
+
+    @staticmethod
+    def _resolve_stagger_print_interval(explicit: Optional[int]) -> int:
+        if explicit is not None:
+            return int(explicit)
+        raw = os.environ.get("FRACTUREX_STAGGER_PRINT_INTERVAL", "1")
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 1
+
+    @staticmethod
+    def _resolve_d_relaxation(explicit: Optional[float]) -> float:
+        if explicit is not None:
+            omega = float(explicit)
+        else:
+            raw = os.environ.get("FRACTUREX_D_RELAXATION", "1.0")
+            try:
+                omega = float(raw)
+            except (TypeError, ValueError):
+                omega = 1.0
+        if omega <= 0.0:
+            raise ValueError(f"d_relaxation must be in (0, 1], got {omega}")
+        return min(omega, 1.0)
 
     def _timer_mark(self, tag: Optional[str]):
         if self._tmr is None:
@@ -285,6 +338,11 @@ class HuZhangPhaseFieldStaggeredDriver:
         lin_cb_res_e = float("nan")
         lin_cb_res_d = float("nan")
         need_iter_stats = bool(self.debug or (self.recorder is not None and hasattr(self.recorder, "append_iteration")))
+        gdof_sigma = int(discr.gdof_sigma)
+        gdof_u = int(discr.gdof_u)
+        gdof_d = int(discr.space_d.number_of_global_dofs())
+        u_old_buf = None
+        d_old_buf = None
 
         # Apply one-time initial damage (e.g. pre-crack d=1) BEFORE
         # capturing d_old in staggered iterations, so irreversibility
@@ -306,8 +364,16 @@ class HuZhangPhaseFieldStaggeredDriver:
 
         for k in range(self.maxit):
             t_iter0 = time.perf_counter()
-            u_old = bm.asarray(state.u[:]).copy()
-            d_old = bm.asarray(state.d[:]).copy()
+            u_curr = bm.asarray(state.u[:])
+            d_curr = bm.asarray(state.d[:])
+            if u_old_buf is None:
+                u_old_buf = u_curr.copy()
+            else:
+                u_old_buf[...] = u_curr
+            if d_old_buf is None:
+                d_old_buf = d_curr.copy()
+            else:
+                d_old_buf[...] = d_curr
             t_elastic_assemble_iter = 0.0
             t_elastic_solve_iter = 0.0
             t_phase_assemble_iter = 0.0
@@ -364,36 +430,40 @@ class HuZhangPhaseFieldStaggeredDriver:
             if self.compute_linear_residual:
                 r_lin_d = self._relative_residual(sys_d.A, dd, sys_d.F)
 
-            d_trial = sys_d.decode(dd)
+            d_trial = bm.asarray(sys_d.decode(dd))
 
-            # irreversibility
-            state.d[:] = bm.maximum(d_old, d_trial[:])
+            # Irreversibility + optional under-relaxation: max(d_old, ω·d_trial + (1-ω)·d_old).
+            omega = self._d_relaxation
+            if omega >= 1.0 - 1e-15:
+                d_blend = d_trial
+            else:
+                d_blend = omega * d_trial + (1.0 - omega) * d_old_buf
+            state.d[:] = bm.maximum(d_old_buf, d_blend)
             state.d[:] = bm.clip(state.d[:], 0.0, 1.0)
 
             # ----------------------------------------------------------
             # (3) staggered convergence check by iterate increments
             # ----------------------------------------------------------
-            du_abs = float(bm.linalg.norm(bm.asarray(state.u[:]) - u_old))
-            dd_abs = float(bm.linalg.norm(bm.asarray(state.d[:]) - d_old))
+            u_curr = bm.asarray(state.u[:])
+            d_curr = bm.asarray(state.d[:])
+            du_abs = float(bm.linalg.norm(u_curr - u_old_buf))
+            dd_abs = float(bm.linalg.norm(d_curr - d_old_buf))
 
             # Follow phasefield/main_solve convergence style:
             # normalize by the first iteration increment in each load step.
             # Add a tiny, state-scaled lower bound to avoid pathological
             # denominator collapse when the first increment is numerically tiny.
             if e0_u is None:
-                u_scale = float(bm.linalg.norm(bm.asarray(state.u[:])))
+                u_scale = float(bm.linalg.norm(u_curr))
                 e0_u = max(du_abs, 1e-14 * u_scale, 1e-30)
             if e0_d is None:
-                d_scale = float(bm.linalg.norm(bm.asarray(state.d[:])))
+                d_scale = float(bm.linalg.norm(d_curr))
                 e0_d = max(dd_abs, 1e-14 * d_scale, 1e-30)
 
             err_u = du_abs / e0_u
             err_d = dd_abs / e0_d
             error = max(err_u, err_d)
-            max_d_iter = float(bm.max(bm.asarray(state.d[:])))
-            gdof_sigma = int(discr.gdof_sigma)
-            gdof_u = int(discr.gdof_u)
-            gdof_d = int(discr.space_d.number_of_global_dofs())
+            max_d_iter = float(bm.max(d_curr))
 
             if need_iter_stats:
                 iter_row = dict(
@@ -408,6 +478,7 @@ class HuZhangPhaseFieldStaggeredDriver:
                     err_u=float(err_u),
                     err_d=float(err_d),
                     max_d=max_d_iter,
+                    d_relaxation=float(self._d_relaxation),
                     linear_solver_elastic=str(lin_solver_e),
                     linear_solver_phase=str(lin_solver_d),
                     linear_niter_elastic=int(lin_niter_e),
@@ -429,12 +500,24 @@ class HuZhangPhaseFieldStaggeredDriver:
                 if self.recorder is not None and hasattr(self.recorder, "append_iteration"):
                     self.recorder.append_iteration(iter_row)
 
-            # Always print nonlinear iteration progress for realtime monitoring.
-            print(
-                f"[step {step} load {load:.4e}] iter {k + 1}: "
-                f"err_u={err_u:.3e}, err_d={err_d:.3e}, error={error:.3e}, "
-                f"max_d={max_d_iter:.3e}"
-            )
+            iter_num = k + 1
+            last_iter = k == self.maxit - 1
+            converged_now = error < self.tol
+            if self.debug:
+                should_print_progress = True
+            elif self._stagger_print_interval <= 0:
+                should_print_progress = converged_now or last_iter
+            else:
+                should_print_progress = (
+                    (iter_num % self._stagger_print_interval == 0) or converged_now or last_iter
+                )
+            if should_print_progress:
+                print(
+                    f"[step {step} load {load:.4e}] iter {iter_num}: "
+                    f"du_abs={du_abs:.3e}, dd_abs={dd_abs:.3e}, "
+                    f"err_u={err_u:.3e}, err_d={err_d:.3e}, error={error:.3e}, "
+                    f"max_d={max_d_iter:.3e}"
+                )
 
             if error < self.tol:
                 converged = True
@@ -444,13 +527,26 @@ class HuZhangPhaseFieldStaggeredDriver:
             iters = self.maxit
 
         q = self.discr.damage_p + 3
-        if getattr(self.case, "output_enabled", False):
-            self._save_vtkfile(
-                f"results/{self.case.name}_step_{step:03d}.vtu",
-                cell_mode=self.cell_mode,
-                q=q,
-                sigma_eval=self._sigma_physical_eval,
+        want_vtu = self.save_vtu_per_step or getattr(self.case, "output_enabled", False)
+        if want_vtu:
+            vtk_fname = resolve_vtk_step_path(
+                step=step,
+                output_dir=self.output_dir,
+                recorder=self.recorder,
             )
+            if vtk_fname:
+                os.makedirs(os.path.dirname(vtk_fname), exist_ok=True)
+                self._save_vtkfile(
+                    vtk_fname,
+                    cell_mode=self.cell_mode,
+                    q=q,
+                    sigma_eval=self._sigma_physical_eval,
+                )
+            elif getattr(self.case, "output_enabled", False):
+                print(
+                    "[HuZhangPhaseFieldStaggeredDriver] output_enabled=True but no "
+                    "output_dir/recorder.outdir; skip VTK (set output_dir or RunRecorder)."
+                )
 
         lp = self.case.load_dirichlet_piece(load)
         dir_load = (lp.direction or "y")
@@ -468,14 +564,15 @@ class HuZhangPhaseFieldStaggeredDriver:
         )
 
         step_walltime = float(time.perf_counter() - t_step0)
+        d_final = bm.asarray(state.d[:])
 
         meta = dict(
-            gdof_sigma=int(discr.gdof_sigma),
-            gdof_u=int(discr.gdof_u),
-            gdof_d=int(discr.space_d.number_of_global_dofs()),
+            gdof_sigma=gdof_sigma,
+            gdof_u=gdof_u,
+            gdof_d=gdof_d,
             elastic_formulation=str(getattr(self.elastic_assembler, "formulation", "standard")),
             history_source=str(getattr(self.damage, "history_source", "from_u")),
-            max_d=float(bm.max(bm.asarray(state.d[:]))),
+            max_d=float(bm.max(d_final)),
             max_H=float(bm.max(state.H)) if state.H is not None else 0.0,
             R=float(R),
             residual_force=float(R),
@@ -498,6 +595,8 @@ class HuZhangPhaseFieldStaggeredDriver:
             t_elastic_solve_s=float(t_elastic_solve),
             t_phase_assemble_s=float(t_phase_assemble),
             t_phase_solve_s=float(t_phase_solve),
+            d_relaxation=float(self._d_relaxation),
+            stagger_tol=float(self.tol),
         )
         meta[f"reaction_{dir_load}"] = float(R)
         meta[f"disp_{dir_load}"] = float(load)
@@ -509,7 +608,7 @@ class HuZhangPhaseFieldStaggeredDriver:
             converged=converged,
             err_u=float(err_u),
             err_d=float(err_d),
-            max_d=float(bm.max(bm.asarray(state.d[:]))),
+            max_d=float(bm.max(d_final)),
             meta=meta,
         )
 
@@ -600,6 +699,26 @@ class HuZhangPhaseFieldStaggeredDriver:
                 return spsolve(A_, F_)
         return x
 
+    @classmethod
+    def linear_solver(cls, method: str, **kwargs) -> Callable[[Any, Any], Any]:
+        """Build a ``(A, F) -> x`` callback for ``elastic_solver`` / ``phase_solver``.
+
+        ``method`` is one of ``spsolve`` / ``direct``, ``pardiso``, ``mumps``, ``lgmres``.
+        Extra keyword arguments apply only to ``lgmres`` (see :meth:`_default_lgmres`).
+        """
+        m = (method or "").strip().lower()
+        if m in ("spsolve", "direct", "superlu"):
+            return cls._default_spsolve
+        if m == "pardiso":
+            return solve_direct_pardiso
+        if m == "mumps":
+            return solve_direct_mumps
+        if m == "lgmres":
+            return functools.partial(cls._default_lgmres, **kwargs)
+        raise ValueError(
+            f"Unknown linear solver method {method!r}; "
+            "expected one of: spsolve, direct, pardiso, mumps, lgmres."
+        )
 
     def _u_to_nodal(self, u_fun, mesh):
         """
@@ -906,6 +1025,51 @@ class HuZhangPhaseFieldStaggeredDriver:
             val = val[:, 0, ...]
         return val
 
+    @staticmethod
+    def _vtk_highorder_parallel_enabled() -> bool:
+        return str(os.getenv("FRACTUREX_VTK_HIGHORDER_PARALLEL", "1")).strip().lower() not in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+
+    def _eval_on_cells_parallel_default(self, fun, bcs, NC: int):
+        """Chunked FE evaluation over cells; **on by default** (disable via ``FRACTUREX_VTK_HIGHORDER_PARALLEL=0``).
+
+        Intended for visualization-only paths; wall time here is **not** part of the
+        core staggered-solve benchmark used in papers or solver-efficiency tables.
+        """
+        if (
+            not HuZhangPhaseFieldStaggeredDriver._vtk_highorder_parallel_enabled()
+            or NC < 48
+        ):
+            return HuZhangPhaseFieldStaggeredDriver._eval_on_cells(fun, bcs, NC)
+        max_w = max(1, int(os.cpu_count() or 1))
+        nproc = min(max_w, max(2, NC // 24))
+        edges = np.linspace(0, NC, nproc + 1, dtype=int)
+        tasks = []
+        for k in range(nproc):
+            i0, i1 = int(edges[k]), int(edges[k + 1])
+            if i1 > i0:
+                tasks.append((fun, bcs, i0, i1))
+
+        def _job(args):
+            fn, bcs_loc, i0, i1 = args
+            chunk = fn(bm.asarray(bcs_loc), index=bm.arange(i0, i1))
+            chunk = np.asarray(chunk)
+            if chunk.ndim == 3 and chunk.shape[1] == 1:
+                chunk = chunk[:, 0, ...]
+            return chunk
+
+        workers = min(max_w, len(tasks))
+        try:
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+                parts = list(pool.map(_job, tasks))
+            return np.concatenate(parts, axis=0)
+        except Exception:
+            return HuZhangPhaseFieldStaggeredDriver._eval_on_cells(fun, bcs, NC)
+
     def save_vtkfile_highorder(self, fname: str, *, vis_order: int = 4, sigma_eval=None):
         """
         Export high-order visualization by intra-cell resampling + sub-triangulation.
@@ -913,6 +1077,10 @@ class HuZhangPhaseFieldStaggeredDriver:
         This writes a linear VTU mesh built from sampled points inside each original
         triangle, so ParaView can show smooth high-order variation without requiring
         high-order VTK cell support.
+
+        Field sampling over cells uses **parallel chunks by default** (see
+        ``FRACTUREX_VTK_HIGHORDER_PARALLEL``); that cost is visualization-only and
+        should **not** be mixed into core solve/assembly timing for papers.
 
         Parameters
         ----------
@@ -960,13 +1128,13 @@ class HuZhangPhaseFieldStaggeredDriver:
 
         # Evaluate fields on each sampled point in each original cell.
         try:
-            d_samp = self._eval_on_cells(state.d, bcs, NC).reshape(-1)
+            d_samp = self._eval_on_cells_parallel_default(state.d, bcs, NC).reshape(-1)
             vis_mesh.nodedata["damage"] = bm.asarray(d_samp)
         except Exception as e:
             print(f"[vtk-highorder] damage sampling failed: {e}")
 
         try:
-            u_samp = self._eval_on_cells(state.u, bcs, NC)
+            u_samp = self._eval_on_cells_parallel_default(state.u, bcs, NC)
             if u_samp.ndim == 2:
                 u_samp = u_samp[:, :, None]
             u_flat = u_samp.reshape(-1, u_samp.shape[-1])
@@ -981,7 +1149,7 @@ class HuZhangPhaseFieldStaggeredDriver:
             print(f"[vtk-highorder] displacement sampling failed: {e}")
 
         try:
-            sig_samp = self._eval_on_cells(sigma_fun, bcs, NC)
+            sig_samp = self._eval_on_cells_parallel_default(sigma_fun, bcs, NC)
             if sig_samp.ndim == 2:
                 sig_samp = sig_samp[:, :, None]
             sig_flat = sig_samp.reshape(-1, sig_samp.shape[-1])

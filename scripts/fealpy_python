@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+_REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/resolve_fealpy_python.sh
+source "${_REPO_ROOT}/scripts/resolve_fealpy_python.sh"
+
+if ! ensure_fealpy_python "${_REPO_ROOT}"; then
+  exit 127
+fi
+
+exec "${FEALPY_PYTHON}" "$@"

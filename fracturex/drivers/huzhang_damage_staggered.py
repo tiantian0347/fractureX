@@ -15,6 +15,7 @@ from fracturex.assemblers.huzhang_elastic_assembler import HuZhangElasticAssembl
 from fracturex.damage.base import DamageStateView, DamageModelBase
 from fracturex.cases.base import CaseBase
 from fracturex.postprocess.reaction import reaction_from_sigma
+from fracturex.postprocess.run_paths import resolve_vtk_step_path
 
 from fealpy.backend import backend_manager as bm
 
@@ -59,12 +60,16 @@ class HuZhangLocalDamageStaggeredDriver:
         debug: bool = False,
         timing: bool = False,
         recorder: Optional[Any] = None,
+        output_dir: Optional[str] = None,
+        save_vtu_per_step: bool = False,
     ):
         self.case = case
         self.discr = discr
         self.damage = damage
 
         self.recorder = recorder
+        self.output_dir = str(output_dir) if output_dir else None
+        self.save_vtu_per_step = bool(save_vtu_per_step)
 
         self.assembler = assembler if assembler is not None else HuZhangElasticAssembler(discr, case, damage)
         self.tol = float(tol)
@@ -219,12 +224,16 @@ class HuZhangLocalDamageStaggeredDriver:
 
         q = self.discr.p + 3
        
-        # ---- output vtu (可选) ----
-        if self.case.output_enabled:
-            self._save_vtkfile(
-                f"results/{self.case.name}_step_{step:03d}.vtu",
-                cell_mode=self.cell_mode, q=q
+        want_vtu = self.save_vtu_per_step or getattr(self.case, "output_enabled", False)
+        if want_vtu:
+            vtk_fname = resolve_vtk_step_path(
+                step=step,
+                output_dir=self.output_dir,
+                recorder=self.recorder,
             )
+            if vtk_fname:
+                os.makedirs(os.path.dirname(vtk_fname), exist_ok=True)
+                self._save_vtkfile(vtk_fname, cell_mode=self.cell_mode, q=q)
 
         # ---- reaction on load boundary (只算一次) ----
         lp = self.case.load_dirichlet_piece(load)

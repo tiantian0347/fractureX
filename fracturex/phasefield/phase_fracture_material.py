@@ -279,7 +279,7 @@ class SpectralModel(BasedPhaseFractureMaterial):
     def strain_pm_eig_decomposition(self, s: TensorLike):
         """
         @brief Decomposition of Positive and Negative Characteristics of Strain.
-        varespilon_{\pm} = \sum_{a=0}^{GD-1} <varespilon_a>_{\pm} n_a \otimes n_a
+        varespilon_{\\pm} = \\sum_{a=0}^{GD-1} <varespilon_a>_{\\pm} n_a \\otimes n_a
         varespilon_a is the a-th eigenvalue of strain tensor.
         n_a is the a-th eigenvector of strain tensor.
         
@@ -344,9 +344,16 @@ class SpectralModel(BasedPhaseFractureMaterial):
     
     @ barycentric
     def maximum_historical_field(self, bc):
-
         """
-        @brief Maximum historical field
+        Irreversible driver for the tensile strain-energy density.
+
+        Updates ``self.H`` by a pointwise maximum of the positive-mode elastic
+        energy density :math:`\\psi^+` (from spectral strain decomposition) against
+        the previous field. This is evaluated during phase-field matrix assembly
+        (quadrature sweeps); quasi-static "time" is advanced by the outer load loop
+        in :class:`fracturex.phasefield.main_solve.MainSolve`, not by a separate ODE
+        for ``H``. AT1/AT2 only affect the crack surface density through
+        ``CrackSurfaceDensityFunction``, not :math:`\\psi^+` here.
         """
         strain = self.strain_value(bc)
        
@@ -440,7 +447,8 @@ class HybridModel(BasedPhaseFractureMaterial):
     @ barycentric
     def maximum_historical_field(self, bc):
         """
-        @brief Maximum historical field
+        Delegate irreversible :math:`\\psi^+` history to the spectral model; see
+        :meth:`SpectralModel.maximum_historical_field` for the update rule.
         """
         self._spectral_model.uh = self.uh
         self._spectral_model.d = self.d

@@ -28,7 +28,7 @@
 - Local damage history uses nodal `r_hist` and irreversible updates (`max` on both `r_hist` and `d`).
 
 ## Developer workflows (current repo reality)
-- `requirements.txt` is empty; dependencies are not auto-pinned. Install manually (at least `fealpy`, `numpy`, `scipy`; plotting/tests also use `matplotlib`, `pytest`, `ipdb`).
+- Install **FEALPy separately** first (not in `requirements.txt`). Then `pip install -e .` pulls `numpy`, `scipy`, `matplotlib`, `pyamg` from `requirements.txt`. Dev extras: `pip install -e ".[dev]"` (`pytest`, `ipdb`). Optional direct solver: `pip install -e ".[direct]"` (`pypardiso`).
 - Common run scripts are under `fracturex/tests/` but several are script-style examples, not clean unit tests.
 - Useful entry scripts:
   - `python3 fracturex/tests/phasefield_square_tension.py`

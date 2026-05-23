@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import os
 from typing import Any, Optional, Tuple
-import warnings
 
+import numpy as np
 from fealpy.backend import backend_manager as bm
 
 from fracturex.damage.base import DamageModelBase
@@ -13,15 +15,26 @@ from fracturex.phasefield.energy_degradation_function import EnergyDegradationFu
 from fracturex.phasefield.crack_surface_density_function import CrackSurfaceDensityFunction
 
 
-def _material_lame_from_model(model) -> Tuple[float, float]:
-    """Infer Lamé parameters from a material-like object.
+def _history_update_nproc_default() -> int:
+    return max(1, int(os.cpu_count() or 1))
 
-    Input:
-        model: Object or dict containing `(lam, mu)` / `(lambda0, lambda1)`
-            or `(E, nu)`.
-    Output:
-        Tuple `(lam, mu)` as floats.
-    """
+
+def _phase_history_chunk_worker(args):
+    damage, state, bcs, idx_chunk = args
+    idx_chunk = bm.asarray(idx_chunk)
+    grad_u = state.u.grad_value(bcs, index=idx_chunk)
+    strain = 0.5 * (grad_u + bm.swapaxes(grad_u, -2, -1))
+    if damage.split in ("hybrid", "spectral"):
+        phip = damage._spectral_positive_energy_density(strain)
+    elif damage.split == "isotropic":
+        phip = damage._isotropic_energy_density(strain)
+        phip = bm.maximum(phip, 0.0)
+    else:
+        raise ValueError(f"Unknown split type: {damage.split}")
+    return bm.maximum(phip, 0.0)
+
+
+def _material_lame_from_model(model) -> Tuple[float, float]:
     if hasattr(model, "lam") and hasattr(model, "mu"):
         return float(model.lam), float(model.mu)
     if hasattr(model, "lambda0") and hasattr(model, "lambda1"):
@@ -47,15 +60,6 @@ def _material_lame_from_model(model) -> Tuple[float, float]:
 
 
 def _model_get(model, name: str, default=None):
-    """Get parameter from object/dict model with fallback.
-
-    Inputs:
-        model: Material object or dict.
-        name: Attribute/key name.
-        default: Fallback value if not found.
-    Output:
-        Resolved value or `default`.
-    """
     if hasattr(model, name):
         return getattr(model, name)
     if isinstance(model, dict) and name in model:
@@ -77,8 +81,6 @@ class PhaseFieldDamageModel(DamageModelBase):
     density_type: str = "AT2"
     degradation_type: str = "quadratic"
     split: str = "hybrid"         # "hybrid", "spectral", "isotropic"
-    # How ψ^+ for history H is built in update_history_on_quadrature. Only "from_u" is implemented.
-    history_source: str = "from_u"
     eps_g: float = 1e-10
     clamp_max: float = 0.999999
     debug: bool = False
@@ -92,15 +94,6 @@ class PhaseFieldDamageModel(DamageModelBase):
     _hfun: Optional[Any] = None
 
     def on_build(self, discr, state, case):
-        """Initialize model constants and internal helpers.
-
-        Inputs:
-            discr: Current discretization object.
-            state: Damage state view containing `d`, `H`, etc.
-            case: Case object providing material model.
-        Output:
-            None. Updates `self` constants and resets/initializes `state.H`.
-        """
         model = case.model()
 
         self.lam, self.mu = _material_lame_from_model(model)
@@ -124,37 +117,14 @@ class PhaseFieldDamageModel(DamageModelBase):
         # NEW: H is quadrature-history, not FE function
         state.H = None
 
-        if str(self.history_source).lower() not in ("from_u",):
-            raise NotImplementedError(
-                "PhaseFieldDamageModel.update_history_on_quadrature only implements history_source='from_u' "
-                f"(got {self.history_source!r})."
-            )
-        if str(self.split).lower() == "hybrid":
-            warnings.warn(
-                "PhaseFieldDamageModel split='hybrid' currently reuses the same positive "
-                "energy implementation as 'spectral'.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-
         if self.debug:
             print(
                 f"[PhaseFieldDamageModel] on_build: "
                 f"Gc={self.Gc}, l0={self.l0}, lam={self.lam}, mu={self.mu}, "
-                f"density={self.density_type}, degradation={self.degradation_type}, split={self.split}, "
-                f"history_source={self.history_source}"
+                f"density={self.density_type}, degradation={self.degradation_type}, split={self.split}"
             )
 
     def on_mesh_changed(self, old_discr, new_discr, old_state, new_state, case):
-        """Refresh damage parameters after remeshing.
-
-        Inputs:
-            old_discr/new_discr: Discretization objects before/after mesh change.
-            old_state/new_state: States before/after rebuild.
-            case: Case object with material model.
-        Output:
-            None. Rebinds material constants and clears `new_state.H`.
-        """
         model = case.model()
         self.lam, self.mu = _material_lame_from_model(model)
 
@@ -178,15 +148,6 @@ class PhaseFieldDamageModel(DamageModelBase):
     # elasticity degradation
     # ------------------------------------------------------------
     def coef_bary(self, state, bcs, index=None):
-        """Evaluate degradation coefficient `g(d)` at quadrature points.
-
-        Inputs:
-            state: Damage state view with nodal field `d`.
-            bcs: Barycentric quadrature points.
-            index: Optional cell indices.
-        Output:
-            Quadrature-wise degradation coefficient array with lower bound `eps_g`.
-        """
         dval = state.d(bcs, index=index)
         dval = bm.clip(dval, 0.0, self.clamp_max)
 
@@ -204,13 +165,6 @@ class PhaseFieldDamageModel(DamageModelBase):
     # crack density / degradation helpers
     # ------------------------------------------------------------
     def crack_density(self, d):
-        """Return crack density value h(d).
-
-        Input:
-            d: Damage variable array/scalar.
-        Output:
-            Crack density value and model constant from backend function.
-        """
         return self._hfun.density_function(d)
 
     def crack_density_grad(self, d):
@@ -220,13 +174,6 @@ class PhaseFieldDamageModel(DamageModelBase):
         return self._hfun.grad_grad_density_function(d)
 
     def degradation(self, d):
-        """Return energy degradation function g(d).
-
-        Input:
-            d: Damage variable array/scalar.
-        Output:
-            Degradation value g(d).
-        """
         return self._gfun.degradation_function(d)
 
     def degradation_grad(self, d):
@@ -238,33 +185,82 @@ class PhaseFieldDamageModel(DamageModelBase):
     # ------------------------------------------------------------
     # quadrature-history update
     # ------------------------------------------------------------
-    def update_history_on_quadrature(self, discr, state, case, bcs, index=None):
+    def update_history_on_quadrature(
+        self,
+        discr,
+        state,
+        case,
+        bcs,
+        index=None,
+        *,
+        parallel: bool = False,
+        nproc: Optional[int] = None,
+    ):
         """
         Update H on the given quadrature points.
+
+        With ``parallel=True`` (typically from ``PhaseFieldAssembler`` when
+        ``assembly_parallel`` is on), cells are processed in batches via threads.
+        Set env ``FRACTUREX_HISTORY_UPDATE_PARALLEL=0`` (or ``false``/``off``) to force
+        the serial path even if ``parallel=True``. Optional one-line wall-clock timing
+        from the caller: ``FRACTUREX_PROFILE_HISTORY_UPDATE=1``.
+
+        Large-array performance may still benefit from tuning BLAS/OpenMP threads;
+        compare against batched parallel using profiling on representative meshes.
 
         Parameters
         ----------
         bcs : quadrature barycentric points
         index : cell indices
+        parallel : optional batched cell parallel update
+        nproc : optional worker cap (defaults to CPU count)
         """
-        if str(self.history_source).lower() != "from_u":
-            raise NotImplementedError(
-                "Only history_source='from_u' is implemented (strain from u.grad_value). "
-                f"Got history_source={self.history_source!r}."
-            )
+        mesh = discr.mesh
+        if mesh is None:
+            raise RuntimeError("discr.mesh is None in update_history_on_quadrature.")
 
-        grad_u = state.u.grad_value(bcs, index=index)               # (NC,NQ,GD,GD)
-        strain = 0.5 * (grad_u + bm.swapaxes(grad_u, -2, -1))
+        idx_all = bm.arange(mesh.number_of_cells()) if index is None else bm.asarray(index).reshape(-1)
+        n_cell = int(idx_all.shape[0])
 
-        if self.split in ("hybrid", "spectral"):
-            phip = self._spectral_positive_energy_density(strain)   # (NC,NQ)
-        elif self.split == "isotropic":
-            phip = self._isotropic_energy_density(strain)
+        env_serial = str(os.getenv("FRACTUREX_HISTORY_UPDATE_PARALLEL", "")).strip().lower() in (
+            "0",
+            "false",
+            "no",
+            "off",
+        )
+        parallel_eff = bool(parallel) and (not env_serial) and n_cell >= 2
+
+        phip = None
+        if parallel_eff:
+            nw = int(nproc) if nproc is not None else _history_update_nproc_default()
+            nproc_use = min(max(1, nw), n_cell)
+            edges = np.linspace(0, n_cell, nproc_use + 1, dtype=int)
+            tasks = []
+            for k in range(nproc_use):
+                i0, i1 = int(edges[k]), int(edges[k + 1])
+                if i1 > i0:
+                    tasks.append((self, state, bcs, idx_all[i0:i1]))
+            workers = min(int(nw), len(tasks))
+            try:
+                with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+                    parts = list(pool.map(_phase_history_chunk_worker, tasks))
+                phip = bm.concatenate(parts, axis=0)
+            except Exception:
+                phip = None
+
+        if phip is None:
+            grad_u = state.u.grad_value(bcs, index=index)
+            strain = 0.5 * (grad_u + bm.swapaxes(grad_u, -2, -1))
+
+            if self.split in ("hybrid", "spectral"):
+                phip = self._spectral_positive_energy_density(strain)
+            elif self.split == "isotropic":
+                phip = self._isotropic_energy_density(strain)
+                phip = bm.maximum(phip, 0.0)
+            else:
+                raise ValueError(f"Unknown split type: {self.split}")
+
             phip = bm.maximum(phip, 0.0)
-        else:
-            raise ValueError(f"Unknown split type: {self.split}")
-
-        phip = bm.maximum(phip, 0.0)
 
         if state.H is None:
             state.H = phip.copy()
@@ -295,13 +291,6 @@ class PhaseFieldDamageModel(DamageModelBase):
     # energy density
     # ------------------------------------------------------------
     def _isotropic_energy_density(self, strain):
-        """Compute isotropic elastic energy density from strain.
-
-        Input:
-            strain: Symmetric strain tensor array `(..., GD, GD)`.
-        Output:
-            Scalar energy density array `(...)`.
-        """
         lam = float(self.lam)
         mu = float(self.mu)
         tr = bm.einsum("...ii", strain)
@@ -310,13 +299,6 @@ class PhaseFieldDamageModel(DamageModelBase):
         return psi
 
     def _spectral_positive_energy_density(self, strain):
-        """Compute tensile part of spectral-split energy density.
-
-        Input:
-            strain: Symmetric strain tensor array `(..., GD, GD)`.
-        Output:
-            Positive energy density array used as history driving force.
-        """
         lam = float(self.lam)
         mu = float(self.mu)
 
@@ -329,26 +311,12 @@ class PhaseFieldDamageModel(DamageModelBase):
         return psi_plus
 
     def _macaulay_operation(self, alpha):
-        """Apply Macaulay split `<alpha>+` and `<alpha>-`.
-
-        Input:
-            alpha: Scalar/tensor-like backend array.
-        Output:
-            Tuple `(positive_part, negative_part)`.
-        """
         val = bm.abs(alpha)
         p = 0.5 * (alpha + val)
         m = 0.5 * (alpha - val)
         return p, m
 
     def _strain_pm_eig_decomposition(self, s):
-        """Eigen-split strain tensor into positive/negative parts.
-
-        Input:
-            s: Strain tensor array `(..., GD, GD)`.
-        Output:
-            Tuple `(s_plus, s_minus)` with same shape as `s`.
-        """
         w, v = bm.linalg.eigh(s)
         p, m = self._macaulay_operation(w)
 

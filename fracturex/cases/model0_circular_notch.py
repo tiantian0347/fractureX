@@ -47,25 +47,11 @@ class Model0CircularNotchCase(CaseBase):
     _model: object = None
 
     def model(self):
-        """Return material model bound to this case.
-
-        Input:
-            None.
-        Output:
-            Material model instance set in `_model`.
-        """
         if self._model is None:
             raise RuntimeError("Model0CircularNotchCase requires _model (material model instance).")
         return self._model
 
     def make_mesh(self, nx: Optional[int] = None, ny: Optional[int] = None):
-        """Build distmesh-based square-with-hole mesh.
-
-        Inputs:
-            nx, ny: Unused compatibility arguments kept for `CaseBase` signature.
-        Output:
-            Generated `TriangleMesh` assigned to `self.mesh`.
-        """
         # keep signature compatible with CaseBase, but this case uses distmesh.
         from fealpy.old.geometry.domain_2d import SquareWithCircleHoleDomain
 
@@ -82,37 +68,16 @@ class Model0CircularNotchCase(CaseBase):
     # boundary selectors
     # -----------------------
     def _on_top(self, points: TensorLike) -> TensorLike:
-        """Top boundary selector `y=box[3]`.
-
-        Input:
-            points: Point array `(N, GD)`.
-        Output:
-            Boolean mask `(N,)` indicating top-boundary points.
-        """
         y1 = self.box[3]
         return bm.abs(points[:, 1] - y1) < self.top_tol
 
     def _on_inner_circle(self, points: TensorLike) -> TensorLike:
-        """Inner-circle boundary selector.
-
-        Input:
-            points: Point array `(N, GD)`.
-        Output:
-            Boolean mask `(N,)` indicating points on circular notch boundary.
-        """
         x = points[:, 0]
         y = points[:, 1]
         rr = (x - self.circle_cx) ** 2 + (y - self.circle_cy) ** 2
         return bm.abs(rr - self.circle_r ** 2) < self.circle_tol
 
     def isD_bd(self, points: TensorLike) -> TensorLike:
-        """HuZhang Dirichlet boundary selector.
-
-        Input:
-            points: Edge/point barycenters `(N, GD)`.
-        Output:
-            Boolean mask of Dirichlet boundary locations.
-        """
         # HuZhang boundary classification: top load + inner hole fixed
         return self._on_top(points) | self._on_inner_circle(points)
 
@@ -120,13 +85,6 @@ class Model0CircularNotchCase(CaseBase):
     # displacement BC pieces
     # -----------------------
     def dirichlet_pieces(self, load: float) -> List[DirichletPiece]:
-        """Build piecewise displacement Dirichlet descriptors.
-
-        Input:
-            load: Prescribed vertical displacement on top boundary.
-        Output:
-            List of `DirichletPiece` entries for fixed hole and loaded top edge.
-        """
         def u_zero(points: TensorLike):
             GD = points.shape[-1]
             return bm.zeros(points.shape[:-1] + (GD,), dtype=bm.float64)
@@ -143,13 +101,6 @@ class Model0CircularNotchCase(CaseBase):
         ]
 
     def neumann_data(self, load: float = 0.0):
-        """Build Neumann/essential-stress descriptors for HuZhang BC handler.
-
-        Input:
-            load: Current load value (not explicitly used in this case).
-        Output:
-            Piecewise descriptor list consumed by stress boundary condition utility.
-        """
         isNedge_free = build_isNedge_from_isD(self.mesh, self.isD_bd)
         gd0 = bm.array([0.0, 0.0], dtype=bm.float64)
         return [
@@ -158,24 +109,10 @@ class Model0CircularNotchCase(CaseBase):
         ]
 
     def phasefield_dirichlet_data(self, load: float) -> Optional[Any]:
-        """Provide phase-field Dirichlet BC descriptor.
-
-        Input:
-            load: Current load value.
-        Output:
-            List of dict descriptors fixing `d=0` on inner circle.
-        """
         # model0_example: phase on inner circle fixed to 0
         return [{"bcdof": self._on_inner_circle, "value": 0.0}]
 
     def default_loads(self):
-        """Return default displacement load schedule.
-
-        Input:
-            None.
-        Output:
-            Backend array of monotonic displacement values.
-        """
         # same schedule as model0_example.is_force()
         return bm.concatenate(
             (

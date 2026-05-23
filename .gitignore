@@ -140,6 +140,10 @@ venv.bak/
 .spyderproject
 .spyproject
 
+# VS Code / Cursor — interpreter, terminal PATH, conda/venv overrides (machine-local).
+# Copy .vscode/settings.json.example to .vscode/settings.json after clone.
+.vscode/settings.json
+
 # Rope project settings
 .ropeproject
 

@@ -2,36 +2,14 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-import os
 from typing import Any, Optional, Tuple
 
-import numpy as np
 from fealpy.backend import backend_manager as bm
 
 from fracturex.damage.base import DamageModelBase
 from fracturex.phasefield.energy_degradation_function import EnergyDegradationFunction
 from fracturex.phasefield.crack_surface_density_function import CrackSurfaceDensityFunction
-
-
-def _history_update_nproc_default() -> int:
-    return max(1, int(os.cpu_count() or 1))
-
-
-def _phase_history_chunk_worker(args):
-    damage, state, bcs, idx_chunk = args
-    idx_chunk = bm.asarray(idx_chunk)
-    grad_u = state.u.grad_value(bcs, index=idx_chunk)
-    strain = 0.5 * (grad_u + bm.swapaxes(grad_u, -2, -1))
-    if damage.split in ("hybrid", "spectral"):
-        phip = damage._spectral_positive_energy_density(strain)
-    elif damage.split == "isotropic":
-        phip = damage._isotropic_energy_density(strain)
-        phip = bm.maximum(phip, 0.0)
-    else:
-        raise ValueError(f"Unknown split type: {damage.split}")
-    return bm.maximum(phip, 0.0)
 
 
 def _material_lame_from_model(model) -> Tuple[float, float]:
@@ -185,82 +163,27 @@ class PhaseFieldDamageModel(DamageModelBase):
     # ------------------------------------------------------------
     # quadrature-history update
     # ------------------------------------------------------------
-    def update_history_on_quadrature(
-        self,
-        discr,
-        state,
-        case,
-        bcs,
-        index=None,
-        *,
-        parallel: bool = False,
-        nproc: Optional[int] = None,
-    ):
+    def update_history_on_quadrature(self, discr, state, case, bcs, index=None):
         """
         Update H on the given quadrature points.
-
-        With ``parallel=True`` (typically from ``PhaseFieldAssembler`` when
-        ``assembly_parallel`` is on), cells are processed in batches via threads.
-        Set env ``FRACTUREX_HISTORY_UPDATE_PARALLEL=0`` (or ``false``/``off``) to force
-        the serial path even if ``parallel=True``. Optional one-line wall-clock timing
-        from the caller: ``FRACTUREX_PROFILE_HISTORY_UPDATE=1``.
-
-        Large-array performance may still benefit from tuning BLAS/OpenMP threads;
-        compare against batched parallel using profiling on representative meshes.
 
         Parameters
         ----------
         bcs : quadrature barycentric points
         index : cell indices
-        parallel : optional batched cell parallel update
-        nproc : optional worker cap (defaults to CPU count)
         """
-        mesh = discr.mesh
-        if mesh is None:
-            raise RuntimeError("discr.mesh is None in update_history_on_quadrature.")
+        grad_u = state.u.grad_value(bcs, index=index)               # (NC,NQ,GD,GD)
+        strain = 0.5 * (grad_u + bm.swapaxes(grad_u, -2, -1))
 
-        idx_all = bm.arange(mesh.number_of_cells()) if index is None else bm.asarray(index).reshape(-1)
-        n_cell = int(idx_all.shape[0])
-
-        env_serial = str(os.getenv("FRACTUREX_HISTORY_UPDATE_PARALLEL", "")).strip().lower() in (
-            "0",
-            "false",
-            "no",
-            "off",
-        )
-        parallel_eff = bool(parallel) and (not env_serial) and n_cell >= 2
-
-        phip = None
-        if parallel_eff:
-            nw = int(nproc) if nproc is not None else _history_update_nproc_default()
-            nproc_use = min(max(1, nw), n_cell)
-            edges = np.linspace(0, n_cell, nproc_use + 1, dtype=int)
-            tasks = []
-            for k in range(nproc_use):
-                i0, i1 = int(edges[k]), int(edges[k + 1])
-                if i1 > i0:
-                    tasks.append((self, state, bcs, idx_all[i0:i1]))
-            workers = min(int(nw), len(tasks))
-            try:
-                with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-                    parts = list(pool.map(_phase_history_chunk_worker, tasks))
-                phip = bm.concatenate(parts, axis=0)
-            except Exception:
-                phip = None
-
-        if phip is None:
-            grad_u = state.u.grad_value(bcs, index=index)
-            strain = 0.5 * (grad_u + bm.swapaxes(grad_u, -2, -1))
-
-            if self.split in ("hybrid", "spectral"):
-                phip = self._spectral_positive_energy_density(strain)
-            elif self.split == "isotropic":
-                phip = self._isotropic_energy_density(strain)
-                phip = bm.maximum(phip, 0.0)
-            else:
-                raise ValueError(f"Unknown split type: {self.split}")
-
+        if self.split in ("hybrid", "spectral"):
+            phip = self._spectral_positive_energy_density(strain)   # (NC,NQ)
+        elif self.split == "isotropic":
+            phip = self._isotropic_energy_density(strain)
             phip = bm.maximum(phip, 0.0)
+        else:
+            raise ValueError(f"Unknown split type: {self.split}")
+
+        phip = bm.maximum(phip, 0.0)
 
         if state.H is None:
             state.H = phip.copy()

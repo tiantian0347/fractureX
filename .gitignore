@@ -177,3 +177,16 @@ cython_debug/
 # VTK output files
 *.vtu
 *.pvtu
+*.vtk
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+
+# Local scratch and large run dumps (keep tracked reports under results/ as needed)
+scratch/
+*.h5
+*.xdmf

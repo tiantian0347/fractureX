@@ -287,6 +287,96 @@ def _write_csv(path: str, rows: List[Dict[str, Any]]) -> None:
         w.writerows(rows)
 
 
+def _write_test_report_zh(
+    *,
+    outdir: str,
+    rows: List[Dict[str, Any]],
+    meta: Dict[str, Any],
+) -> str:
+    """Chinese summary report (same data as TEST_REPORT.md)."""
+    os.makedirs(outdir, exist_ok=True)
+    report_path = os.path.join(outdir, "TEST_REPORT_ZH.md")
+    n_pass = sum(1 for r in rows if r.get("passed"))
+    n_total = len(rows)
+    all_pass = n_pass == n_total and n_total > 0
+
+    lines = [
+        "# 辅助空间预条件子 — 退化弹性块（1/g(d)）验证报告",
+        "",
+        f"- 生成时间：{datetime.now().isoformat(timespec='seconds')}",
+        f"- 输出目录：`{outdir}`",
+        f"- 总体结论：**{'通过' if all_pass else '未通过'}**（{n_pass}/{n_total} 组）",
+        "",
+        "## 测试目的",
+        "",
+        "在 **standard** Hu-Zhang 弹性装配下，应力块 `M(d)` 的积分离散系数为 **`1/g(d)`**（见",
+        "`HuZhangElasticAssembler._assemble_M_block_serial`）。当部分节点/单元 `d=1` 时，",
+        "`g(d)=eps_g`（如 `1e-6` 或 `1e-8`），对应局部 **`1/g(d) ~ 1e6` 或 `1e8`**，",
+        "这是相场裂纹形成后的典型病态情形。",
+        "",
+        "本测试在 **冻结相场** 的前提下，对预设损伤场装配 `A`，用稀疏直接法 `spsolve` 作参考解，",
+        "检验 `solve_huzhang_block_gmres_auxspace`（`weighted_aux=True`）是否与直接法一致。",
+        "",
+        "粗空间扩散权重为 **`max(g(d), eps_g)`**（Chen 等 2017 §5：Schur 辅助算子用 g 加权向量 Poisson / λ=0 弹性）。",
+        "",
+        "## 配置",
+        "",
+        f"- 弹性形式：`{meta.get('elastic_formulation', 'standard')}`",
+        f"- weighted_aux：`{meta.get('weighted_aux', True)}`",
+        f"- GMRES rtol：`{meta.get('gmres_rtol', 1e-8)}`",
+        f"- 网格 hmin：`{meta.get('hmin')}`（NN={meta.get('NN')}, NC={meta.get('NC')}）",
+        f"- eps_g 列表：`{meta.get('eps_g_list')}`",
+        f"- 损伤模式：{', '.join(meta.get('patterns', []))}",
+        "",
+        "## 损伤场模式",
+        "",
+        "| 模式 | 说明 |",
+        "|---|---|",
+    ]
+    for name, desc in DAMAGE_PATTERNS.items():
+        lines.append(f"| `{name}` | {desc} |")
+
+    lines.extend(
+        [
+            "",
+            "## 结果汇总",
+            "",
+            "| 模式 | eps_g | 载荷 | d=1 占比 | g_min | max(1/g) | rel_diff | rel_res_aux | GMRES 迭代 | 通过 |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|:---:|",
+        ]
+    )
+    for r in rows:
+        lines.append(
+            f"| {r['pattern']} | {r['eps_g']:.0e} | {r['load']:.4f} | "
+            f"{r.get('frac_nodes_d_eq_1', 0):.3f} | {r.get('g_min', 0):.2e} | "
+            f"{r.get('inv_g_max', 0):.2e} | {r['rel_diff']:.2e} | {r['rel_res_aux']:.2e} | "
+            f"{r.get('niter', -1)} | {'是' if r.get('passed') else '**否**'} |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## 验收标准",
+            "",
+            "- `rel_diff = ||x_aux - x_direct|| / ||x_direct|| < 1e-5`",
+            "- `rel_res_aux = ||A x_aux - b|| / ||b|| < 1e-7`",
+            "- GMRES 收敛（`converged=True`）",
+            "",
+            "## 运行方式",
+            "",
+            "```bash",
+            "bash scripts/run_python.sh fracturex/tests/test_auxspace_precond_degraded_elastic.py",
+            "```",
+            "",
+            "环境变量：`FRACTUREX_HMIN`、`FRACTUREX_EPS_G_LIST`、`FRACTUREX_RUN_SHORT=1`（快速子集）。",
+            "",
+        ]
+    )
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return report_path
+
+
 def _write_test_report(
     *,
     outdir: str,
@@ -312,6 +402,7 @@ def _write_test_report(
         "Verify `solve_huzhang_block_gmres_auxspace` on the Hu-Zhang mixed elastic system",
         "with **standard** formulation: stress block `M(d)` uses integrator coefficient `1/g(d)`.",
         "Nodes/cells with `d=1` yield `g(d)=eps_g`, hence local `1/g(d) ~ 1/eps_g` (e.g. `1e6` or `1e8`).",
+        "Coarse auxiliary diffusion uses `max(g(d), eps_g)` when `weighted_aux=True`.",
         "Reference solution: sparse direct `spsolve`. Phase-field and damage evolution are **frozen**.",
         "",
         "## Configuration",
@@ -446,7 +537,9 @@ def main() -> int:
     _write_csv(os.path.join(out_root, "results_all.csv"), all_rows)
 
     report_path = _write_test_report(outdir=out_root, rows=all_rows, meta=meta)
+    report_zh = _write_test_report_zh(outdir=out_root, rows=all_rows, meta=meta)
     print(f"\nWrote report: {report_path}")
+    print(f"Wrote report (ZH): {report_zh}")
     print(f"Summary: {n_pass}/{len(all_rows)} passed, all_pass={meta['all_pass']}")
 
     return 0 if meta["all_pass"] else 1

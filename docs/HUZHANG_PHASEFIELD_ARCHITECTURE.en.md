@@ -188,7 +188,7 @@ Block **ILU-preconditioned GMRES**, **block Krylov** (optional FEALPy `gmres`/`m
 
 - **Default**: elastic uses SciPy **`spsolve`**; phase-field uses no-preconditioner SciPy **`lgmres`**.
 - **Extensions**: pass custom **`elastic_solver` / `phase_solver`** to `HuZhangPhaseFieldStaggeredDriver` (e.g. FEALPy Krylov, `solve_huzhang_block_gmres_auxspace` from this repo).
-- **GMRES preconditioners** (`linear_solvers.py`): pass the same **`elastic_formulation`** as the assembler, plus **`damage`** and **`state`** when using weighted coarse diffusion. **`weighted_aux=True`** applies **g(d)²** on the P1 coarse Laplacian only for **`standard`**; for **`effective_stress`** the coarse Laplacian stays unweighted and damage enters via the Schur block from **B(d)**. See `docs/HUZHANG_INTERFACE_TEST_MANUAL.md` §3 (Chinese).
+- **GMRES preconditioners** (`linear_solvers.py`): pass the same **`elastic_formulation`** as the assembler, plus **`damage`** and **`state`** when using weighted coarse diffusion. **`weighted_aux=True`** applies **max(g(d), eps_g)** on the P1 coarse Laplacian only for **`standard`** (Chen et al. 2017 §5); for **`effective_stress`** the coarse Laplacian stays unweighted and damage enters via the Schur block from **B(d)**. See `docs/HUZHANG_INTERFACE_TEST_MANUAL.md` §3 (Chinese).
 - **Standard Schur**: for fixed \(d_h\), \(\mathcal K_h=[[A(d_h),B^\top],[B,0]]\), \(S(d_h)=B A(d_h)^{-1}B^\top\); code builds \(\widehat S=B\,\mathrm{diag}(A)^{-1}B^\top\) and approximates \(B_A\), \(B_S\) (manual §3.0).
 
 ### 5.5 Environment variables (aux-space, assembly parallel, history profiling)

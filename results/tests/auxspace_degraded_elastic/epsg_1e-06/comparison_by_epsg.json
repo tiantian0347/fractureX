@@ -1,0 +1,109 @@
+{
+  "eps_g": 1e-06,
+  "patterns": {
+    "intact": [
+      {
+        "load": 0.001,
+        "rel_diff": 5.372327949791923e-12,
+        "rel_res_aux": 2.6144569169209265e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 0.9999999999
+      },
+      {
+        "load": 0.005,
+        "rel_diff": 4.913617358672002e-12,
+        "rel_res_aux": 2.38100808791351e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 0.9999999999
+      },
+      {
+        "load": 0.01,
+        "rel_diff": 4.916572610836569e-12,
+        "rel_res_aux": 2.3824841510898356e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 0.9999999999
+      }
+    ],
+    "half_cracked": [
+      {
+        "load": 0.001,
+        "rel_diff": 2.8507171959202727e-10,
+        "rel_res_aux": 6.699367307350905e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 1000000.0
+      },
+      {
+        "load": 0.005,
+        "rel_diff": 2.245977328939147e-10,
+        "rel_res_aux": 6.510546452227893e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 1000000.0
+      },
+      {
+        "load": 0.01,
+        "rel_diff": 2.2460362858440218e-10,
+        "rel_res_aux": 6.525440309471234e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 1000000.0
+      }
+    ],
+    "band_cracked": [
+      {
+        "load": 0.001,
+        "rel_diff": 2.72143800750641e-11,
+        "rel_res_aux": 3.7204096370703645e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 1000000.0
+      },
+      {
+        "load": 0.005,
+        "rel_diff": 4.0077303627105384e-11,
+        "rel_res_aux": 3.982673719815976e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 1000000.0
+      },
+      {
+        "load": 0.01,
+        "rel_diff": 4.062860701450279e-11,
+        "rel_res_aux": 4.030903870223495e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 1000000.0
+      }
+    ],
+    "patch_cracked": [
+      {
+        "load": 0.001,
+        "rel_diff": 4.582300071064955e-11,
+        "rel_res_aux": 1.0755418314228857e-08,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 1000000.0
+      },
+      {
+        "load": 0.005,
+        "rel_diff": 3.980121971957953e-11,
+        "rel_res_aux": 8.10362745950298e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 1000000.0
+      },
+      {
+        "load": 0.01,
+        "rel_diff": 3.9695505571620984e-11,
+        "rel_res_aux": 8.088606450559248e-09,
+        "niter": 0,
+        "passed": true,
+        "inv_g_max": 1000000.0
+      }
+    ]
+  }
+}

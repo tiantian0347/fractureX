@@ -174,9 +174,10 @@ def _normalize_elastic_formulation(formulation: str) -> str:
 
 def _coarse_diffusion_uses_stress_weight(formulation: str, weighted_aux: bool) -> bool:
     """
-    Auxiliary P1 diffusion is weighted by g(d)^2 only for the standard formulation
-    (degradation on the stress block M). For effective_stress, g(d) lives on B and the
-  coarse Laplacian stays unweighted; damage enters the Schur block via A.
+    Auxiliary P1 diffusion is weighted by g(d) only for the standard formulation
+    (degradation on the stress block M; Chen et al. 2017 §5: g-weighted lambda=0 elasticity
+    / vector Poisson on the Schur complement). For effective_stress, g(d) lives on B and
+    the coarse Laplacian stays unweighted; damage enters the Schur block via A.
     """
     return bool(weighted_aux) and _normalize_elastic_formulation(formulation) == "standard"
 
@@ -215,20 +216,26 @@ def _get_or_build_p1_isotropic_pyamg(mesh, q: int):
     return ml
 
 
-def _make_weighted_g2_coef(*, d_fun, degradation_fun):
+def _make_weighted_g_coef(*, d_fun, degradation_fun):
     """
-    Legacy coef(bcs,index)->g(d)^2 from raw d and degradation(d).
+    Legacy coef(bcs,index)->g(d) from raw d and degradation(d).
     Prefer :func:`_make_coarse_diffusion_coef` with damage.coef_bary for consistency with assembly.
     """
     if d_fun is None or degradation_fun is None:
         return None
 
-    def coef_g2(bcs, index=None):
+    def coef_g(bcs, index=None):
         dval = d_fun(bcs, index=index)
         gd = degradation_fun(dval)
-        return bm.asarray(gd) ** 2
+        return bm.asarray(gd)
 
-    return coef_g2
+    return coef_g
+
+
+def _coarse_diffusion_g_floor(damage) -> float:
+    """Lower bound ``eps_g`` for P1 coarse diffusion weight ``max(g(d), eps_g)``."""
+    eg = float(getattr(damage, "eps_g", 1e-10))
+    return max(eg, 1e-30)
 
 
 def _make_coarse_diffusion_coef(
@@ -241,18 +248,21 @@ def _make_coarse_diffusion_coef(
     degradation_fun=None,
 ):
     """
-    Coarse auxiliary diffusion coefficient aligned with HuZhangElasticAssembler:
+    Coarse auxiliary diffusion coefficient (Chen et al. 2017 §5, phase-field extension):
 
-    - ``standard``: coef = g(d)^2 from ``damage.coef_bary`` (stress-side degradation).
+    - ``standard``: coef = max(g(d), eps_g) from ``damage.coef_bary`` (g-weighted vector
+      Poisson / lambda=0 elasticity on the Schur complement; distinct from stress-block 1/g).
     - ``effective_stress``: None (unweighted Laplacian; g(d) is on the B block only).
     """
     if not _coarse_diffusion_uses_stress_weight(formulation, weighted_aux):
         return None
 
+    g_floor = _coarse_diffusion_g_floor(damage) if damage is not None else 1e-30
+
     if damage is not None and state is not None:
         from fracturex.damage.base import DamageStateView
 
-        def coef_g2(bcs, index=None):
+        def coef_g(bcs, index=None):
             view = DamageStateView(
                 d=state.d,
                 sigma=state.sigma,
@@ -261,11 +271,11 @@ def _make_coarse_diffusion_coef(
                 H=state.H,
             )
             g = damage.coef_bary(view, bcs, index=index)
-            return bm.asarray(g) ** 2
+            return bm.maximum(bm.asarray(g), g_floor)
 
-        return coef_g2
+        return coef_g
 
-    return _make_weighted_g2_coef(d_fun=d_fun, degradation_fun=degradation_fun)
+    return _make_weighted_g_coef(d_fun=d_fun, degradation_fun=degradation_fun)
 
 
 def _extract_mechanical_blocks(A_, gdof_sigma: int):
@@ -373,7 +383,7 @@ def _extract_niter_from_info(info) -> int:
     return 0
 
 
-def _extract_converged_from_info(info) -> bool:
+def _extract_converged_from_info(info, *, rtol: float = 1e-8, bnorm: float = 1.0) -> bool:
     try:
         if isinstance(info, dict):
             for k in ("converged", "success"):
@@ -381,6 +391,9 @@ def _extract_converged_from_info(info) -> bool:
                     return bool(info[k])
             if "info" in info:
                 return int(info["info"]) == 0
+            if "residual" in info:
+                res = float(info["residual"])
+                return res <= max(float(rtol) * max(float(bnorm), 1e-30), 1e-30)
         if isinstance(info, (int, np.integer)):
             return int(info) == 0
     except Exception:
@@ -388,12 +401,18 @@ def _extract_converged_from_info(info) -> bool:
     return False
 
 
-def _krylov_stats(callback_residuals, solver: str, info, atol, rtol) -> KrylovInfo:
+def _krylov_stats(callback_residuals, solver: str, info, atol, rtol, *, bnorm: float = 1.0) -> KrylovInfo:
     niter = len(callback_residuals)
     if niter == 0:
         niter = _extract_niter_from_info(info)
     residual_norm = float(callback_residuals[-1]) if callback_residuals else float("nan")
-    converged = _extract_converged_from_info(info)
+    if callback_residuals:
+        converged = _extract_converged_from_info(info, rtol=rtol, bnorm=bnorm)
+    elif isinstance(info, dict) and "residual" in info:
+        residual_norm = float(info["residual"])
+        converged = _extract_converged_from_info(info, rtol=rtol, bnorm=bnorm)
+    else:
+        converged = _extract_converged_from_info(info, rtol=rtol, bnorm=bnorm)
     return KrylovInfo(
         solver=solver,
         niter=int(niter),
@@ -931,7 +950,7 @@ def solve_huzhang_block_gmres_fast(
 
     **``auto``** (default): ``gs_amg_gs`` if ``order_p < 6``, else ``coarse_amg_halfgs``.
 
-    **``elastic_formulation``**: ``standard`` weights the P1 coarse Laplacian by ``g(d)^2`` when
+    **``elastic_formulation``**: ``standard`` weights the P1 coarse Laplacian by ``max(g(d), eps_g)`` when
     ``weighted_aux=True``; ``effective_stress`` uses an unweighted coarse Laplacian (``g(d)`` on B
     only, via the Schur block from ``A``).
 
@@ -1238,8 +1257,9 @@ def solve_huzhang_block_gmres_auxspace(
 
     **Degradation placement** (must match ``HuZhangElasticAssembler.formulation``):
 
-    - ``standard``: g(d) on stress block M (in ``A``); optional coarse diffusion weighted by
-      ``g(d)^2`` from ``damage.coef_bary`` when ``weighted_aux=True``.
+    - ``standard``: g(d) on stress block M (in ``A``, integrator ``1/g``); optional coarse diffusion
+      weighted by ``max(g(d), eps_g)`` from ``damage.coef_bary`` when ``weighted_aux=True`` (Chen et
+      al. 2017 §5: g-weighted auxiliary elasticity / vector Poisson on the Schur complement).
     - ``effective_stress``: g(d) on coupling block B (in ``A``); coarse diffusion is always
       unweighted — damage enters only via the Schur block extracted from ``A``.
 
@@ -1327,18 +1347,21 @@ def solve_huzhang_block_gmres_auxspace(
         coarse_cached["calls_since_build"] = calls
         _auxspace_log(f"coarse GAMG reuse: call {calls}/{coarse_interval}")
     else:
-        GAMGSolver = _import_fealpy_gamg_solver()
-        CSRTensor = _import_fealpy_csr_tensor()
-        _auxspace_log("building FEALPy GAMGSolver hierarchy on S_coarse (algebraic coarsening) ...")
-        gamg = GAMGSolver(ptype="V", sstep=int(max(1, int(smoother_steps))), rtol=1e-8, atol=1e-12, isolver="CG", maxit=1)
-        S_coarse_fealpy = CSRTensor.from_scipy(S_coarse_scipy)
-        gamg.setup(S_coarse_fealpy, space=None)
+        if not PYAMG_AVAILABLE:
+            raise RuntimeError(
+                "Aux-space coarse correction requires pyamg (Gauss–Seidel + coarse AMG). "
+                "Install with: pip install pyamg"
+            )
+        import pyamg
+
+        _auxspace_log("building pyamg hierarchy on S_coarse (smoothed aggregation) ...")
+        ml_coarse = pyamg.smoothed_aggregation_solver(S_coarse_scipy)
         n0 = int(S_coarse_scipy.shape[0])
 
-        def _coarse_vcycle(r, g=gamg):
+        def _coarse_vcycle(r, _ml=ml_coarse):
             rr = np.asarray(r, dtype=float).reshape(-1)
-            ee = g.vcycle(rr)
-            return np.asarray(ee, dtype=float).reshape(-1)
+            x = _ml.solve(rr, maxiter=1, cycle="V")
+            return np.asarray(x, dtype=float).reshape(-1)
 
         P_coarse = LinearOperator((n0, n0), matvec=_coarse_vcycle, dtype=S_coarse_scipy.dtype)
         _AUXSPACE_COARSE_CACHE[coarse_key] = {
@@ -1346,7 +1369,7 @@ def solve_huzhang_block_gmres_auxspace(
             "interval": coarse_interval,
             "calls_since_build": 1,
         }
-        _auxspace_log("GAMGSolver setup done")
+        _auxspace_log("pyamg coarse hierarchy setup done")
     # Temporarily disable the consistency augmentation term (+ theta*C_h):
     # use plain Schur approximation to reduce setup/assembly cost.
     S_hat = S_csr.tocsr()
@@ -1393,7 +1416,7 @@ def solve_huzhang_block_gmres_auxspace(
         # B_S(d_h) ≈ S(d_h)^{-1}: GS + auxiliary coarse correction on S_hat ≈ S(d_h)
         gauss_seidel(S_hat, u1, r1_local, iterations=max(int(sstep), int(smoother_steps), 1), sweep="forward")
 
-        # FEALPy GAMG V-cycle on auxiliary P1 Laplacian (per displacement component)
+        # pyamg V-cycle on auxiliary P1 Laplacian (per displacement component)
         r2 = r1_local - S_hat @ u1
         for i in range(gdim):
             i0 = i * sgdof
@@ -1452,7 +1475,16 @@ def solve_huzhang_block_gmres_auxspace(
             _auxspace_log(f"gmres x-callback #{cb_count['n']}: true_relres={tr:.3e}")
 
     fgmres = _fealpy_krylov("gmres")
-    use_scipy = fgmres is None
+    force_scipy = os.environ.get("FRACTUREX_AUXSPACE_USE_SCIPY_GMRES", "1").strip() in (
+        "1",
+        "true",
+        "True",
+        "yes",
+        "YES",
+    )
+    use_scipy = fgmres is None or force_scipy
+    if force_scipy and fgmres is not None:
+        _auxspace_log("FRACTUREX_AUXSPACE_USE_SCIPY_GMRES=1: using scipy.sparse.linalg.gmres")
     if not use_scipy:
         _auxspace_log("starting fealpy.solver.gmres ...")
         try:
@@ -1511,5 +1543,5 @@ def solve_huzhang_block_gmres_auxspace(
             )
     except Exception:
         pass
-    return x, _krylov_stats(residuals, "gmres-auxspace", info, atol, rtol)
+    return x, _krylov_stats(residuals, "gmres-auxspace", info, atol, rtol, bnorm=bnorm)
 

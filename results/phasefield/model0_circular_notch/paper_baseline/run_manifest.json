@@ -1,0 +1,31 @@
+{
+  "case": "model0",
+  "mode": "baseline",
+  "solver_mode": "standard:baseline_elastic_spsolve_serial_asm_1step/phase_gmres",
+  "assembly_parallel": false,
+  "elastic_formulation": "standard",
+  "eps_g": 1e-06,
+  "mesh": {
+    "type": "distmesh",
+    "hmin": 0.0041400000000000005,
+    "h_min": 0.0029298796722596046,
+    "h_max": 0.0082106672912012,
+    "h_mean": 0.004192042504401575,
+    "h_target": 0.0092,
+    "l0": 0.02,
+    "h_ok": true,
+    "NC": 114983,
+    "NN": 58172
+  },
+  "gdof": {
+    "sigma": 1901963,
+    "u": 1379796,
+    "d": 231322,
+    "elastic_block": 3281759,
+    "total": 3513081
+  },
+  "n_load_steps": 1,
+  "loads_preview": [
+    0.014000000000000002
+  ]
+}

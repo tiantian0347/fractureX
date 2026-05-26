@@ -2,14 +2,19 @@
 """
 Hu-Zhang staggered phase-field paper runs (server batch).
 
-Main path (default):
+Production (``--mode direct``, default for ``run_main.sh``):
+  - parallel assembly
+  - elastic: sparse direct (``spsolve`` / ``pardiso`` / ``mumps`` via env)
+  - phase: unpreconditioned GMRES
+
+Aux-space test (``--mode aux``, model0 recommended):
   - parallel assembly
   - elastic: aux-space preconditioned GMRES
   - phase: unpreconditioned GMRES
 
 Baseline (``--mode baseline``):
   - serial assembly
-  - elastic: scipy.sparse.linalg.spsolve (one load step only)
+  - elastic: direct (one load step only)
   - phase: unpreconditioned GMRES
 
 Outputs under ``<root>/phasefield/<case>/<run_label>/epsg_<tag>/`` (same layout as tests):
@@ -55,6 +60,7 @@ from fracturex.utilfuc.linear_solvers import (
     KrylovInfo,
     _extract_converged_from_info,
     solve_huzhang_block_gmres_auxspace,
+    solve_huzhang_block_gmres_fast,
 )
 from fracturex.utilfuc.phasefield_mesh import (
     mesh_h_stats as _mesh_h_stats,
@@ -66,6 +72,59 @@ from fracturex.utilfuc.phasefield_mesh import (
 
 EPS_G = 1e-6
 ELASTIC_FORMULATION = "standard"
+
+
+def _run_short_smoke() -> bool:
+    return os.environ.get("FRACTUREX_RUN_SHORT", "0") == "1"
+
+
+def _normalize_mode(mode: str) -> str:
+    m = mode.lower()
+    if m == "main":
+        # Legacy alias: production path is now direct elastic.
+        return "direct"
+    return m
+
+
+def _parallel_assembly(mode: str) -> bool:
+    return _normalize_mode(mode) in ("direct", "aux")
+
+
+def _use_elastic_fast(mode: str) -> bool:
+    if _normalize_mode(mode) != "aux":
+        return False
+    raw = os.environ.get("FRACTUREX_ELASTIC_FAST", "").strip()
+    if raw == "1":
+        return True
+    if raw == "0":
+        return False
+    return _run_short_smoke()
+
+
+def _elastic_direct_backend() -> str:
+    raw = os.environ.get("FRACTUREX_ELASTIC_DIRECT_BACKEND", "spsolve").strip().lower()
+    if raw in ("spsolve", "direct", "superlu", "pardiso", "mumps"):
+        return raw
+    return "spsolve"
+
+
+def _run_label_for_mode(mode: str) -> str:
+    mode = _normalize_mode(mode)
+    return {
+        "baseline": "paper_baseline",
+        "direct": "paper_direct",
+        "aux": "paper_aux",
+    }[mode]
+
+
+def _assembly_nproc() -> int:
+    raw = os.environ.get("FRACTUREX_ASSEMBLY_NPROC", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return max(1, int(os.cpu_count() or 1))
 
 
 def _phase_gmres(
@@ -237,13 +296,23 @@ def _build_case(case_id: str):
     if case_id == "model0":
         mat = Model0Material()
         hmin_env = os.environ.get("FRACTUREX_HMIN", "").strip()
-        hmin, mesh_info = _resolve_model0_hmin(
-            mat.l0,
-            lambda h: Model0CircularNotchCase(
-                _model=mat, hmin=h, debug_mesh=False
-            ).make_mesh(),
-            hmin0=float(hmin_env) if hmin_env else None,
-        )
+        if hmin_env:
+            hmin = float(hmin_env)
+            mesh_info = {"hmin": hmin, "mesh_note": "FRACTUREX_HMIN override"}
+        elif _run_short_smoke() and os.environ.get("FRACTUREX_FAST_COARSE_MESH", "1") == "1":
+            hmin = 0.05
+            mesh_info = {
+                "hmin": hmin,
+                "mesh_note": "RUN_SHORT smoke: coarse hmin (set FRACTUREX_FAST_COARSE_MESH=0 for paper mesh)",
+            }
+        else:
+            hmin, mesh_info = _resolve_model0_hmin(
+                mat.l0,
+                lambda h: Model0CircularNotchCase(
+                    _model=mat, hmin=h, debug_mesh=False
+                ).make_mesh(),
+                hmin0=None,
+            )
         case = Model0CircularNotchCase(_model=mat, hmin=hmin, debug_mesh=False)
         case.output_enabled = False
         mesh = case.make_mesh()
@@ -297,7 +366,8 @@ def _build_driver(
     save_npz: bool,
     save_every: int,
 ) -> Tuple[HuZhangPhaseFieldStaggeredDriver, HuZhangDiscretization, PhaseFieldDamageModel]:
-    assembly_parallel = mode == "main"
+    mode = _normalize_mode(mode)
+    assembly_parallel = _parallel_assembly(mode)
     d_relaxation = HuZhangPhaseFieldStaggeredDriver._resolve_d_relaxation(None)
 
     discr = HuZhangDiscretization(
@@ -337,8 +407,40 @@ def _build_driver(
     )
 
     if mode == "baseline":
-        elastic_solver = HuZhangPhaseFieldStaggeredDriver._default_spsolve
-        solver_mode_tag = f"{ELASTIC_FORMULATION}:baseline_elastic_spsolve_serial_asm_1step/phase_gmres"
+        backend = _elastic_direct_backend()
+        elastic_solver = HuZhangPhaseFieldStaggeredDriver.linear_solver(backend)
+        solver_mode_tag = (
+            f"{ELASTIC_FORMULATION}:baseline_elastic_{backend}_serial_asm_1step/phase_gmres"
+        )
+    elif mode == "direct":
+        backend = _elastic_direct_backend()
+        elastic_solver = HuZhangPhaseFieldStaggeredDriver.linear_solver(backend)
+        solver_mode_tag = (
+            f"{ELASTIC_FORMULATION}:elastic_{backend}_parallel/phase_gmres_no_precond"
+        )
+    elif _use_elastic_fast(mode):
+
+        def elastic_solver(A, F):
+            x, _ = solve_huzhang_block_gmres_fast(
+                A,
+                F,
+                gdof_sigma=discr.gdof_sigma,
+                vspace=discr.space_u,
+                atol=1e-12,
+                rtol=1e-8,
+                restart=60,
+                maxit=200,
+                q=3,
+                weighted_aux=True,
+                elastic_formulation=ELASTIC_FORMULATION,
+                damage=damage,
+                state=discr.state,
+            )
+            return x
+
+        solver_mode_tag = (
+            f"{ELASTIC_FORMULATION}:elastic_fast_schur_gmres_parallel/phase_gmres_no_precond"
+        )
     else:
 
         def elastic_solver(A, F):
@@ -373,7 +475,7 @@ def _build_driver(
         elastic_assembler=elastic_assembler,
         phase_assembler=phase_assembler,
         tol=1e-5,
-        maxit=50 if mode == "main" else 50,
+        maxit=50,
         d_relaxation=d_relaxation,
         elastic_solver=elastic_solver,
         phase_solver=_phase_gmres,
@@ -442,14 +544,14 @@ def _run_with_vtu(
 
 
 def run(case_id: str, mode: str, out_root: Path) -> Path:
-    mode = mode.lower()
-    if mode not in ("main", "baseline"):
-        raise ValueError(f"mode must be main or baseline, got {mode!r}")
+    mode = _normalize_mode(mode.lower())
+    if mode not in ("direct", "aux", "baseline"):
+        raise ValueError(f"mode must be direct, aux, or baseline, got {mode!r}")
 
     case, mesh, mat, loads_full, mesh_param = _build_case(case_id)
     loads = _baseline_one_load(loads_full) if mode == "baseline" else loads_full
 
-    run_label = "paper_baseline" if mode == "baseline" else "paper_main"
+    run_label = _run_label_for_mode(mode)
     tag_dir = phasefield_tag_dir(
         case.name,
         run_label,
@@ -460,8 +562,8 @@ def run(case_id: str, mode: str, out_root: Path) -> Path:
     run_parent = Path(tag_dir).parent
     vtu_path = Path(vtk_dir(tag_dir))
 
-    save_npz = os.environ.get("FRACTUREX_SAVE_NPZ", "1" if mode == "main" else "0") == "1"
-    save_every = int(os.environ.get("FRACTUREX_SAVE_EVERY", "10" if mode == "main" else "1"))
+    save_npz = os.environ.get("FRACTUREX_SAVE_NPZ", "1" if mode != "baseline" else "0") == "1"
+    save_every = int(os.environ.get("FRACTUREX_SAVE_EVERY", "10" if mode != "baseline" else "1"))
 
     driver, discr, damage = _build_driver(
         case=case,
@@ -478,7 +580,8 @@ def run(case_id: str, mode: str, out_root: Path) -> Path:
         "case": case_id,
         "mode": mode,
         "solver_mode": getattr(driver, "_solver_mode_tag", mode),
-        "assembly_parallel": mode == "main",
+        "assembly_parallel": _parallel_assembly(mode),
+        "elastic_direct_backend": _elastic_direct_backend() if mode in ("direct", "baseline") else None,
         "elastic_formulation": ELASTIC_FORMULATION,
         "eps_g": EPS_G,
         "mesh": mesh_param,
@@ -495,6 +598,15 @@ def run(case_id: str, mode: str, out_root: Path) -> Path:
     _write_run_manifest(run_parent / "run_manifest.json", manifest)
 
     print(f"\n===== paper_huzhang {case_id} / {mode} =====")
+    if mode in ("direct", "aux"):
+        print(
+            f"parallel: assembly_parallel=True, FRACTUREX_ASSEMBLY_NPROC={_assembly_nproc()}, "
+            f"BLAS/OpenMP threads=1 (see env.sh); mode={mode}"
+        )
+        if mode == "direct":
+            print(f"elastic: direct ({_elastic_direct_backend()})")
+        else:
+            print(f"elastic: aux-space GMRES (fast={_use_elastic_fast(mode)})")
     print(f"mesh: {mesh_param}")
     print(f"gdof: sigma={discr.gdof_sigma}, u={discr.gdof_u}, d={discr.space_d.number_of_global_dofs()}, total={gdof_total}")
     print(f"h_ok (h_max < {mesh_param['h_target']:.6e}): {mesh_param['h_ok']}")
@@ -555,9 +667,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        default="main",
-        choices=["main", "baseline"],
-        help="main=aux-space+parallel; baseline=direct elastic 1 step serial",
+        default="direct",
+        choices=["direct", "aux", "main", "baseline"],
+        help="direct=elastic sparse direct+parallel; aux=aux-space GMRES; baseline=1-step serial",
     )
     parser.add_argument(
         "--out-root",

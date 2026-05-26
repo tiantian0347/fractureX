@@ -119,7 +119,7 @@ CaseBase
 - **相场物理**：`AT1/AT2`、退化律、`split`、`eps_g`、`history_source`。  
 - **装配策略**：`formulation="standard"` 或 `"effective_stress"`（`g(d)` 仅在 **M** 或 **B** 之一，互斥）。  
 - **求解器注入**：`elastic_solver` 与 `phase_solver` 可替换为用户自定义实现。  
-- **迭代预条件与 formulation 对齐**：`solve_huzhang_block_gmres_auxspace` / `solve_huzhang_block_gmres_fast` 须传入与 assembler 相同的 `elastic_formulation`；`standard` 可在粗 P1 扩散上用 `coef_bary`→**g²**，`effective_stress` 粗空间不加 g、损伤仅经 Schur（**B**）进入。  
+- **迭代预条件与 formulation 对齐**：`solve_huzhang_block_gmres_auxspace` / `solve_huzhang_block_gmres_fast` 须传入与 assembler 相同的 `elastic_formulation`；`standard` 可在粗 P1 扩散上用 `coef_bary`→**g**（Chen 等 2017 §5），`effective_stress` 粗空间不加 g、损伤仅经 Schur（**B**）进入。  
 - **标准模型 Schur**：固定 \(d_h\) 时 \(\mathcal K_h=[[A(d_h),B^\top],[B,0]]\)，\(S(d_h)=B A(d_h)^{-1}B^\top\)；代码用 \(\widehat S=B\,\mathrm{diag}(A)^{-1}B^\top\) 近似，并分别构造 \(B_A\)、\(B_S\)。详见 `docs/HUZHANG_INTERFACE_TEST_MANUAL.md` §3.0。  
 - **运行记录**：`RunRecorder` 可控制记录粒度、checkpoint 频率与输出目录。  
 

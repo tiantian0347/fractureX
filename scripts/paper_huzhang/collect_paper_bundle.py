@@ -25,7 +25,20 @@ def _tail_history(path: Path, n: int = 5) -> list[dict]:
     return rows[-n:]
 
 
-def collect(root: Path) -> dict:
+def _sync_docs(index_md: Path, docs_out: Path | None) -> None:
+    if docs_out is None:
+        return
+    docs_out.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        "# Hu-Zhang paper batch results (auto-generated)\n\n"
+        "Do not edit by hand; regenerate with "
+        "`bash scripts/paper_huzhang/wait_and_collect.sh --no-wait`.\n\n"
+    )
+    body = index_md.read_text(encoding="utf-8")
+    docs_out.write_text(header + body, encoding="utf-8")
+
+
+def collect(root: Path, docs_out: Path | None = None) -> dict:
     index: dict = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "root": str(root),
@@ -100,10 +113,15 @@ def collect(root: Path) -> dict:
             )
     md_path = root / "PAPER_INDEX.md"
     md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    _sync_docs(md_path, docs_out)
 
     index["index_md"] = str(md_path)
+    if docs_out is not None:
+        index["docs_md"] = str(docs_out)
     print(f"Wrote {out}")
     print(f"Wrote {md_path}")
+    if docs_out is not None:
+        print(f"Wrote {docs_out}")
     return index
 
 
@@ -113,8 +131,14 @@ def main() -> None:
         "--root",
         default=os.environ.get("FRACTUREX_RESULTS_ROOT", "results"),
     )
+    parser.add_argument(
+        "--docs-out",
+        default=os.environ.get("FRACTUREX_PAPER_DOCS", ""),
+        help="Also copy the markdown table into this docs path (e.g. docs/HUZHANG_PAPER_RESULTS.md).",
+    )
     args = parser.parse_args()
-    collect(Path(args.root).resolve())
+    docs = Path(args.docs_out).resolve() if str(args.docs_out).strip() else None
+    collect(Path(args.root).resolve(), docs_out=docs)
 
 
 if __name__ == "__main__":

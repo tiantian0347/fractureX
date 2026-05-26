@@ -85,7 +85,7 @@ S(d_h) := B\,A(d_h)^{-1}B^\top.
 
 | `elastic_formulation` | 装配中 `g(d)` 位置 | 线性系统 `A` | 预条件子中粗空间 / Schur |
 |----------------------|-------------------|--------------|-------------------------|
-| `"standard"` | 应力块 **M**（`HuZhangStressIntegrator`，系数 `1/g`） | `M(d)` 退化，`B` 常数 | Schur 由当前 `A` 分块得到（损伤经 **M** 进入 `D⁻¹`）；`weighted_aux=True` 时 P1 粗扩散用 **`damage.coef_bary` → g(d)²** |
+| `"standard"` | 应力块 **M**（`HuZhangStressIntegrator`，系数 `1/g`） | `M(d)` 退化，`B` 常数 | Schur 由当前 `A` 分块得到（损伤经 **M** 进入 `D⁻¹`）；`weighted_aux=True` 时 P1 粗扩散用 **`max(g(d), eps_g)`**（Chen 等 2017 §5） |
 | `"effective_stress"` | 耦合块 **B**（`HuZhangMixIntegrator`，系数 `g`） | `M` 常数，`B(d)` 退化 | Schur 由 **B(d)** 携带损伤；粗空间 **不加** `g(d)`（无权重 P1 Laplacian） |
 
 实现位置：`fracturex/utilfuc/linear_solvers.py`（`solve_huzhang_block_gmres_auxspace`、`solve_huzhang_block_gmres_fast`）。
@@ -112,7 +112,7 @@ solve_huzhang_block_gmres_auxspace(
 
 ### 3.3 `weighted_aux` 含义（按 formulation 解释）
 
-- **`standard` + `weighted_aux=True`**：在辅助 P1 扩散上施加 **g(d)²**（应力侧粗空间，与 M 块退化一致）。
+- **`standard` + `weighted_aux=True`**：在辅助 P1 扩散上施加 **max(g(d), eps_g)**（与退化应变能同阶的 g 加权；应力块仍为 `1/g`，二者角色不同）。
 - **`effective_stress` + `weighted_aux=True`**：仍做辅助空间校正，但粗 Laplacian **不加 g**；损伤只通过 Schur（来自 **B(d)**）进入预条件。
 - **`weighted_aux=False`**：两种 formulation 下粗扩散均为 **无系数** 各向同性 Laplacian；Schur 仍从当前 `A` 提取。
 
@@ -127,7 +127,7 @@ solve_huzhang_block_gmres_auxspace(
 
 1. 切换 `elastic_formulation` 时，**同时**改 assembler 与 `elastic_solver` 内 GMRES 参数，不要只改一边。
 2. 对比 direct vs aux vs fast 时，三组应使用 **同一** `elastic_formulation`。
-3. 若 `effective_stress` 下迭代发散而 direct 正常，先确认未误用“在粗空间加 g²”的旧假设；再调 `maxit` / `restart` 或暂时用直接法对照。
+3. 若 `effective_stress` 下迭代发散而 direct 正常，先确认粗空间未误加权（`effective_stress` 下应为无权重 Laplacian）；再调 `maxit` / `restart` 或暂时用直接法对照。
 
 ## 4. 结果输出位置与文件说明
 
@@ -163,7 +163,7 @@ solve_huzhang_block_gmres_auxspace(
      ```bash
      bash scripts/run_python.sh fracturex/tests/test_auxspace_precond_degraded_elastic.py
      ```
-   - 报告：`results/tests/auxspace_degraded_elastic/TEST_REPORT.md`
+   - 报告：`results/tests/auxspace_degraded_elastic/TEST_REPORT.md`（英文）、`TEST_REPORT_ZH.md`（中文）
 5. **网格敏感性**
    - 固定求解参数，测试 `hmin=0.01 / 0.008`（资源允许再细化）
 

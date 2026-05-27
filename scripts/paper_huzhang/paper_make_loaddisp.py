@@ -261,71 +261,125 @@ def plot_panels(
     dpi: int,
     force_scale: float,
     force_unit: str,
+    panel_labels: bool = True,
+    mark_peaks: bool = True,
 ) -> None:
+    """Render the panels with paper-style typography: serif fonts via mathtext,
+    minor grid, peak markers, panel labels (a) (b) (c), and a tight layout.
+    """
     n = len(panels)
-    fig, axes = plt.subplots(1, n, figsize=figsize, squeeze=False)
-    axes_flat = axes[0]
 
-    for ax, panel in zip(axes_flat, panels):
-        any_drawn = False
-        if panel.direct is not None:
-            ax.plot(
-                panel.direct.disp,
-                np.abs(panel.direct.force) * force_scale,
-                "-",
-                color="#1f77b4",
-                lw=1.6,
-                label="direct (Pardiso)",
-            )
-            any_drawn = True
-        if panel.aux is not None:
-            ax.plot(
-                panel.aux.disp,
-                np.abs(panel.aux.force) * force_scale,
-                "--",
-                color="#d62728",
-                lw=1.6,
-                label="aux-space GMRES",
-            )
-            any_drawn = True
-        if panel.ref is not None:
-            ax.plot(
-                panel.ref.disp,
-                np.abs(panel.ref.force) * force_scale,
-                ":o",
-                color="#2ca02c",
-                lw=1.2,
-                ms=4,
-                label="reference",
-            )
-            any_drawn = True
+    with plt.rc_context(_paper_rc_params()):
+        fig, axes = plt.subplots(1, n, figsize=figsize, squeeze=False, sharey=False)
+        axes_flat = axes[0]
 
-        ax.set_title(panel.inputs.display_label)
-        ax.set_xlabel("imposed displacement")
-        unit_str = f" [{force_unit}]" if force_unit else ""
-        ax.set_ylabel(f"|reaction force|{unit_str}")
-        ax.grid(True, alpha=0.3)
-        if any_drawn:
-            ax.legend(loc="best", fontsize=8)
-        else:
-            ax.text(
-                0.5,
-                0.5,
-                "no usable data\n(see log)",
-                ha="center",
-                va="center",
-                transform=ax.transAxes,
-                color="grey",
+        for idx, (ax, panel) in enumerate(zip(axes_flat, panels)):
+            any_drawn = _draw_panel(
+                ax,
+                panel,
+                force_scale=force_scale,
+                force_unit=force_unit,
+                mark_peaks=mark_peaks,
             )
+            if panel_labels and any_drawn:
+                ax.text(
+                    0.02,
+                    0.96,
+                    f"({chr(ord('a') + idx)})",
+                    transform=ax.transAxes,
+                    va="top",
+                    ha="left",
+                    fontsize=11,
+                    fontweight="bold",
+                )
 
-    fig.tight_layout()
-    out_png = out_prefix.with_suffix(".png")
-    out_pdf = out_prefix.with_suffix(".pdf")
-    fig.savefig(out_png, dpi=dpi)
-    fig.savefig(out_pdf)
-    plt.close(fig)
+        fig.tight_layout()
+        out_png = out_prefix.with_suffix(".png")
+        out_pdf = out_prefix.with_suffix(".pdf")
+        fig.savefig(out_png, dpi=dpi, bbox_inches="tight")
+        fig.savefig(out_pdf, bbox_inches="tight")
+        plt.close(fig)
+
     print(f"wrote {out_png}")
     print(f"wrote {out_pdf}")
+
+
+def _paper_rc_params() -> dict:
+    return {
+        "font.family": "serif",
+        "font.size": 10,
+        "axes.labelsize": 11,
+        "axes.titlesize": 11,
+        "legend.fontsize": 9,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "mathtext.fontset": "cm",
+        "axes.linewidth": 0.8,
+        "lines.linewidth": 1.6,
+        "grid.linewidth": 0.5,
+        "grid.alpha": 0.4,
+    }
+
+
+def _draw_panel(
+    ax,
+    panel: "CasePanel",
+    *,
+    force_scale: float,
+    force_unit: str,
+    mark_peaks: bool,
+) -> bool:
+    """Draw one (case) panel; returns True if any curve was drawn."""
+    any_drawn = False
+
+    def _plot(curve, style, color, label, marker_color=None):
+        nonlocal any_drawn
+        if curve is None:
+            return
+        disp = curve.disp
+        force = np.abs(curve.force) * force_scale
+        ax.plot(disp, force, style, color=color, label=label)
+        if mark_peaks and force.size > 1:
+            j = int(np.argmax(force))
+            ax.plot([disp[j]], [force[j]], "o", color=marker_color or color, ms=4.5, mec="white", mew=0.6)
+        any_drawn = True
+
+    _plot(panel.direct, "-", "#1f3a93", "direct (Pardiso)")
+    _plot(panel.aux, "--", "#c0392b", "aux-space GMRES")
+    _plot(panel.ref, ":", "#16a085", "reference")
+    # The reference dotted line gets markers too, regardless of mark_peaks:
+    if panel.ref is not None:
+        ax.plot(
+            panel.ref.disp,
+            np.abs(panel.ref.force) * force_scale,
+            linestyle="none",
+            marker="^",
+            color="#16a085",
+            ms=4,
+            label=None,
+        )
+
+    ax.set_title(panel.inputs.display_label)
+    ax.set_xlabel(r"imposed displacement $\bar{u}$")
+    unit_str = f"  [{force_unit}]" if force_unit else ""
+    ax.set_ylabel(rf"$|R|${unit_str}")
+    ax.grid(True, which="major")
+    ax.grid(True, which="minor", linewidth=0.3, alpha=0.25)
+    ax.minorticks_on()
+    if any_drawn:
+        ax.legend(loc="best", frameon=True, framealpha=0.9)
+    else:
+        ax.text(
+            0.5,
+            0.5,
+            "no usable data\n(see log)",
+            ha="center",
+            va="center",
+            transform=ax.transAxes,
+            color="grey",
+            style="italic",
+        )
+    return any_drawn
 
 
 def save_npz(panels: List[CasePanel], out_prefix: Path) -> None:

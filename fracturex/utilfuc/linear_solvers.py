@@ -378,6 +378,10 @@ def _extract_niter_from_info(info) -> int:
             return int(getattr(info, "niter"))
         if hasattr(info, "iterations"):
             return int(getattr(info, "iterations"))
+        if isinstance(info, (int, np.integer)):
+            iv = int(info)
+            if iv > 0:
+                return iv
     except Exception:
         pass
     return 0
@@ -401,10 +405,12 @@ def _extract_converged_from_info(info, *, rtol: float = 1e-8, bnorm: float = 1.0
     return False
 
 
-def _krylov_stats(callback_residuals, solver: str, info, atol, rtol, *, bnorm: float = 1.0) -> KrylovInfo:
+def _krylov_stats(callback_residuals, solver: str, info, atol, rtol, *, bnorm: float = 1.0, cb_count_hint: int = 0) -> KrylovInfo:
     niter = len(callback_residuals)
     if niter == 0:
         niter = _extract_niter_from_info(info)
+    if niter == 0 and cb_count_hint > 0:
+        niter = int(cb_count_hint)
     residual_norm = float(callback_residuals[-1]) if callback_residuals else float("nan")
     if callback_residuals:
         converged = _extract_converged_from_info(info, rtol=rtol, bnorm=bnorm)
@@ -1210,7 +1216,7 @@ def solve_huzhang_block_gmres_fast(
             )
     except Exception:
         pass
-    return x, _krylov_stats(residuals, stats_tag, info, atol, rtol)
+    return x, _krylov_stats(residuals, stats_tag, info, atol, rtol, cb_count_hint=cb_count["n"])
 
 
 def solve_huzhang_block_gmres_auxspace(
@@ -1543,5 +1549,5 @@ def solve_huzhang_block_gmres_auxspace(
             )
     except Exception:
         pass
-    return x, _krylov_stats(residuals, "gmres-auxspace", info, atol, rtol, bnorm=bnorm)
+    return x, _krylov_stats(residuals, "gmres-auxspace", info, atol, rtol, bnorm=bnorm, cb_count_hint=cb_count["n"])
 

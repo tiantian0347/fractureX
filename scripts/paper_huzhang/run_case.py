@@ -460,7 +460,7 @@ def _build_driver(
         _gmres_kw = _aux_gmres_settings()
 
         def elastic_solver(A, F):
-            x, _ = solve_huzhang_block_gmres_fast(
+            return solve_huzhang_block_gmres_fast(
                 A,
                 F,
                 gdof_sigma=discr.gdof_sigma,
@@ -475,7 +475,6 @@ def _build_driver(
                 damage=damage,
                 state=discr.state,
             )
-            return x
 
         solver_mode_tag = (
             f"{ELASTIC_FORMULATION}:elastic_fast_schur_gmres_parallel/phase_gmres_no_precond"
@@ -485,7 +484,7 @@ def _build_driver(
         _gmres_kw = _aux_gmres_settings()
 
         def elastic_solver(A, F):
-            x, _ = solve_huzhang_block_gmres_auxspace(
+            return solve_huzhang_block_gmres_auxspace(
                 A,
                 F,
                 gdof_sigma=discr.gdof_sigma,
@@ -505,7 +504,6 @@ def _build_driver(
                 state=discr.state,
                 schur_ilu_in_precond=False,
             )
-            return x
 
         solver_mode_tag = f"{ELASTIC_FORMULATION}:elastic_auxspace_gmres_parallel/phase_gmres_no_precond"
 

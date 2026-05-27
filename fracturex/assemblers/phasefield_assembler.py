@@ -472,8 +472,6 @@ class PhaseFieldAssembler:
             case=case,
             bcs=bcs,
             index=index,
-            parallel=self.assembly_parallel,
-            nproc=self.assembly_nproc,
         )
         if _prof_hist:
             dt_hist = time.perf_counter() - t_hist0

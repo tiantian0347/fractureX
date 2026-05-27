@@ -4,6 +4,18 @@ import os, json, csv
 import numpy as np
 
 
+def _read_self_rss_mb() -> float:
+    """Read current process RSS (MB) from /proc/self/status; NaN if unavailable."""
+    try:
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1]) / 1024.0
+    except (OSError, ValueError, IndexError):
+        pass
+    return float("nan")
+
+
 class RunRecorder:
     """
     Minimal persistent recorder:
@@ -52,6 +64,7 @@ class RunRecorder:
         Output:
             None. Creates file/header on first call, then appends rows.
         """
+        row.setdefault("rss_mb", _read_self_rss_mb())
         # Keep a stable header from the first row
         if self._csv_header is None:
             self._csv_header = list(row.keys())

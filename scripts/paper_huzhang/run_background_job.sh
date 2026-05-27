@@ -53,6 +53,19 @@ EXIT_FILE="${LOG_DIR}/${SLUG}.exit"
 PID_FILE="${LOG_DIR}/${SLUG}.pid"
 STARTED="${LOG_DIR}/${SLUG}.started_at"
 
+if [[ -f "${PID_FILE}" ]]; then
+  _old_pid="$(<"${PID_FILE}")"
+  if [[ -n "${_old_pid}" ]] && kill -0 "${_old_pid}" 2>/dev/null; then
+    _old_status=""
+    [[ -f "${STATUS}" ]] && _old_status="$(<"${STATUS}")"
+    if [[ "${_old_status}" == "running" ]]; then
+      echo "Refuse to start: another job for slug '${SLUG}' is still running (pid ${_old_pid})." >&2
+      echo "If it is stale, kill it or remove ${PID_FILE} before retrying." >&2
+      exit 3
+    fi
+  fi
+fi
+
 echo $$ > "${PID_FILE}"
 date -u +"%Y-%m-%dT%H:%M:%SZ" > "${STARTED}"
 echo running > "${STATUS}"

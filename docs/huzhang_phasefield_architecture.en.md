@@ -2,7 +2,7 @@
 
 This document is intended for **external technical communication** and **onboarding**. It summarizes how `fracturex` is structured for **Hu–Zhang stress–displacement mixed finite elements** and **phase-field damage**: layering, data flow, and configuration. The stack builds on **FEALPy** for mesh, function spaces, integration, and sparse linear algebra; this repository adds **cases, discretization, assembly, drivers, and postprocessing**.
 
-**Chinese version (同构维护)**: [HUZHANG_PHASEFIELD_ARCHITECTURE.md](HUZHANG_PHASEFIELD_ARCHITECTURE.md)
+**Chinese version (同构维护)**: [huzhang_phasefield_architecture.md](huzhang_phasefield_architecture.md)
 
 ---
 
@@ -188,7 +188,7 @@ Block **ILU-preconditioned GMRES**, **block Krylov** (optional FEALPy `gmres`/`m
 
 - **Default**: elastic uses SciPy **`spsolve`**; phase-field uses no-preconditioner SciPy **`lgmres`**.
 - **Extensions**: pass custom **`elastic_solver` / `phase_solver`** to `HuZhangPhaseFieldStaggeredDriver` (e.g. FEALPy Krylov, `solve_huzhang_block_gmres_auxspace` from this repo).
-- **GMRES preconditioners** (`linear_solvers.py`): pass the same **`elastic_formulation`** as the assembler, plus **`damage`** and **`state`** when using weighted coarse diffusion. **`weighted_aux=True`** applies **max(g(d), eps_g)** on the P1 coarse Laplacian only for **`standard`** (Chen et al. 2017 §5); for **`effective_stress`** the coarse Laplacian stays unweighted and damage enters via the Schur block from **B(d)**. See `docs/HUZHANG_INTERFACE_TEST_MANUAL.md` §3 (Chinese).
+- **GMRES preconditioners** (`linear_solvers.py`): pass the same **`elastic_formulation`** as the assembler, plus **`damage`** and **`state`** when using weighted coarse diffusion. **`weighted_aux=True`** applies **max(g(d), eps_g)** on the P1 coarse Laplacian only for **`standard`** (Chen et al. 2017 §5); for **`effective_stress`** the coarse Laplacian stays unweighted and damage enters via the Schur block from **B(d)**. See `docs/huzhang_interface_test_manual.md` §3 (Chinese).
 - **Standard Schur**: for fixed \(d_h\), \(\mathcal K_h=[[A(d_h),B^\top],[B,0]]\), \(S(d_h)=B A(d_h)^{-1}B^\top\); code builds \(\widehat S=B\,\mathrm{diag}(A)^{-1}B^\top\) and approximates \(B_A\), \(B_S\) (manual §3.0).
 
 ### 5.5 Environment variables (aux-space, assembly parallel, history profiling)
@@ -246,18 +246,18 @@ FractureX does **not** replace FEALPy; it adds a **domain layer** on top. Rough 
 
 ## 9. English/Chinese sync and maintenance
 
-- **English (this file)** and **Chinese** [HUZHANG_PHASEFIELD_ARCHITECTURE.md](HUZHANG_PHASEFIELD_ARCHITECTURE.md) are maintained **in sync on substance** (section numbering differs; Chinese **§7.1** ↔ English **§3.5** history notes + **§5.5** env table).
+- **English (this file)** and **Chinese** [huzhang_phasefield_architecture.md](huzhang_phasefield_architecture.md) are maintained **in sync on substance** (section numbering differs; Chinese **§7.1** ↔ English **§3.5** history notes + **§5.5** env table).
 - **Automated check (not auto-generated prose)**: from the repo root run  
   `python scripts/verify_huzhang_docs.py`  
   to verify that **key source paths** listed in the script still exist. When you **add or move modules**, update both `.md` files and the manifest at the top of the script.
-- **Index**: [docs/README.md](README.md)
+- **Index**: [docs/readme.md](readme.md)
 
 ---
 
 ## 10. Repository convention
 
 - Agent/collaboration notes: **`AGENT.md`** at the repo root (if present).
-- This file: **`docs/HUZHANG_PHASEFIELD_ARCHITECTURE.en.md`**. For significant API or default-behavior changes, **update the Chinese file in sync** and run `python scripts/verify_huzhang_docs.py`.
+- This file: **`docs/huzhang_phasefield_architecture.en.md`**. For significant API or default-behavior changes, **update the Chinese file in sync** and run `python scripts/verify_huzhang_docs.py`.
 
 ---
 

@@ -6,8 +6,8 @@ Run from the repository root:
   python scripts/verify_huzhang_docs.py
 
 When you add, rename, or move modules referenced in the docs, update:
-  - docs/HUZHANG_PHASEFIELD_ARCHITECTURE.md
-  - docs/HUZHANG_PHASEFIELD_ARCHITECTURE.en.md
+  - docs/huzhang_phasefield_architecture.md
+  - docs/huzhang_phasefield_architecture.en.md
   - the REQUIRED list below
 Exit code 0 if all paths exist, 1 otherwise.
 """
@@ -20,9 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 
 # Critical modules and docs for the architecture narrative (keep in sync with both .md files).
 REQUIRED: list[str] = [
-    "docs/HUZHANG_PHASEFIELD_ARCHITECTURE.md",
-    "docs/HUZHANG_PHASEFIELD_ARCHITECTURE.en.md",
-    "docs/README.md",
+    "docs/huzhang_phasefield_architecture.md",
+    "docs/huzhang_phasefield_architecture.en.md",
+    "docs/readme.md",
     "fracturex/cases/base.py",
     "fracturex/discretization/huzhang_discretization.py",
     "fracturex/damage/phasefield_damage.py",

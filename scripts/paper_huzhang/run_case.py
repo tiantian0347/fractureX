@@ -110,11 +110,15 @@ def _elastic_direct_backend() -> str:
 
 def _run_label_for_mode(mode: str) -> str:
     mode = _normalize_mode(mode)
-    return {
+    base = {
         "baseline": "paper_baseline",
         "direct": "paper_direct",
         "aux": "paper_aux",
     }[mode]
+    suffix = os.environ.get("FRACTUREX_RUN_LABEL_SUFFIX", "").strip()
+    if suffix:
+        return f"{base}_{suffix}"
+    return base
 
 
 def _assembly_nproc() -> int:
@@ -125,6 +129,39 @@ def _assembly_nproc() -> int:
         except ValueError:
             pass
     return max(1, int(os.cpu_count() or 1))
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _aux_gmres_settings() -> dict:
+    """GMRES parameters for the aux-space / fast elastic solver, overridable
+    via FRACTUREX_GMRES_{RTOL,ATOL,RESTART,MAXIT}. Used for rtol/maxit tuning
+    experiments without touching the rest of the pipeline.
+    """
+    return {
+        "rtol": _env_float("FRACTUREX_GMRES_RTOL", 1e-8),
+        "atol": _env_float("FRACTUREX_GMRES_ATOL", 1e-12),
+        "restart": _env_int("FRACTUREX_GMRES_RESTART", 60),
+        "maxit": _env_int("FRACTUREX_GMRES_MAXIT", 200),
+    }
 
 
 def _phase_gmres(
@@ -420,16 +457,18 @@ def _build_driver(
         )
     elif _use_elastic_fast(mode):
 
+        _gmres_kw = _aux_gmres_settings()
+
         def elastic_solver(A, F):
             x, _ = solve_huzhang_block_gmres_fast(
                 A,
                 F,
                 gdof_sigma=discr.gdof_sigma,
                 vspace=discr.space_u,
-                atol=1e-12,
-                rtol=1e-8,
-                restart=60,
-                maxit=200,
+                atol=_gmres_kw["atol"],
+                rtol=_gmres_kw["rtol"],
+                restart=_gmres_kw["restart"],
+                maxit=_gmres_kw["maxit"],
                 q=3,
                 weighted_aux=True,
                 elastic_formulation=ELASTIC_FORMULATION,
@@ -443,16 +482,18 @@ def _build_driver(
         )
     else:
 
+        _gmres_kw = _aux_gmres_settings()
+
         def elastic_solver(A, F):
             x, _ = solve_huzhang_block_gmres_auxspace(
                 A,
                 F,
                 gdof_sigma=discr.gdof_sigma,
                 vspace=discr.space_u,
-                atol=1e-12,
-                rtol=1e-8,
-                restart=60,
-                maxit=200,
+                atol=_gmres_kw["atol"],
+                rtol=_gmres_kw["rtol"],
+                restart=_gmres_kw["restart"],
+                maxit=_gmres_kw["maxit"],
                 sstep=3,
                 theta=0.25,
                 q=3,
@@ -475,7 +516,7 @@ def _build_driver(
         elastic_assembler=elastic_assembler,
         phase_assembler=phase_assembler,
         tol=1e-5,
-        maxit=50,
+        maxit=500,
         d_relaxation=d_relaxation,
         elastic_solver=elastic_solver,
         phase_solver=_phase_gmres,

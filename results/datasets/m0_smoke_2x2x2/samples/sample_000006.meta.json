@@ -1,0 +1,87 @@
+{
+  "boundary_codes": {},
+  "config_hash": "unknown",
+  "formulation": "standard",
+  "geometry_params": {
+    "case": "model0_circular_notch",
+    "domain_bbox": [
+      [
+        0.0,
+        1.0
+      ],
+      [
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "git_commit": "e0f5c16",
+  "grid": {
+    "H": 64,
+    "W": 64,
+    "domain_bbox": [
+      [
+        0.0,
+        1.0
+      ],
+      [
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "grid_params": {
+    "Gc": 1.0,
+    "circle_r": 0.2,
+    "l0": 0.02
+  },
+  "interpolation": "I2_L2_projection",
+  "load": {
+    "N_steps": 2,
+    "kind": "monotone",
+    "load_surfaces": [],
+    "u_max": 0.05000000074505806
+  },
+  "material_order": [
+    "lambda",
+    "mu",
+    "Gc",
+    "l0",
+    "eta"
+  ],
+  "material_params": {
+    "E": 200.0,
+    "Gc": 1.0,
+    "l0": 0.02,
+    "lam": 55.55555555555556,
+    "mu": 83.33333333333334,
+    "nu": 0.2
+  },
+  "mesh_info": {
+    "NC": 205,
+    "NN": 131,
+    "h_max": 0.1413594233581558,
+    "h_min": 0.07024874056127528,
+    "p_d": 1,
+    "p_sigma": 3,
+    "p_u": 2
+  },
+  "run_paths": {
+    "recorder_dir": "results/datasets/m0_smoke_2x2x2/runs/sample_000006"
+  },
+  "sample_id": "sample_000006",
+  "scaling": {
+    "length_scale": 1.0,
+    "stress_scale": 16.142776489257812,
+    "time_scale": 1.0,
+    "u_scale": 1.0
+  },
+  "schema_version": "0.1",
+  "solver_config": {},
+  "stats": {
+    "converged_step_ratio": 1.0,
+    "max_damage": 0.11081238836050034,
+    "n_inside_pixels": 3596,
+    "n_valid_steps": 2
+  }
+}

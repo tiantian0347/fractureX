@@ -1,0 +1,23 @@
+{
+  "dataset_name": "m0_smoke_2x2x2",
+  "n_steps_override": 2,
+  "fixed": {
+    "hmin": 0.08,
+    "p_sigma": 3,
+    "damage_p": 1,
+    "circle_cx": 0.5,
+    "circle_cy": 0.5,
+    "elastic_mode": "direct",
+    "save_every": 1
+  },
+  "grid": {
+    "circle_r": [0.15, 0.20],
+    "Gc":       [0.5, 1.0],
+    "l0":       [0.02, 0.025]
+  },
+  "export": {
+    "H": 64,
+    "W": 64,
+    "bbox": [[0.0, 1.0], [0.0, 1.0]]
+  }
+}

@@ -77,8 +77,8 @@ driver / dataset_export 自己读取并决定行为。
 - `encode_inputs` — 读 `meta.json` + `history.csv`，输出
   `sdf / mask / coords / material / load_history / time`。
 - `encode_outputs` — 遍历 `checkpoints/step_*.npz`，evaluator 求 `d / σ`，
-  做 HuZhang→schema 通道置换 + `stress_scale` 归一化。auto-scale 取末帧
-  域内 |σ| 95 分位。
+  做 HuZhang→schema 通道置换 + `stress_scale` 归一化。auto-scale 按末帧
+  域内应力绝对值的 95 分位估计。
 - `sample_huzhang_stress_on_grid` — `_evaluate_huzhang_on_grid` 的薄包装。
 - `export_recorder_to_sample` — 顶层 orchestration，原子写 `.tmp` → rename。
 
@@ -237,9 +237,9 @@ PYTHONPATH=$PWD $FEALPY_PYTHON scripts/datasets/render_m0_real_export.py
 ```
 
 **关键数字校验：**
-- `gdof_sigma = 10924`，与 `meta.json:gdof.sigma=10924` 严格一致。
+- `gdof_sigma = 10924`，与 `meta.json:gdof.sigma=10924` 数值一致。
 - `max d = 0.9757`，与 `vtu/step_0030_load_*.vtu damage` 范围 [0, 0.9825] 在 1% 以内（差异源于 npz 32-bit 量化与 P1 evaluator 的 1e-8 trifinder 误差，符合预期）。
-- `mask = 14360/16384 ≈ 87.6%`，圆 notch 占 12.4%，与 `πr² ≈ 0.126` 完全吻合。
+- `mask = 14360/16384 ≈ 87.6%`，圆 notch 占 12.4%，与 `πr² ≈ 0.126` 在网格离散误差内吻合。
 - 端到端 wall = 2.2s on NC=640, p_sigma=3, HW=128²，per-cell loop evaluator 的常数级别可接受。
 
 **Fig 4. 真实端到端 export，最末帧。**
@@ -262,6 +262,106 @@ HuZhang evaluator + 输出编码 + schema 落盘）从一个真实 fracturex pap
 
 **这就是算子学习未来要拟合的训练样本对**：输入 `(sdf, mask, coords,
 material, load_history)`、输出 `(damage, stress)`。M0 起步阶段闭环至此完成。
+
+### 3.5 参数空间扫描（§8 步骤 5+6，2026-05-28 晚补）
+
+§3.4 验证了"一个 run → 一个 npz"的端到端管线。为了支撑 plan §M2 的数据集生成，
+还需要"一个 yaml/json 配置 → N 个样本 + manifest"的批量管线。本节把这一刀
+也打通。
+
+**新增设施：**
+- [model0_runner.py](../fracturex/tests/case_runners/model0_runner.py)
+  `Model0RunArgs` + `run_model0_one(args) -> recorder_dir`：~200 行轻量 runner，
+  专供数据集生成用。**`phasefield_model0_huzhang.py` 不动**，论文实验路径
+  保持原状。Args 暴露几何 (`circle_r/cx/cy/hmin`)、材料 (`E/nu/Gc/l0`)、
+  阶次 (`p_sigma/damage_p`)、加载序列、求解器模式（`direct`/`aux`）、
+  checkpoint 频率与输出路径。
+- [generate_phasefield_dataset.py](../scripts/datasets/generate_phasefield_dataset.py)
+  通用驱动：读 JSON（YAML 可选）配置 → 笛卡尔积展开 → 逐样本调
+  `run_model0_one` + `load_discr_from_dir` + `export_recorder_to_sample`
+  → 写 schema v0.1 npz + meta.json + 全局 `dataset_manifest.json`。
+  支持 `--max-samples`（debug 截断）与 `--skip-existing`（断点续跑）。
+- [configs/datasets/m0_smoke_2x2x2.json](../configs/datasets/m0_smoke_2x2x2.json)
+  smoke-级配置：8 个组合，每个 2 个 load step，HW=64²。
+
+**配置语义：**
+
+```json
+{
+  "dataset_name": "m0_smoke_2x2x2",
+  "n_steps_override": 2,
+  "fixed":  { "hmin": 0.08, "p_sigma": 3, "damage_p": 1, ... },
+  "grid":   { "circle_r": [0.15, 0.20], "Gc": [0.5, 1.0], "l0": [0.02, 0.025] },
+  "export": { "H": 64, "W": 64, "bbox": [[0,1],[0,1]] }
+}
+```
+
+`fixed` 是所有样本共享的常量，`grid` 是要扫描的参数。两者键必须是
+`Model0RunArgs` 字段名（脚本会校验）。`n_steps_override` 让 smoke 跑能截断
+到很少的 load step。
+
+**复现命令：**
+```bash
+PYTHONPATH=$PWD $FEALPY_PYTHON scripts/datasets/generate_phasefield_dataset.py \
+  --config configs/datasets/m0_smoke_2x2x2.json \
+  --dataset-dir results/datasets/m0_smoke_2x2x2
+```
+
+**结果（2026-05-28 跑，CPU 单线程）：**
+
+| sample_id | circle_r | Gc | l0 | max_damage | mask 像素 | wall (s) |
+| --- | --- | --- | --- | --- | --- | --- |
+| sample_000000 | 0.15 | 0.5 | 0.020 | 0.364 | 3820 | 5.6 |
+| sample_000001 | 0.15 | 0.5 | 0.025 | 0.418 | 3820 | 4.6 |
+| sample_000002 | 0.15 | 1.0 | 0.020 | 0.181 | 3820 | 4.4 |
+| sample_000003 | 0.15 | 1.0 | 0.025 | 0.210 | 3820 | 4.2 |
+| sample_000004 | 0.20 | 0.5 | 0.020 | 0.226 | 3596 | 5.5 |
+| sample_000005 | 0.20 | 0.5 | 0.025 | 0.264 | 3596 | 5.6 |
+| sample_000006 | 0.20 | 1.0 | 0.020 | 0.111 | 3596 | 3.6 |
+| sample_000007 | 0.20 | 1.0 | 0.025 | 0.129 | 3596 | 5.5 |
+
+**总 wall 39.0 s, ok=8 / fail=0。**
+
+**物理 sanity check（趋势必须对，不然管线有 bug）：**
+- **小 notch 损伤更大**：`r=0.15` 平均 `max_d ≈ 0.29`，`r=0.20` 平均 ≈ 0.18。
+  小半径下 notch 周围应力集中更尖，相场驱动力更大，符合 Williams asymptotic。
+- **Gc 加倍 → 损伤约减半**：固定 (r, l0) 看 `Gc=0.5` vs `Gc=1.0`：例如
+  `(0.15, 0.020)` 下 `0.364 → 0.181`，`(0.20, 0.025)` 下 `0.264 → 0.129`。
+  与相场能量平衡 `2(1-d)·𝓗 ∝ Gc/l0` 一致（增加断裂能等比例抑制损伤）。
+- **l0 增大 → 损伤略增**：例如 `(0.15, 0.5)` 下 `0.364 → 0.418`。
+  l0 越大相场带越宽，等价应力集中区被涂抹得更多 → 集成应变能更大 → d 略升，
+  符合预期。
+- **mask 像素数与 πr² 吻合**：`r=0.15` 圆面积 0.0707 → grid 上 290 像素被
+  notch 占据，inside = 64² − 290 ≈ 3806（实测 3820，差异在 trifinder 几何
+  容差内）；`r=0.20` 圆面积 0.126 → 内部 3581（实测 3596）。
+
+**Schema 不变量（每个样本都过）：**
+1. 11 个必填字段 (`damage / stress / sdf / mask / valid_mask / coords /
+   material / load_history / time / step_iters / step_converged`) 全部存在；
+2. 形状：`damage (2,1,64,64)`、`stress (2,3,64,64)` 等严格等于 schema §3；
+3. `mask == valid_mask`；
+4. `damage ∈ [0, 1+1e-6]`；
+5. dtype 与 schema §3.2 规定一致。
+
+**Fig 5. m0_smoke_2x2x2 数据集 8 样本 max-frame damage。**
+来源：`results/datasets/m0_smoke_2x2x2/`。每格是一个样本最后一帧 damage，
+配上 `(r, Gc, l0)` 参数与 `max d` 数值。Ω 外像素填 NaN（白）。
+
+![Fig 5](figures/m0/fig_dataset_smoke_grid.png)
+
+**视觉确认：** 第一行（`r=0.15`）的 d 强度明显高于第二行（`r=0.20`）；
+左两列（`Gc=0.5`）比右两列（`Gc=1.0`）显著更亮；列内左→右（`l0` 增大）
+轻度变亮。三条物理趋势在视觉上完全自洽。
+
+**结论：** 这条数据生成管线**端到端工作**——给一个 JSON 配置就能产出
+schema v0.1 兼容的 N-样本数据集，每个样本物理趋势对、schema 全过、自带
+manifest。把 `n_steps_override` 去掉、`hmin` 调小、grid 扩大到 3×3×3，
+就是 plan §M0 的目标 200 样本起步集。
+
+**下一刀（不在本次 commit 范围）：**
+- 生成 plan §M2 的 S 档（~1k 样本，HW=64²）做 M1 baseline 训练；
+- `model2_runner.py` 给 notch shear 做对照；
+- 数据集统计画图（max_d vs Gc/l0、samples-per-second），加到 §3.5 末尾。
 
 ## 4. 复现
 
@@ -362,18 +462,23 @@ PYTHONPATH=$PWD $FEALPY_PYTHON scripts/datasets/render_m0_real_crack.py
    自动调用 + `load_discr_from_dir` + legacy 反推工具齐活。新跑的 run
    自带 mesh.npz，旧 run 用 `recover_mesh_from_vtu.py` 补。
 2. **distmesh 不可复现**。仍存在但已**被设计绕开**——既然 mesh.npz 存了
-   原始 node/cell，重建过程不重新跑 distmesh，只用持久化的拓扑。这是当前
-   方案的最大胜利。如果以后要做"参数空间扫描"，每个 run 仍需各自跑一次
-   distmesh，但这不影响事后还原。
-3. **历史场插值**。`sample_field_nearest_quad` (𝓘₁) 与
+   原始 node/cell，重建过程不重新跑 distmesh，只用持久化的拓扑。
+3. **数据集批量生成** ✅ **已完成（§3.5）。** `Model0RunArgs` +
+   `run_model0_one` + `generate_phasefield_dataset.py` 三件套打通；
+   配置文件驱动；2x2x2=8 smoke 已通；扩到 plan §M0 的 200 样本只需
+   把 `n_steps_override` 去掉、`hmin` 调小、grid 加密。
+4. **历史场插值**。`sample_field_nearest_quad` (𝓘₁) 与
    `sample_field_l2_projection` (𝓘₂) 还是 NotImplementedError；M0
    插值误差报告启动时再填，目前主输出 `(damage, stress)` 不依赖。
-4. **schema 完整性**。当前 export 只覆盖必填字段。`reaction / energy /
+5. **schema 完整性**。当前 export 只覆盖必填字段。`reaction / energy /
    history / boundary_code / material_field` 等可选字段留待后续按需开启。
-5. **`HuZhangFESpace2d.interpolate` 空实现**。Fig 3 因此只能用 σ ≡ 0 校验
-   evaluator，非零解析 σ 端到端验证还没有。Fig 4（§3.4）借真实 σ DOF 间接
-   弥补了这一点；要彻底关闭这条缺口需要在 fealpy 那边把 interpolate 实现
-   补全，工作量大，优先级低。
+6. **`HuZhangFESpace2d.interpolate` 空实现**。Fig 3 因此只能用 σ ≡ 0 校验
+   evaluator，非零解析 σ 端到端验证还没有。Fig 4-5（§3.4-§3.5）借真实
+   σ DOF 间接弥补了这一点；要彻底关闭这条缺口需要在 fealpy 那边把
+   interpolate 实现补全，工作量大，优先级低。
+7. **m0 主入口未重构**。现 `phasefield_model0_huzhang.py` 不接受
+   CaseArgs，而是与 P1/P2 论文实验耦合。`model0_runner.py` 是为数据集
+   生成另起的轻量入口；以后两条路径若要合并，需要谨慎处理 env-var 兼容。
 
 ## 7. 文件清单
 
@@ -391,11 +496,17 @@ PYTHONPATH=$PWD $FEALPY_PYTHON scripts/datasets/render_m0_real_crack.py
 | [scripts/datasets/recover_mesh_from_vtu.py](../scripts/datasets/recover_mesh_from_vtu.py) | 新增 | legacy 工具：从 vtu 反推 `mesh.npz` |
 | [scripts/datasets/render_m0_real_export_npz.py](../scripts/datasets/render_m0_real_export_npz.py) | 新增 | §3.4 端到端 export → schema npz |
 | [scripts/datasets/render_m0_real_export.py](../scripts/datasets/render_m0_real_export.py) | 新增 | §3.4 Fig 4 渲染脚本 |
+| [fracturex/tests/case_runners/__init__.py](../fracturex/tests/case_runners/__init__.py) | 新增 | runner 子包 |
+| [fracturex/tests/case_runners/model0_runner.py](../fracturex/tests/case_runners/model0_runner.py) | 新增 | §3.5 `Model0RunArgs` + `run_model0_one` |
+| [scripts/datasets/generate_phasefield_dataset.py](../scripts/datasets/generate_phasefield_dataset.py) | 新增 | §3.5 配置驱动批量生成 |
+| [scripts/datasets/render_m0_dataset_smoke_grid.py](../scripts/datasets/render_m0_dataset_smoke_grid.py) | 新增 | §3.5 Fig 5 渲染脚本 |
+| [configs/datasets/m0_smoke_2x2x2.json](../configs/datasets/m0_smoke_2x2x2.json) | 新增 | 2×2×2=8 smoke 配置 |
 | [docs/figures/m0/fig_real_crack_d.png](figures/m0/fig_real_crack_d.png) | 新增 | Fig 0 真实裂纹（vtu 旁路） |
 | [docs/figures/m0/fig_geometry.png](figures/m0/fig_geometry.png) | 新增 | Fig 1 |
 | [docs/figures/m0/fig_evaluator_d_error.png](figures/m0/fig_evaluator_d_error.png) | 新增 | Fig 2 |
 | [docs/figures/m0/fig_evaluator_sigma_zero.png](figures/m0/fig_evaluator_sigma_zero.png) | 新增 | Fig 3 |
 | [docs/figures/m0/fig_real_export_last_frame.png](figures/m0/fig_real_export_last_frame.png) | 新增 | **Fig 4 真实端到端 export 视图** |
+| [docs/figures/m0/fig_dataset_smoke_grid.png](figures/m0/fig_dataset_smoke_grid.png) | 新增 | **Fig 5 m0_smoke_2x2x2 8 样本拼图** |
 | [docs/m0_kickoff_report_2026-05-28.md](m0_kickoff_report_2026-05-28.md) | 新增 | 本报告 |
 
 未动：

@@ -284,6 +284,15 @@ class HuZhangPhaseFieldStaggeredDriver:
                 compute_linear_residual=bool(self.compute_linear_residual),
             )
             self.recorder.write_meta(meta)
+            if hasattr(self.recorder, "save_mesh"):
+                # New in 2026-05: persist mesh + space orders so dataset_export
+                # can rebuild the discretization without a case instance.
+                # Older recorders without the method silently skip.
+                try:
+                    self.recorder.save_mesh(self.discr)
+                except Exception as exc:
+                    if self.debug:
+                        print(f"[driver] save_mesh failed: {exc}")
 
         for s, load in enumerate(loads):
             info = self.solve_one_step(step=s, load=float(load))

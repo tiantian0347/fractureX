@@ -24,19 +24,37 @@ class RunRecorder:
       - checkpoints/step_XXX.npz (optional)
     """
 
-    def __init__(self, outdir: str, *, save_npz: bool = True, save_every: int = 1):
+    def __init__(
+        self,
+        outdir: str,
+        *,
+        save_npz: bool = True,
+        save_every: int = 1,
+        save_quadrature_fields: bool = False,
+        save_recovered_strain: bool = False,
+    ):
         """Create persistent run recorder.
 
         Inputs:
             outdir: Output directory path.
             save_npz: Whether to save checkpoint `.npz` snapshots.
             save_every: Save checkpoint every `save_every` load steps.
+            save_quadrature_fields: Reserved switch for quadrature-level dumps
+                (σ_qp, d_qp, H_qp) used by the operator-learning dataset
+                pipeline. Default False; consumers (driver / dataset_export)
+                read this flag and decide whether to populate the extra
+                fields. The checkpoint format itself stays unchanged.
+            save_recovered_strain: Reserved switch for ε^h = A(d) σ
+                quadrature-level dumps (plan §3.3'). Default False; same
+                consumer-driven semantics as ``save_quadrature_fields``.
         Output:
             None. Creates output directories and initializes CSV headers.
         """
         self.outdir = outdir
         self.save_npz = bool(save_npz)
         self.save_every = int(save_every)
+        self.save_quadrature_fields = bool(save_quadrature_fields)
+        self.save_recovered_strain = bool(save_recovered_strain)
         os.makedirs(outdir, exist_ok=True)
         os.makedirs(os.path.join(outdir, "checkpoints"), exist_ok=True)
         self.csv_path = os.path.join(outdir, "history.csv")
@@ -110,6 +128,60 @@ class RunRecorder:
             with open(self.iter_csv_path, "a", newline="") as f:
                 w = csv.DictWriter(f, fieldnames=self._iter_csv_header)
                 w.writerow(out)
+
+    def save_mesh(self, discr) -> None:
+        """Persist enough mesh + discretization info to rebuild ``discr`` later.
+
+        Writes ``<outdir>/mesh.npz`` with ``node`` / ``cell`` (triangle), the
+        polynomial orders (`p_sigma`, `damage_p`, `u_space_order`), the
+        ``use_relaxation`` flag, plus ``is_neumann_edge`` (per
+        boundary-edge bool) and the augmented ``boundary_edge_flag``. With
+        these fields :func:`fracturex.postprocess.dataset_export.load_discr_from_dir`
+        can rebuild a :class:`HuZhangDiscretization` byte-equivalent to the
+        one that produced the checkpoints — no ``case`` instance required.
+
+        No-op when ``save_npz`` is False or ``discr.mesh`` is None.
+        """
+        if not self.save_npz:
+            return
+        mesh = getattr(discr, "mesh", None)
+        if mesh is None:
+            return
+        from fealpy.backend import backend_manager as bm
+
+        node = np.asarray(mesh.entity("node"), dtype=np.float64)
+        cell = np.asarray(mesh.entity("cell"), dtype=np.int64)
+
+        # Augmented boundary-edge mask captures both the natural mesh boundary
+        # and any crack edges injected via mesh_patch.augment_boundary_edges_inplace.
+        be_aug = np.asarray(bm.asarray(mesh.boundary_edge_flag())).reshape(-1).astype(bool)
+
+        # HuZhang's `bd_stress` argument is consumed at __init__ time and
+        # processed into `space_sigma.isNedge` (NE-long bool mask). We dump
+        # that processed mask — _build_isNedge handles NE-long input fine,
+        # so the rebuild path passes `bd_stress=isNedge` directly.
+        is_n_bd: np.ndarray
+        space_sigma = getattr(discr, "space_sigma", None)
+        if space_sigma is not None and hasattr(space_sigma, "isNedge"):
+            try:
+                is_n_bd = np.asarray(bm.asarray(space_sigma.isNedge)).reshape(-1).astype(bool)
+            except Exception:
+                is_n_bd = np.zeros(0, dtype=bool)
+        else:
+            is_n_bd = np.zeros(0, dtype=bool)
+
+        path = os.path.join(self.outdir, "mesh.npz")
+        np.savez_compressed(
+            path,
+            node=node,
+            cell=cell,
+            p_sigma=int(discr.p),
+            damage_p=int(getattr(discr, "damage_p", 1)),
+            u_space_order=int(getattr(discr, "u_space_order", max(int(discr.p) - 1, 1))),
+            use_relaxation=bool(getattr(discr, "use_relaxation", True)),
+            boundary_edge_flag_aug=be_aug,
+            is_neumann_edge=is_n_bd,
+        )
 
     def save_checkpoint(self, step: int, discr, state):
         """Save checkpoint snapshot (`npz`) for current step.

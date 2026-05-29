@@ -232,12 +232,6 @@ def _make_weighted_g_coef(*, d_fun, degradation_fun):
     return coef_g
 
 
-def _coarse_diffusion_g_floor(damage) -> float:
-    """Lower bound ``eps_g`` for P1 coarse diffusion weight ``max(g(d), eps_g)``."""
-    eg = float(getattr(damage, "eps_g", 1e-10))
-    return max(eg, 1e-30)
-
-
 def _make_coarse_diffusion_coef(
     *,
     formulation: str,
@@ -250,14 +244,13 @@ def _make_coarse_diffusion_coef(
     """
     Coarse auxiliary diffusion coefficient (Chen et al. 2017 §5, phase-field extension):
 
-    - ``standard``: coef = max(g(d), eps_g) from ``damage.coef_bary`` (g-weighted vector
-      Poisson / lambda=0 elasticity on the Schur complement; distinct from stress-block 1/g).
+    - ``standard``: coef = g(d) from ``damage.coef_bary`` (g-weighted vector Poisson /
+      lambda=0 elasticity on the Schur complement; matches stress-block 1/g without an
+      extra floor, so both sides see the same g(d)).
     - ``effective_stress``: None (unweighted Laplacian; g(d) is on the B block only).
     """
     if not _coarse_diffusion_uses_stress_weight(formulation, weighted_aux):
         return None
-
-    g_floor = _coarse_diffusion_g_floor(damage) if damage is not None else 1e-30
 
     if damage is not None and state is not None:
         from fracturex.damage.base import DamageStateView
@@ -270,8 +263,7 @@ def _make_coarse_diffusion_coef(
                 r_hist=state.r_hist,
                 H=state.H,
             )
-            g = damage.coef_bary(view, bcs, index=index)
-            return bm.maximum(bm.asarray(g), g_floor)
+            return bm.asarray(damage.coef_bary(view, bcs, index=index))
 
         return coef_g
 
@@ -956,9 +948,9 @@ def solve_huzhang_block_gmres_fast(
 
     **``auto``** (default): ``gs_amg_gs`` if ``order_p < 6``, else ``coarse_amg_halfgs``.
 
-    **``elastic_formulation``**: ``standard`` weights the P1 coarse Laplacian by ``max(g(d), eps_g)`` when
-    ``weighted_aux=True``; ``effective_stress`` uses an unweighted coarse Laplacian (``g(d)`` on B
-    only, via the Schur block from ``A``).
+    **``elastic_formulation``**: ``standard`` weights the P1 coarse Laplacian by ``g(d)`` when
+    ``weighted_aux=True`` (matches ``1/g(d)`` on the stress block); ``effective_stress`` uses an
+    unweighted coarse Laplacian (``g(d)`` on B only, via the Schur block from ``A``).
 
     **``order_p``**: FE degree used only for ``auto``. If ``None``, uses ``vspace.scalar_space.p``
     (displacement scalar order, i.e. ``HuZhangDiscretization.u_space_order``). To key off stress
@@ -1264,8 +1256,9 @@ def solve_huzhang_block_gmres_auxspace(
     **Degradation placement** (must match ``HuZhangElasticAssembler.formulation``):
 
     - ``standard``: g(d) on stress block M (in ``A``, integrator ``1/g``); optional coarse diffusion
-      weighted by ``max(g(d), eps_g)`` from ``damage.coef_bary`` when ``weighted_aux=True`` (Chen et
-      al. 2017 §5: g-weighted auxiliary elasticity / vector Poisson on the Schur complement).
+      weighted by ``g(d)`` from ``damage.coef_bary`` when ``weighted_aux=True`` (Chen et
+      al. 2017 §5: g-weighted auxiliary elasticity / vector Poisson on the Schur complement —
+      same g(d) as the stress block, no floor).
     - ``effective_stress``: g(d) on coupling block B (in ``A``); coarse diffusion is always
       unweighted — damage enters only via the Schur block extracted from ``A``.
 

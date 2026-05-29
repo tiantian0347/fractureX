@@ -3,12 +3,13 @@
 # Writes status under results/logs/ for wait_and_collect.sh.
 #
 # Usage:
-#   run_background_job.sh model0 [direct|aux|all]
-#   run_background_job.sh model0_aux [aux]
+#   run_background_job.sh <case> [direct|aux|all]
+#     case : model0 | model1 | square | model2
+#            model0_aux | model1_aux         (alias: pass `<case> aux`)
 #
 # Examples:
 #   nohup bash scripts/paper_huzhang/run_background_job.sh model0 direct ...
-#   nohup bash scripts/paper_huzhang/run_background_job.sh model0 aux ...
+#   nohup bash scripts/paper_huzhang/run_background_job.sh model1 aux ...
 set -euo pipefail
 
 _REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -20,7 +21,7 @@ source "${_REPO_ROOT}/scripts/paper_huzhang/env.sh"
 _raw="${1:-}"
 _kind="${2:-direct}"
 if [[ -z "${_raw}" ]]; then
-  echo "Usage: $0 <model0|model1|model2|model0_aux> [direct|aux|all]" >&2
+  echo "Usage: $0 <model0|model1|square|model2|model0_aux|model1_aux> [direct|aux|all]" >&2
   exit 2
 fi
 
@@ -33,11 +34,23 @@ case "${_kind}" in
 esac
 
 if [[ "${_kind}" == "aux" ]]; then
-  SLUG="model0_aux"
-  if [[ "${_raw}" != "model0" && "${_raw}" != "model0_aux" && "${_raw}" != "model0-aux" && "${_raw}" != "model0aux" ]]; then
-    echo "aux-space job is only defined for model0 (use: run_background_job.sh model0 aux)" >&2
+  CASE_NORM="$(_normalize_paper_case "${_raw}")" || {
+    echo "Unknown case for aux job: ${_raw}" >&2
     exit 2
-  fi
+  }
+  case "${CASE_NORM}" in
+    model0) SLUG="model0_aux" ;;
+    square) SLUG="model1_aux" ;;
+    model2)
+      echo "aux-space job is currently scripted only for model0 and model1 (got model2)." >&2
+      echo "If you really need model2 aux, run scripts/paper_huzhang/run_case.py --case model2 --mode aux directly." >&2
+      exit 2
+      ;;
+    *)
+      echo "aux-space job is only defined for model0 and model1 (got: ${_raw})" >&2
+      exit 2
+      ;;
+  esac
 else
   SLUG="$(_paper_log_slug "${_raw}")" || {
     echo "Unknown case: ${_raw}" >&2
@@ -79,7 +92,14 @@ _run() {
       ;;
     aux)
       export FRACTUREX_ELASTIC_FAST=0
-      bash "${_REPO_ROOT}/scripts/paper_huzhang/run_aux_model0.sh"
+      case "${SLUG}" in
+        model0_aux)
+          bash "${_REPO_ROOT}/scripts/paper_huzhang/run_aux_model0.sh"
+          ;;
+        model1_aux)
+          bash "${_REPO_ROOT}/scripts/paper_huzhang/run_aux_model1.sh"
+          ;;
+      esac
       ;;
     all)
       CASE="$(_normalize_paper_case "${_raw}")" || exit 2

@@ -1,14 +1,26 @@
 # HuZhang 相场接口测试使用手册
 
-本文档面向 `fracturex/tests/phasefield_model0_huzhang.py` 的日常接口测试，目标是让你可以快速切换关键模块并观察输出差异。
+本文档面向 `fracturex/tests/phasefield_model0_huzhang.py` 与 `fracturex/tests/phasefield_model1_square_tension.py` 的日常接口测试，目标是让你可以快速切换关键模块并观察输出差异。
 
 ## 1. 测试入口
 
-- 入口脚本：`fracturex/tests/phasefield_model0_huzhang.py`
+- 前台脚本入口
+  - `fracturex/tests/phasefield_model0_huzhang.py`（model0：圆缺口，aux-space 验证主入口）
+  - `fracturex/tests/phasefield_model1_square_tension.py`（model1：方板 y 拉伸 + 预裂纹，aux-space + 串/并装配 benchmark）
 - 推荐在仓库根目录执行：
 
 ```bash
 python fracturex/tests/phasefield_model0_huzhang.py
+python fracturex/tests/phasefield_model1_square_tension.py
+```
+
+- 后台批跑入口（与 paper 调度同源；写 `results/logs/<slug>.{pid,status,exit,log}`）：
+
+```bash
+bash scripts/paper_huzhang/background_batch.sh print-cmds   # 打印 5 个 nohup 命令（model0/1/2 direct + model0/model1 aux）
+bash scripts/paper_huzhang/run_background_job.sh model0 aux # 单独 model0 辅助空间
+bash scripts/paper_huzhang/run_background_job.sh model1 aux # 单独 model1 辅助空间（与 model0 对称，新加）
+bash scripts/paper_huzhang/wait_and_collect.sh              # 默认槽位：model0 model1 model2 model0_aux model1_aux
 ```
 
 ## 2. 主要可测试接口（脚本内开关）
@@ -28,7 +40,7 @@ python fracturex/tests/phasefield_model0_huzhang.py
   - `True`：弹性子问题切到 `solve_huzhang_block_gmres_auxspace`
   - `False`：不启用该专用迭代分支
 - `eps_g`
-  - 控制退化函数下界，常用于稳定性对比测试
+  - `damage.coef_bary` 的内部数值下界，仅作健壮性兜底；装配/辅助空间的对外口径是基准 `g(d)`，**不**写成 `max(g, ε_g)`
 - `hmin`
   - 控制网格尺寸，对称性和峰值响应较敏感
 - 相场线性子问题默认统一使用 driver 内置 `_default_lgmres`（无预条件）。
@@ -85,7 +97,7 @@ S(d_h) := B\,A(d_h)^{-1}B^\top.
 
 | `elastic_formulation` | 装配中 `g(d)` 位置 | 线性系统 `A` | 预条件子中粗空间 / Schur |
 |----------------------|-------------------|--------------|-------------------------|
-| `"standard"` | 应力块 **M**（`HuZhangStressIntegrator`，系数 `1/g`） | `M(d)` 退化，`B` 常数 | Schur 由当前 `A` 分块得到（损伤经 **M** 进入 `D⁻¹`）；`weighted_aux=True` 时 P1 粗扩散用 **`max(g(d), eps_g)`**（Chen 等 2017 §5） |
+| `"standard"` | 应力块 **M**（`HuZhangStressIntegrator`，系数 `1/g`） | `M(d)` 退化，`B` 常数 | Schur 由当前 `A` 分块得到（损伤经 **M** 进入 `D⁻¹`）；`weighted_aux=True` 时 P1 粗扩散用基准 **`g(d)`**（与应力块 `1/g` 同源，无 `max(·, ε_g)` floor；Chen 等 2017 §5） |
 | `"effective_stress"` | 耦合块 **B**（`HuZhangMixIntegrator`，系数 `g`） | `M` 常数，`B(d)` 退化 | Schur 由 **B(d)** 携带损伤；粗空间 **不加** `g(d)`（无权重 P1 Laplacian） |
 
 实现位置：`fracturex/utilfuc/linear_solvers.py`（`solve_huzhang_block_gmres_auxspace`、`solve_huzhang_block_gmres_fast`）。
@@ -112,7 +124,7 @@ solve_huzhang_block_gmres_auxspace(
 
 ### 3.3 `weighted_aux` 含义（按 formulation 解释）
 
-- **`standard` + `weighted_aux=True`**：在辅助 P1 扩散上施加 **max(g(d), eps_g)**（与退化应变能同阶的 g 加权；应力块仍为 `1/g`，二者角色不同）。
+- **`standard` + `weighted_aux=True`**：辅助 P1 扩散直接用基准 **`g(d)`**（与退化应变能同阶；和应力块 `1/g` 共用同一份 `coef_bary`，不再叠 `max(·, ε_g)`，两侧严格同源，角色互逆）。
 - **`effective_stress` + `weighted_aux=True`**：仍做辅助空间校正，但粗 Laplacian **不加 g**；损伤只通过 Schur（来自 **B(d)**）进入预条件。
 - **`weighted_aux=False`**：两种 formulation 下粗扩散均为 **无系数** 各向同性 Laplacian；Schur 仍从当前 `A` 提取。
 
@@ -157,8 +169,8 @@ solve_huzhang_block_gmres_auxspace(
    - `use_direct_solver=True`
    - `release_elastic_iterative_only=True`
    - 确认 GMRES 已传与 assembler 相同的 `elastic_formulation`（见 §3）
-4. **退化下界敏感性（弹性子问题 / 辅助空间预条件）**
-   - 固定其他参数，测试 `eps_g=1e-6 / 1e-8 / 1e-10`
+4. **退化下界敏感性（仅作 `damage.coef_bary` 内部数值健壮性检查，不进入论文消融）**
+   - 固定其他参数，测试 `eps_g=1e-6 / 1e-8 / 1e-10`，确认结果对内部 floor 不敏感（论文口径恒为基准 `g(d)`）
    - 专用脚本（冻结相场、预设 `d=1` 区域、`M(d)` 系数 `1/g(d)`）：
      ```bash
      bash scripts/run_python.sh fracturex/tests/test_auxspace_precond_degraded_elastic.py
@@ -166,6 +178,18 @@ solve_huzhang_block_gmres_auxspace(
    - 报告：`results/tests/auxspace_degraded_elastic/TEST_REPORT.md`（英文）、`TEST_REPORT_ZH.md`（中文）
 5. **网格敏感性**
    - 固定求解参数，测试 `hmin=0.01 / 0.008`（资源允许再细化）
+6. **跨算例 aux-space 一致性**（model1，与 model0 对称）
+   - 前台冒烟（3 步）：
+     ```bash
+     FRACTUREX_RUN_SHORT=1 python fracturex/tests/phasefield_model1_square_tension.py
+     ```
+   - 全分辨率后台跑（写 `results/logs/model1_aux.*` 和 `results/phasefield/square_tension_precrack/paper_aux/`）：
+     ```bash
+     nohup env FRACTUREX_BG_JOB_LOG=results/logs/model1_aux.log FRACTUREX_ELASTIC_FAST=0 \
+       bash scripts/paper_huzhang/run_background_job.sh model1 aux \
+       >> results/logs/model1_aux.nohup 2>&1 &
+     ```
+   - 与 model0 aux 同口径：弹性走 `solve_huzhang_block_gmres_auxspace`、`weighted_aux=True`、`elastic_formulation="standard"`、`damage.coef_bary` 直接进入粗扩散（基准 `g(d)`，无 `max(·, ε_g)` floor）。
 
 建议每组运行后记录：
 

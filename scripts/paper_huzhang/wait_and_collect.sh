@@ -29,7 +29,7 @@ for arg in "$@"; do
 done
 
 if [[ ${#CASES[@]} -eq 0 ]]; then
-  CASES=(model0 model1 model2 model0_aux)
+  CASES=(model0 model1 model2 model0_aux model1_aux)
 fi
 
 LOG_DIR="${FRACTUREX_PAPER_LOG_DIR:-${FRACTUREX_RESULTS_ROOT}/logs}"
@@ -69,7 +69,7 @@ if [[ "${WAIT}" -eq 1 ]]; then
 fi
 
 _fail=0
-_optional_slugs=(model0_aux)
+_optional_slugs=(model0_aux model1_aux)
 for c in "${CASES[@]}"; do
   st="${LOG_DIR}/${c}.status"
   if [[ ! -f "${st}" ]]; then

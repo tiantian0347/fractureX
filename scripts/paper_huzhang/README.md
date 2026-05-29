@@ -3,7 +3,7 @@
 **无需** `source venv` / `conda activate`：直接 `bash scripts/paper_huzhang/run_all.sh ...`，脚本会自动选用带 `numpy+scipy+fealpy` 的 Python（优先 conda base、PATH 上的 `python3`）。
 
 主方法（`run_direct.sh`）：**并行装配** + **弹性稀疏直接法**（`spsolve` / `pardiso` / `mumps`）+ **相场无预条件 GMRES**。  
-model0 辅助空间验证（`run_aux_model0.sh`）：**并行装配** + **弹性辅助空间预条件 GMRES**。  
+辅助空间验证（`run_aux_model0.sh` / `run_aux_model1.sh`）：**并行装配** + **弹性辅助空间预条件 GMRES**（model0、model1 各一份；命名口径与算例对齐）。  
 对比 baseline：**串行装配** + **弹性直接法**，**仅 1 个加载步**。
 
 ## 服务器一次性安装（conda base 即可）
@@ -49,14 +49,15 @@ bash scripts/paper_huzhang/run_all.sh model0
 | `model2` | 方板顶边 x 向拉伸 + 预裂纹 |
 
 结果目录：`results/phasefield/<case>/<run_label>/epsg_1e-06/`  
-label：`paper_direct`（三算例直接法）、`paper_aux`（model0 辅助空间）、`paper_baseline`（可选 1 步对比）。
+label：`paper_direct`（三算例直接法）、`paper_aux`（model0、model1 辅助空间）、`paper_baseline`（可选 1 步对比）。
 
 ## 分步
 
 ```bash
-bash scripts/paper_huzhang/run_direct.sh model0      # 三算例之一，弹性直接法
-bash scripts/paper_huzhang/run_aux_model0.sh       # model0 辅助空间预条件
-bash scripts/paper_huzhang/run_baseline.sh model0  # 可选 1 步 baseline
+bash scripts/paper_huzhang/run_direct.sh model0     # 三算例之一，弹性直接法
+bash scripts/paper_huzhang/run_aux_model0.sh        # model0 辅助空间预条件
+bash scripts/paper_huzhang/run_aux_model1.sh        # model1 (square) 辅助空间预条件
+bash scripts/paper_huzhang/run_baseline.sh model0   # 可选 1 步 baseline
 bash scripts/run_python.sh scripts/paper_huzhang/collect_paper_bundle.py --root results
 ```
 
@@ -77,9 +78,9 @@ bash scripts/run_python.sh scripts/paper_huzhang/collect_paper_bundle.py --root 
 | `FRACTUREX_RUN_NSTEPS=N` | 限制加载步数 |
 | `FRACTUREX_RESULTS_ROOT` | 结果根目录（默认 `results`） |
 
-## 后台并行（model0/1/2 直接法 + model0 辅助空间）
+## 后台并行（model0/1/2 直接法 + model0/model1 辅助空间）
 
-算例别名：`model1` 与 `square` 相同。默认 **4 个任务**：三个算例 `direct` + `model0 aux`。
+算例别名：`model1` 与 `square` 相同。默认 **5 个任务**：三个算例 `direct` + `model0/model1` 各一个 `aux`（`run_background_job.sh ... aux` 现在对 model0、model1 都可用，model2 仍需直接调 `run_case.py`）。
 
 全分辨率直接法若 SciPy SuperLU OOM，提交前建议：
 
@@ -98,7 +99,7 @@ bash scripts/paper_huzhang/background_batch.sh print-cmds
 每个任务会写 `results/logs/<case>.{pid,status,exit,log}`。全部结束后汇总到文档：
 
 ```bash
-bash scripts/paper_huzhang/wait_and_collect.sh model0 model1 model2 model0_aux
+bash scripts/paper_huzhang/wait_and_collect.sh model0 model1 model2 model0_aux model1_aux
 # 或：bash scripts/paper_huzhang/background_batch.sh watch-and-collect
 ```
 

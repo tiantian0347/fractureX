@@ -183,6 +183,68 @@ class RunRecorder:
             is_neumann_edge=is_n_bd,
         )
 
+    def dump_quadrature_fields(self, step: int, discr, state) -> None:
+        """Persist quadrature-level history field ``H_qp`` and physical points ``xq``.
+
+        Writes ``<outdir>/checkpoints/step_XXX_qp.npz`` when both
+        ``self.save_npz`` and ``self.save_quadrature_fields`` are True and
+        ``state.H`` is populated. The quadrature rule mirrors
+        :class:`PhaseFieldAssembler` — order ``damage_p + 3`` on the cell
+        formula, so ``H_qp`` and ``xq`` index identical points.
+
+        Note: the *method* is intentionally named ``dump_quadrature_fields``
+        because ``save_quadrature_fields`` is already used as the bool
+        switch on ``__init__`` (see §1.6 of the M0 kickoff report); a method
+        of the same name would be shadowed by the attribute.
+
+        Fields:
+            ``H_qp`` (NC, NQ) float64,
+            ``xq`` (NC, NQ, 2) float64,
+            ``q_order`` int (the quadrature order actually used),
+            ``step`` int.
+
+        No-op when any precondition fails, so this is safe to call
+        unconditionally from the driver.
+        """
+        if not self.save_npz:
+            return
+        if not self.save_quadrature_fields:
+            return
+        if step % self.save_every != 0:
+            return
+        H = getattr(state, "H", None)
+        if H is None:
+            return
+        mesh = getattr(discr, "mesh", None)
+        if mesh is None:
+            return
+
+        from fealpy.backend import backend_manager as bm
+
+        H_np = np.asarray(bm.asarray(H), dtype=np.float64)
+        if H_np.ndim != 2:
+            return
+
+        q_order = int(getattr(discr, "damage_p", 1)) + 3
+        try:
+            qf = mesh.quadrature_formula(q_order, "cell")
+            bcs, _ = qf.get_quadrature_points_and_weights()
+            xq = np.asarray(bm.asarray(mesh.bc_to_point(bcs)), dtype=np.float64)
+        except Exception:
+            return
+
+        if xq.shape[:2] != H_np.shape:
+            return
+
+        path = os.path.join(self.outdir, "checkpoints", f"step_{step:03d}_qp.npz")
+        np.savez_compressed(
+            path,
+            H_qp=H_np,
+            xq=xq,
+            q_order=q_order,
+            step=int(step),
+        )
+
     def save_checkpoint(self, step: int, discr, state):
         """Save checkpoint snapshot (`npz`) for current step.
 

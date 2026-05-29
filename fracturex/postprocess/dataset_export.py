@@ -399,30 +399,160 @@ def sample_field_nearest_quad(
     field_qp: np.ndarray,
     quad_coords: np.ndarray,
     grid: GridSpec,
+    *,
+    mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """𝓘₁: nearest-quadrature-point scatter to structured grid.
 
+    For every grid pixel x_ij take the value of the qp closest in Euclidean
+    distance: (𝓘₁ f)(x_ij) = f(argmin_q ‖x_ij − x_q‖). See plan §3.3 and
+    docs/m0_interpolation_error.md §2.1. Cost is O((NC·NQ + H·W) log) via
+    a KD-tree.
+
     Args:
-        field_qp:    (NC, NQ, ...) field on quadrature points.
+        field_qp:    (NC, NQ, *trailing) field on quadrature points.
         quad_coords: (NC, NQ, 2) physical coords of those points.
-        grid:        target grid.
+        grid:        target structured grid.
+        mask:        optional (1, H, W) or (H, W) uint8 / bool inside-Ω mask;
+                     where 0 the output is zero-filled.
     Returns:
-        (..., H, W) float32 sampled field; out-of-Ω points are zero-filled
-        (mask applied by caller).
+        (*trailing, H, W) float32 sampled field.
     """
-    raise NotImplementedError("M0 task: KDTree nearest-neighbor, mask out-of-Ω")
+    from scipy.spatial import cKDTree
+
+    field_qp = np.asarray(field_qp)
+    quad_coords = np.asarray(quad_coords, dtype=np.float64)
+    if quad_coords.ndim != 3 or quad_coords.shape[-1] != 2:
+        raise ValueError(
+            f"quad_coords must be (NC, NQ, 2); got {quad_coords.shape}"
+        )
+    if field_qp.shape[:2] != quad_coords.shape[:2]:
+        raise ValueError(
+            f"field_qp[:2]={field_qp.shape[:2]} must match "
+            f"quad_coords[:2]={quad_coords.shape[:2]}"
+        )
+
+    NC, NQ = quad_coords.shape[:2]
+    trailing = field_qp.shape[2:]
+    flat_pts = quad_coords.reshape(NC * NQ, 2)
+    flat_field = field_qp.reshape(NC * NQ, *trailing)
+
+    H, W = grid.H, grid.W
+    grid_pts = _grid_points(grid).reshape(H * W, 2)
+
+    tree = cKDTree(flat_pts)
+    _, nn = tree.query(grid_pts, k=1)
+    sampled = flat_field[nn].reshape(H, W, *trailing)
+
+    if mask is not None:
+        m = np.asarray(mask)
+        if m.ndim == 3 and m.shape[0] == 1:
+            m = m[0]
+        m_bool = m.astype(bool)
+        sampled[~m_bool] = 0
+
+    if trailing:
+        axes = tuple(range(2, 2 + len(trailing))) + (0, 1)
+        sampled = np.transpose(sampled, axes)
+    return np.ascontiguousarray(sampled, dtype=np.float32)
 
 
 def sample_field_l2_projection(
     field_qp: np.ndarray,
-    discr,           # huzhang_discretization-like object exposing space_d / quadrature info
+    discr,
     grid: GridSpec,
+    *,
+    locator: Optional[_PixelLocator] = None,
+    mask: Optional[np.ndarray] = None,
+    quadrature_order: int = 5,
 ) -> np.ndarray:
-    """𝓘₂: L^2-project to nodal Lagrange space, then evaluate on grid.
+    """𝓘₂: L²-project quadrature-point field to ``discr.space_d`` and evaluate on grid.
 
-    See plan §3.3, m0_interpolation_error.md §2.2.
+    Solves (Π_h f, w_h) = (f, w_h) for w_h ∈ space_d, then samples Π_h f on
+    the structured grid via Lagrange basis. See plan §3.3 and
+    docs/m0_interpolation_error.md §2.2. Cost is dominated by one mass-matrix
+    solve (sparse SPD); reuses that mass matrix across trailing channels.
+
+    Args:
+        field_qp:    (NC, NQ) or (NC, NQ, C) field on quadrature points.
+                     Must be evaluated at the **same quadrature order**
+                     used here (``quadrature_order``).
+        discr:       built ``HuZhangDiscretization``-like object exposing
+                     ``mesh`` and ``space_d`` (continuous Lagrange).
+        grid:        target structured grid.
+        locator:     optional precomputed pixel locator; built on demand.
+        mask:        optional inside-Ω mask; zero-fill outside.
+        quadrature_order: must match the order used to generate ``field_qp``.
+
+    Returns:
+        (H, W) for scalar input, else (C, H, W). float32. Outside-Ω is 0.
     """
-    raise NotImplementedError("M0 task: assemble mass matrix, solve, evaluate Lagrange basis")
+    from fealpy.fem import BilinearForm, ScalarMassIntegrator
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.linalg import spsolve
+
+    space = discr.space_d
+    if space is None:
+        raise RuntimeError("discr.space_d is None; build() the discretization first.")
+    mesh = discr.mesh
+
+    field_qp = np.asarray(field_qp)
+    if field_qp.ndim == 2:
+        scalar = True
+        field_qp = field_qp[..., None]   # (NC, NQ, 1)
+    elif field_qp.ndim == 3:
+        scalar = False
+    else:
+        raise ValueError(
+            f"field_qp must be (NC,NQ) or (NC,NQ,C); got shape {field_qp.shape}"
+        )
+    NC, NQ, C = field_qp.shape
+
+    bform = BilinearForm(space)
+    bform.add_integrator(ScalarMassIntegrator(coef=1.0, q=quadrature_order))
+    M = bform.assembly()
+    Msp = csr_matrix(
+        (np.asarray(M.values), np.asarray(M.col), np.asarray(M.crow)),
+        shape=tuple(M.shape),
+    )
+
+    qf = mesh.quadrature_formula(quadrature_order)
+    bcs, ws = qf.get_quadrature_points_and_weights()
+    bcs = np.asarray(bcs)
+    ws = np.asarray(ws)
+    if ws.shape[0] != NQ:
+        raise ValueError(
+            f"field_qp has NQ={NQ} but quadrature_formula(q={quadrature_order}) "
+            f"yields NQ={ws.shape[0]}; pass matching quadrature_order."
+        )
+    area = np.asarray(mesh.entity_measure("cell"))
+    phi = np.asarray(space.basis(bcs))                            # (1,NQ,ldof) or (NC,NQ,ldof)
+    if phi.ndim == 3 and phi.shape[0] == 1:
+        phi = np.broadcast_to(phi, (NC, NQ, phi.shape[2]))
+    elif phi.ndim != 3 or phi.shape[:2] != (NC, NQ):
+        raise ValueError(f"unexpected basis shape: {phi.shape}")
+    c2d = np.asarray(space.cell_to_dof())                         # (NC, ldof)
+    gdof = space.number_of_global_dofs()
+
+    out_grid = np.zeros((C, grid.H, grid.W), dtype=np.float32)
+    if locator is None:
+        locator = _build_pixel_locator(mesh, grid)
+    for ch in range(C):
+        rhs_local = area[:, None] * np.einsum(
+            "q,cq,cqd->cd", ws, field_qp[..., ch], phi
+        )
+        rhs = np.zeros(gdof, dtype=np.float64)
+        np.add.at(rhs, c2d, rhs_local)
+        coef = spsolve(Msp, rhs)
+        out_grid[ch] = _evaluate_lagrange_on_grid(space, coef, locator)[0]
+
+    if mask is not None:
+        m = np.asarray(mask)
+        if m.ndim == 3 and m.shape[0] == 1:
+            m = m[0]
+        out_grid[:, ~m.astype(bool)] = 0.0
+
+    return out_grid[0] if scalar else out_grid
 
 
 def sample_huzhang_stress_on_grid(

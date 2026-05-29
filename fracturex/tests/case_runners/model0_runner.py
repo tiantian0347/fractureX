@@ -105,6 +105,7 @@ class Model0RunArgs:
     eps_g: float = 1e-6
 
     save_every: int = 1
+    save_quadrature_fields: bool = False
 
     outdir: Path = field(default_factory=lambda: Path("results/operator_learning_runs"))
 
@@ -163,6 +164,7 @@ def run_model0_one(args: Model0RunArgs) -> Path:
         str(args.outdir),
         save_npz=True,
         save_every=int(args.save_every),
+        save_quadrature_fields=bool(args.save_quadrature_fields),
     )
 
     if args.elastic_mode == "direct":

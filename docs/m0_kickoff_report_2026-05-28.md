@@ -73,12 +73,12 @@ driver / dataset_export 自己读取并决定行为。
 新增两个 keyword 开关，默认 False，调用点都走 keyword，向后兼容。
 
 ### 2.3 [fracturex/postprocess/dataset_export.py](../fracturex/postprocess/dataset_export.py)
-本次把 7 个 `NotImplementedError` 中与主输出相关的 4 个填实：
+本次把与主输出相关的 4 个接口填实；按当前代码快照审查，下面两项也已经实现，不能再按 stub 处理：
 - `encode_inputs` — 读 `meta.json` + `history.csv`，输出
   `sdf / mask / coords / material / load_history / time`。
 - `encode_outputs` — 遍历 `checkpoints/step_*.npz`，evaluator 求 `d / σ`，
   做 HuZhang→schema 通道置换 + `stress_scale` 归一化。auto-scale 按末帧
-  域内应力绝对值的 95 分位估计。
+  域内应力分量绝对值的 95 分位估计（分量级绝对值，不是张量范数）。
 - `sample_huzhang_stress_on_grid` — `_evaluate_huzhang_on_grid` 的薄包装。
 - `export_recorder_to_sample` — 顶层 orchestration，原子写 `.tmp` → rename。
 
@@ -89,7 +89,7 @@ driver / dataset_export 自己读取并决定行为。
 - `_material_vector`（含 `lambda/lam/lambda0` 等别名兼容）/ `_normalized_time`。
 - `_git_commit_short` / `_build_sample_meta` / `_geometry_meta_dict`。
 
-剩余 stub（与本次主输出无关，留给后续）：
+已实现但本报告撰写时尚未展开说明的辅助接口：
 - `sample_field_nearest_quad` — plan §3.3 的 𝓘₁ 历史场插值。
 - `sample_field_l2_projection` — plan §3.3 的 𝓘₂。
 
@@ -468,8 +468,8 @@ PYTHONPATH=$PWD $FEALPY_PYTHON scripts/datasets/render_m0_real_crack.py
    配置文件驱动；2x2x2=8 smoke 已通；扩到 plan §M0 的 200 样本只需
    把 `n_steps_override` 去掉、`hmin` 调小、grid 加密。
 4. **历史场插值**。`sample_field_nearest_quad` (𝓘₁) 与
-   `sample_field_l2_projection` (𝓘₂) 还是 NotImplementedError；M0
-   插值误差报告启动时再填，目前主输出 `(damage, stress)` 不依赖。
+  `sample_field_l2_projection` (𝓘₂) 已实现；当前主输出 `(damage, stress)`
+  不依赖它们，但后续插值误差报告仍建议单独做一轮数值核查。
 5. **schema 完整性**。当前 export 只覆盖必填字段。`reaction / energy /
    history / boundary_code / material_field` 等可选字段留待后续按需开启。
 6. **`HuZhangFESpace2d.interpolate` 空实现**。Fig 3 因此只能用 σ ≡ 0 校验

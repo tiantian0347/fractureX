@@ -119,7 +119,7 @@ model0 用 distmesh，`hmin` 是控制参数。从已有的 `paper_baseline` 看
 - `p = 3` （应力空间次数，Hu-Zhang）
 - `damage_p = 2`
 - `AT2 + quadratic degradation + hybrid split`
-- `ε_g = 1e-6`
+- 退化系数基准：`g(d)` 直接进入应力块 `1/g` 与 P1 粗扩散 `g`（两侧同源，不在辅助子里再叠 `max(g, ε_g)` floor；`ε_g` 仅作为 `damage.coef_bary` 内部数值下界，不进入论文措辞）
 - `formulation = "standard"`
 
 允许扫描的（消融实验区）：

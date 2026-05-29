@@ -643,6 +643,12 @@ class HuZhangPhaseFieldStaggeredDriver:
             )
             self.recorder.write_step(row)
             self.recorder.save_checkpoint(step, discr, state)
+            if hasattr(self.recorder, "dump_quadrature_fields"):
+                try:
+                    self.recorder.dump_quadrature_fields(step, discr, state)
+                except Exception as exc:
+                    if self.debug:
+                        print(f"[driver] dump_quadrature_fields failed: {exc}")
 
         return info
 

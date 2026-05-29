@@ -83,7 +83,7 @@ Load segment: `load_dirichlet_piece(load)` prefers the piece with `tag=="load"`,
 - `degradation_type`: elastic degradation, e.g. `"quadratic"` (`EnergyDegradationFunction`)
 - `split`: history energy positive part: `"hybrid"` / `"spectral"` / `"isotropic"`
 - `history_source`: how history is built; the implementation currently supports **only `"from_u"`** (strain from `u`’s gradient, then \(\psi^+\) drives \(H\))
-- `eps_g`: lower bound in degradation, for stability
+- `eps_g`: numerical lower bound used inside `damage.coef_bary` for stability; **does not** appear as `max(g(d), eps_g)` in the assembled blocks or aux-space preconditioner. Paper-facing wording is the bare baseline `g(d)`.
 - `clamp_max`: upper clamp for damage
 - `debug`: debug output
 
@@ -176,7 +176,7 @@ Block **ILU-preconditioned GMRES**, **block Krylov** (optional FEALPy `gmres`/`m
 
 ### 5.2 Phase-field physics
 
-- AT1/AT2, degradation, spectral split, `eps_g`, `history_source` (currently only `from_u`).
+- AT1/AT2, degradation, spectral split, `history_source` (currently only `from_u`); `eps_g` is an internal floor inside `damage.coef_bary`, not a paper-facing knob.
 - **Case** extensions via `CaseBase.phasefield_*` for BCs and initial cracks.
 
 ### 5.3 Elastic formulation in assembly
@@ -188,7 +188,7 @@ Block **ILU-preconditioned GMRES**, **block Krylov** (optional FEALPy `gmres`/`m
 
 - **Default**: elastic uses SciPy **`spsolve`**; phase-field uses no-preconditioner SciPy **`lgmres`**.
 - **Extensions**: pass custom **`elastic_solver` / `phase_solver`** to `HuZhangPhaseFieldStaggeredDriver` (e.g. FEALPy Krylov, `solve_huzhang_block_gmres_auxspace` from this repo).
-- **GMRES preconditioners** (`linear_solvers.py`): pass the same **`elastic_formulation`** as the assembler, plus **`damage`** and **`state`** when using weighted coarse diffusion. **`weighted_aux=True`** applies **max(g(d), eps_g)** on the P1 coarse Laplacian only for **`standard`** (Chen et al. 2017 §5); for **`effective_stress`** the coarse Laplacian stays unweighted and damage enters via the Schur block from **B(d)**. See `docs/huzhang_interface_test_manual.md` §3 (Chinese).
+- **GMRES preconditioners** (`linear_solvers.py`): pass the same **`elastic_formulation`** as the assembler, plus **`damage`** and **`state`** when using weighted coarse diffusion. **`weighted_aux=True`** weights the P1 coarse Laplacian by the bare baseline **`g(d)`** (same `coef_bary` as the stress block's `1/g`, no `max(·, ε_g)` floor) — only for **`standard`** (Chen et al. 2017 §5). For **`effective_stress`** the coarse Laplacian stays unweighted and damage enters via the Schur block from **B(d)**. See `docs/huzhang_interface_test_manual.md` §3 (Chinese).
 - **Standard Schur**: for fixed \(d_h\), \(\mathcal K_h=[[A(d_h),B^\top],[B,0]]\), \(S(d_h)=B A(d_h)^{-1}B^\top\); code builds \(\widehat S=B\,\mathrm{diag}(A)^{-1}B^\top\) and approximates \(B_A\), \(B_S\) (manual §3.0).
 
 ### 5.5 Environment variables (aux-space, assembly parallel, history profiling)

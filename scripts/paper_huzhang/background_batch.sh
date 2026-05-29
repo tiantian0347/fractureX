@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Helpers for parallel background paper runs.
-# Default layout: model0/1/2 elastic direct + model0 aux-space (4 jobs).
+# Default layout: model0/1/2 elastic direct + model0/model1 aux-space (5 jobs).
 #
 #   bash scripts/paper_huzhang/background_batch.sh print-cmds
 #   bash scripts/paper_huzhang/background_batch.sh status
@@ -11,7 +11,7 @@ _REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RESULTS_ROOT="${FRACTUREX_RESULTS_ROOT:-${_REPO_ROOT}/results}"
 LOG_DIR="${FRACTUREX_PAPER_LOG_DIR:-${RESULTS_ROOT}/logs}"
 # Slugs for logs/status files
-CASES=(model0 model1 model2 model0_aux)
+CASES=(model0 model1 model2 model0_aux model1_aux)
 
 _source_env() {
   # shellcheck source=/dev/null
@@ -20,7 +20,7 @@ _source_env() {
 
 _print_cmds() {
   cat <<'EOF'
-# From repo root — activate env once, then start four independent jobs:
+# From repo root — activate env once, then start independent background jobs:
 EOF
   echo "cd ${_REPO_ROOT}"
   echo "source scripts/paper_huzhang/env.sh"
@@ -46,10 +46,16 @@ nohup env FRACTUREX_BG_JOB_LOG=${LOG_DIR}/model0_aux.log FRACTUREX_ELASTIC_FAST=
   >> ${LOG_DIR}/model0_aux.nohup 2>&1 &
 echo \$! > ${LOG_DIR}/model0_aux.nohup_pid
 
+# model1 — elastic aux-space precondition (validation run; mirrors model0_aux)
+nohup env FRACTUREX_BG_JOB_LOG=${LOG_DIR}/model1_aux.log FRACTUREX_ELASTIC_FAST=0 \\
+  bash scripts/paper_huzhang/run_background_job.sh model1 aux \\
+  >> ${LOG_DIR}/model1_aux.nohup 2>&1 &
+echo \$! > ${LOG_DIR}/model1_aux.nohup_pid
+
 EOF
   cat <<EOF
 # After all jobs finish:
-bash scripts/paper_huzhang/wait_and_collect.sh model0 model1 model2 model0_aux
+bash scripts/paper_huzhang/wait_and_collect.sh model0 model1 model2 model0_aux model1_aux
 EOF
 }
 

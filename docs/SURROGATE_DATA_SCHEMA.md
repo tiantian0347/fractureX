@@ -103,6 +103,17 @@ $k$ 为材料参数维度（默认 5：$\lambda,\mu,G_c,\ell_0,\eta$）。
 
 扩展字段（如 anisotropy）从 index 5 起，须在 `metadata.material_order` 中说明。
 
+> **`metadata.interpolation` 通道适用范围（2026-05-29 据 m0_interpolation_error.md §5 实测确定）**：
+> - **σ 通道**：`stress` 走 HuZhang 基函数直接逐点求值，不走 $\mathcal I_1$ /
+>   $\mathcal I_2$。`metadata.interpolation` 对 σ 通道无意义，保留语义专门用于
+>   $\mathcal H$。
+> - **$\mathcal H$ 通道**（schema §3.2 可选字段 `history`）：默认值
+>   `"I1_nearest_quad"`，因为裂尖 cusp 在 P2 上的 $L^2$ 投影把峰值抹掉一半多
+>   （t_c 上 max_ratio ≈ 0.40，见 m0_interpolation_error.md §4.2 表）；
+>   $\mathcal I_1$ 几乎守峰（max_ratio ≈ 1.0），是相场驱动场的正确选择。
+> - 数据集 `metadata.interpolation = "I2_L2_projection"` 仍合法，但生成端必须
+>   显式承担 cusp 抹平的物理后果；除非有专门 smoothness 分析理由，否则不推荐。
+
 ### 3.6 归一化约定
 
 记 `metadata.scaling`（详见 §4）。

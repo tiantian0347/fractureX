@@ -190,3 +190,9 @@ Thumbs.db
 scratch/
 *.h5
 *.xdmf
+
+# Background-job process bookkeeping (transient, never commit)
+results/logs/*.pid
+results/logs/*.status
+results/logs/*.started_at
+results/logs/*.exit

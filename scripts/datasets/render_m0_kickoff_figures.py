@@ -1,5 +1,5 @@
 """Generate the three figures embedded in
-docs/m0_kickoff_report_2026-05-28.md §3.3.
+docs/archive/m0_sessions/m0_kickoff_report_2026-05-28.md §3.3.
 
 Run from repo root with the project python:
 

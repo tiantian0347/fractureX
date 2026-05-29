@@ -41,7 +41,7 @@ g(d)=3(1-d)^2-2(1-d)^3+\varepsilon \quad(\text{thrice}),
 
 其中 \(\varepsilon=10^{-10}\) 为模型层下界。注意区分两个下界：
 - \(\varepsilon\)：退化函数自身的数值下界（本构层，固定）；
-- \(\varepsilon_g\)：预条件中粗空间权重的截止下界（求解层，D12 sweep 变量 \(\{10^{-3},10^{-6},10^{-9}\}\)，见 [`_coarse_diffusion_g_floor`](../fracturex/utilfuc/linear_solvers.py#L235)）。
+- \(\varepsilon_g\)：预条件中粗空间权重的截止下界（求解层，D12 §4.3 谱分析消融轴 \(\{10^{-3},10^{-6},10^{-9}\}\)；仅作 `damage.coef_bary` 内部下界，见 [`_make_coarse_diffusion_coef`](../fracturex/utilfuc/linear_solvers.py#L235)）。
 
 定义退化比（贯穿全文，是所有谱界的核心量）：
 

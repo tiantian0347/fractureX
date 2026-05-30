@@ -1,9 +1,0 @@
-nohup: ignoring input
-FRACTUREX_PYTHON=/home/gongshihua/miniconda3/envs/py312/bin/python
-OPENBLAS_NUM_THREADS=1 FRACTUREX_ASSEMBLY_NPROC=64
-runtime OK numpy 2.4.6 scipy 1.17.1 pyamg 5.3.0
-nohup: ignoring input
-FRACTUREX_PYTHON=/home/gongshihua/miniconda3/envs/py312/bin/python
-OPENBLAS_NUM_THREADS=1 FRACTUREX_ASSEMBLY_NPROC=64
-runtime OK numpy 2.4.6 scipy 1.17.1 pyamg 5.3.0
-scripts/paper_huzhang/run_background_job.sh: line 97: unexpected EOF while looking for matching `"'

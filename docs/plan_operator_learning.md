@@ -685,6 +685,56 @@ crack front Hausdorff 距离、peak-load 误差。
 
 **交付物**：三档 OOD 评估表 + warm-start 收敛步数对比表 + speedup 表 + cyclic stress test report。
 
+### M3.1：L 型标准 FEM 校验算例（held-out 几何 + cyclic）
+
+> 算例文件：`fracturex/cases/phase_field/Lshape_cyclic.py`（标准位移型 FEM，
+> `MainSolve` + `HybridModel`）。状态：算例程序 + 文档已落地；schema 数据导出
+> 为后续工作（见下）。
+
+**为什么单独立一个算例。** 经典 Winkler L 型板在中心有一个**重入角**
+`(250, 250)`，是应力奇点。Hu-Zhang 混合元在该处需要 AFEM 局部加密，逐步变化的
+DOF 布局会破坏 Hu-Zhang 数据管线（`tests/case_runners/model0_runner.py`）所依赖的
+**静态场布局**假设；因此这个几何**无法**经 Hu-Zhang 管线产出。但它可以用标准
+位移型 FEM 求解（与 `square_domian_with_fracture.py` 同一条 `MainSolve` 路径）。
+
+**它校验算子学习的什么。** 这是一个**纯测试 / held-out 算例**，同时压两个维度：
+
+- **cyclic 加载（历史依赖）**：位移计划 `0 → 0.3 → −0.2 → 1.0` mm。同一位移在加载支
+  和卸载支响应不同，唯一区分量是不可逆历史场 `H`。忽略历史的代理在反转处会明显
+  出错——cyclic 曲线是一个尖锐的 pass/fail 信号（对应 §M3 "OOD 加载 stress test"）。
+- **重入角（非光滑场 + 几何 OOD）**：训练分布只有方形 + 光滑 notch，L 型角点奇异、
+  几何拓扑未见，属于 §M3 "Topological OOD"。用于检验 FNO 重采样在角点的混叠、以及
+  GNO mesh-native 路径的差异。
+
+**运行状态（2026-05-30 实测，n=50）**：标准 FEM 路径收敛（每步 2 次交错迭代），
+反力非零且早期随位移线性增长、`max_H>0`——通过相场 sanity 检查。两个坑已在算例里设防：
+- **单点加载必须落在网格节点上**。载荷点 `(470,250)` 仅当 `500/n` 整除 `gcd(470,250)=10`
+  时才是节点，即 `n∈{50,100,250,500}`。否则 `MainSolve` 的 force BC 匹配不到自由度，
+  **静默返回 u≡0** 的平凡解（与 model2 那次 bogus 同源）。算例已加硬性 guard，n 不合法直接报错。
+- 运行后打印 `|reaction|_max` 与 `max_H`，零反力会告警。
+- **依赖注意**：`MainSolve` 在 main_solve.py:12 import `VectorNeumannBCIntegrator`，
+  需要 2026-05-23 之后的 fealpy；本机 `~/tian/fealpy`（2025-12-25）尚无该符号，跑前需
+  `git pull` 更新 fealpy（本算例只用 Dirichlet，不实际触及 vector-Neumann）。
+
+**几何 / 加载 / 材料**（GPa·mm，Lamé 直接传 `lam`/`mu`）：
+- 区域 `[0,500]^2`，挖去右下象限；底边 `y=0`（左脚）全约束；
+- 加载点 `(470,250)` 施加竖直位移；
+- `lam=6.16, mu=10.95, Gc=8.9e-5, l0=1.18`。
+
+**建议的正确性检查（cf. §7）：**
+1. cyclic **反转段**上 `uh`、`d` 的逐步相对 L² 误差有界（不只看单调段）；
+2. rollout 预测的 `H` 单调不减（不可逆性）；
+3. 预测 vs 真值的 force–disp 回环闭合（cyclic 不凭空产/耗能量）。
+
+**数据导出桥（follow-up，本次未实现）。** 把该算例接入 schema v0.1 需要：
+(a) 一个**标准 FEM 的 case runner**，把 `MainSolve` 的 `uh/d/H` + 网格落成
+`RunRecorder`（`history.csv` + 每步 npz）；(b) `dataset_export.py` 新增一个 L 型
+**SDF domain**（替换 `CircularNotchDomain`），σ/d/H 走已有的 Lagrange 采样
+（`_evaluate_lagrange_on_grid` / `sample_field_nearest_quad`），**不走** Hu-Zhang
+`sample_huzhang_stress_on_grid`；(c) 加一个 `configs/datasets/Lshape_*.json`。
+这些改动不触碰 schema 字段定义（见 SURROGATE_DATA_SCHEMA.md），只新增几何与采样后端。
+
+
 ### M4：论文写作与开源（2 周）
 
 - 论文骨架：
@@ -715,6 +765,8 @@ crack front Hausdorff 距离、peak-load 误差。
 | `scripts/datasets/visualize_npz.py`（新增） | npz 重画 $d/\sigma$ 与 FE 对比 | §M0 sanity check |
 | `tests/test_dataset_roundtrip.py`（新增） | npz 读写、单位、归一化、mask 验证 | §M0 sanity check |
 | `configs/datasets/{m0_small,m2_S,m2_M,m2_L}.yaml`（新增） | 参数空间定义，对应数据规模分档 | §M2 升级只换配置 |
+| `fracturex/cases/phase_field/Lshape_cyclic.py` | L 型标准 FEM cyclic 校验算例（已落地） | §M3.1 held-out 几何 + cyclic 正确性测试 |
+| 标准 FEM case runner + L 型 SDF domain（follow-up） | 把 `Lshape_cyclic` 接入 schema 导出 | §M3.1 数据导出桥 |
 | `fracturex/learn/`（新增独立子包） | datasets / models / losses / train / eval | 与求解侧完全解耦 |
 | `fracturex/learn/datasets.py`（新增） | PyTorch `Dataset` + mask 加权采样 | §M1 输入端 |
 | `fracturex/learn/models/{unet,fno_2d,multioutput_fno,deeponet,geo_fno}.py`（新增） | 五个候选模型（v0.3 加 U-Net） | §M1/§M2 |

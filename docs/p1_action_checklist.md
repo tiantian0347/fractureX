@@ -21,7 +21,7 @@
 
 **注意事项**：
 - ⚠️ **不要**用新的 maxit=500 重启它——它**已经**在内存里跑 `maxit=50`，目前每步只用 20-30 iter 就收敛，没必要重启
-- ⚠️ 它的 `peak_rss_mb` **没有被记录**（基础设施缺失，见任务 3），C4 内存数据这次拿不到
+- ⚠️ 它的 `peak_rss_mb` **没有被记录**（该进程 5/25 启动，早于 2026-05-30 的采样接入），C4 内存数据这次拿不到；后续新跑的 job 已自动记录
 - 跑完后从 `results/phasefield/model0_circular_notch/paper_aux/epsg_1e-06/` 收 `history.csv`、`iterations.csv`、`summary.json`
 
 **判定收尾**：
@@ -36,6 +36,16 @@ cat /home/gongshihua/tian/fracturex/results/logs/model0_aux.status
 
 之前不收敛是 maxit=50 + pypardiso 缺失双重原因，现在两个都修了。
 
+> ⚠️ **2026-05-29 新增坑：direct backend 必须显式用 pardiso。**
+> model1/square direct 默认走 scipy SuperLU（`FRACTUREX_ELASTIC_DIRECT_BACKEND`
+> 未设时 fallback 到 `spsolve`），而 SuperLU 解 Hu-Zhang 鞍点系统会
+> **段错误（core dumped, exit 139）**，不是抛异常——短规模也崩，与内存无关
+> （实测机器空着 1.9 TB）。崩溃栈：`spsolve` → SuperLU。model0/model2 的
+> direct 能跑通是因为它们的系统 SuperLU 撑得住，唯独 square（带预裂纹）会崩。
+> **修复**：启动时加 `FRACTUREX_ELASTIC_DIRECT_BACKEND=pardiso`（pypardiso 0.4.7
+> 已装，MKL PARDISO 对鞍点系统稳健）。这只解决求解器崩溃，**救不了 step 67 的
+> 物理不收敛**（见下方"关注点"）。
+
 **步骤**：
 1. 先确认旧的 `model1.pid` 已经清理（之前 kill 过两个进程但 pid 文件可能还在）：
    ```bash
@@ -48,7 +58,11 @@ cat /home/gongshihua/tian/fracturex/results/logs/model0_aux.status
 2. 启动（用 background_job 包一层，会自动写 pid / status）：
    ```bash
    cd /home/gongshihua/tian/fracturex
-   nohup env FRACTUREX_BG_JOB_LOG=results/logs/model1.log \
+   # FRACTUREX_PYTHON 显式指定，否则 env.sh 自动探测在无 conda 的 shell 里失败 → Exit 1
+   # FRACTUREX_ELASTIC_DIRECT_BACKEND=pardiso 必须加，否则 SuperLU 段错误（见上方坑）
+   nohup env FRACTUREX_PYTHON=/home/gongshihua/miniconda3/envs/py312/bin/python \
+     FRACTUREX_ELASTIC_DIRECT_BACKEND=pardiso \
+     FRACTUREX_BG_JOB_LOG=results/logs/model1.log \
      bash scripts/paper_huzhang/run_background_job.sh model1 direct \
      >> results/logs/model1.nohup 2>&1 &
    echo $! > results/logs/model1.nohup_pid
@@ -66,7 +80,13 @@ cat /home/gongshihua/tian/fracturex/results/logs/model0_aux.status
 
 ---
 
-## 任务 3 — 加 `peak_rss_mb` 内存采样（C4 必备）
+## 任务 3 — 加 `peak_rss_mb` 内存采样（C4 必备） ✅ 已完成 2026-05-30
+
+> **实现说明（与原建议不同）**：psutil 在 py312 未安装，改用 stdlib 读 `/proc/self/status`。
+> - `recorder.py`：原有 `rss_mb`（VmRSS）是**步末瞬时值**，分解峰值已释放 → 严重低估（h1 仅 235–522 MB）。
+>   新增 `peak_rss_mb`（读 **VmHWM** 高水位，单调，抓得到 PARDISO 分解峰值）。
+> - `run_report.py`：summary.json 增整轮 `peak_rss_mb`（运行结束时读一次 VmHWM = 全程峰值）。
+> - smoke 验证：peak 单调 221→410→428 MB，summary 取到 428。**注意**：在此之前完成的 h1–h3 / model0_aux 没有 peak 列，C4 内存若要这些档需重跑。
 
 **现状**：`RunRecorder` 没有记内存。这个 P1 内必须补，否则 P2 五档网格跑完了还要重跑才能拿内存数据。
 
@@ -145,8 +165,8 @@ P0 优先级**不高**，但能避免 6 个月后自己搞不清进度。
 
 - [ ] PID 3441015 跑完，paper_aux 数据齐全（history + iterations + summary）
 - [ ] model1 direct 跑通（至少 50 步无死循环；或确认需要载荷步加密）
-- [ ] `peak_rss_mb` 接入 `RunRecorder`，小算例验证通过
-- [ ] `iterations.csv` 字段确认齐全（含 GMRES iter 数）
+- [x] `peak_rss_mb` 接入 `RunRecorder`，小算例验证通过（2026-05-30 完成）
+- [x] `iterations.csv` 字段确认齐全（含 GMRES iter 数）（已确认：`linear_niter_elastic/phase` + 分项墙钟齐全）
 - [ ] Lagrange 路线在 model0 上能跑（一条命令搞定）
 - [ ] `D12_PRECONDITIONER_PAPER_PLAN.md` §13 状态列同步到 P1 末尾真实状态
 

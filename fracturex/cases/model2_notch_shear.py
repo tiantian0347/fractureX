@@ -29,7 +29,7 @@ class Model2NotchXStretchCase(SquareTensionPreCrackCase):
       - other outer boundaries: traction-free
 
     Loading:
-      - Δu_x = 1e-5 mm/step, 1700 steps, u_x,tot = 1.7e-2 mm
+      - Δu_x = 1e-5 mm/step, 2400 steps, u_x,tot = 2.4e-2 mm（对齐 FEALPy 参照程序）
     """
 
     name: str = "model2_notch_x_stretch"
@@ -43,8 +43,8 @@ class Model2NotchXStretchCase(SquareTensionPreCrackCase):
     crack_tol: float = 1e-9
 
     du_x: float = 1.0e-5
-    n_load_steps: int = 1700
-    u_x_total: float = 1.7e-2
+    n_load_steps: int = 2400
+    u_x_total: float = 2.4e-2
 
     def reaction_direction(self):
         return "x"
@@ -74,9 +74,16 @@ class Model2NotchXStretchCase(SquareTensionPreCrackCase):
     def neumann_data(self, load: float = 0.0):
         is_nedge_free = build_isNedge_from_isD(self.mesh, self.isD_bd)
         gd0 = bm.array([0.0, 0.0], dtype=bm.float64)
+        # NOTE: the top edge y=1 prescribes BOTH displacement components here
+        # (u_x = load AND u_y = 0, see dirichlet_pieces), so it is a *full*
+        # displacement boundary -- in the Hu-Zhang mixed form the whole traction
+        # sigma.n on y=1 is an unknown reaction and must NOT be fixed as an
+        # essential stress BC. (Contrast SquareTensionCase, whose top slides in x
+        # with u_x free, where fixing the tangential traction gt=0 is correct.)
+        # Keeping the old `(_on_y1, gd0, "nt", "t")` entry zeroed the tangential
+        # reaction that carries the x-stretch load -> trivial solution u==0.
         return [
             (is_nedge_free, gd0, "nt", None),
-            (self._on_y1, gd0, "nt", "t"),
         ]
 
 

@@ -181,6 +181,10 @@ class HuZhangPhaseFieldStaggeredDriver:
             self._anderson_patience = int(os.environ.get("FRACTUREX_ANDERSON_PATIENCE", "3"))
         except (TypeError, ValueError):
             self._anderson_patience = 3
+        try:
+            self._anderson_restart_omega = float(os.environ.get("FRACTUREX_ANDERSON_RESTART_OMEGA", "1.6"))
+        except (TypeError, ValueError):
+            self._anderson_restart_omega = 1.6
         self._anderson = None
         self._initialized = False
         self._sigma_physical_eval = None
@@ -393,6 +397,7 @@ class HuZhangPhaseFieldStaggeredDriver:
                 restart_patience=self._anderson_patience,
                 blowup_factor=self._anderson_blowup,
                 tr_factor=self._anderson_tr_factor,
+                restart_omega=self._anderson_restart_omega,
             )
         else:
             self._anderson = None

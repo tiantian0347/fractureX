@@ -36,6 +36,7 @@ class AndersonAccelerator:
         restart_patience: int = 3,
         blowup_factor: float = 2.0,
         tr_factor: float = 20.0,
+        restart_omega: float = 1.6,
         reg: float = 1e-12,
     ):
         """
@@ -50,6 +51,9 @@ class AndersonAccelerator:
                    *previous* residual (genuine step-over-step divergence).
             tr_factor: 信赖域系数——单次加速步长 ||x_new - x|| 上限为
                    tr_factor * ||f||(plain 步长)。挡住病态外推的有限大过冲。
+            restart_omega: restart 后第一步(空窗口 reseed)的 over-relax kick
+                   系数(>1)。仅在 restart 触发时用一次,破起裂极限环;稳态首
+                   迭代仍用 omega(默认 1.0,plain),不损反力精度。
             reg:   Tikhonov regularization on the Anderson normal equations.
         """
         self.m = max(0, int(depth))
@@ -58,6 +62,7 @@ class AndersonAccelerator:
         self.restart_patience = int(restart_patience)
         self.blowup_factor = float(blowup_factor)
         self.tr_factor = float(tr_factor)
+        self.restart_omega = float(restart_omega)
         self.reg = float(reg)
         self.reset()
 
@@ -68,13 +73,17 @@ class AndersonAccelerator:
         self._rhist: list[float] = []
         self._stall = 0
         self._best = np.inf
-        # last-used mode, for diagnostics: 'plain' | 'overrelax' | 'anderson'
+        # 刚 restart 标志:下一次空窗口 reseed 用 restart_omega 做 over-relax
+        # kick(仅破极限环),区别于每载荷步首迭代的 plain 播种。
+        self._just_restarted = False
+        # last-used mode, for diagnostics: 'plain' | 'overrelax' | 'kick' | 'anderson'
         self.last_mode = "plain"
 
     def _restart_window(self) -> None:
         self._X.clear()
         self._F.clear()
         self._stall = 0
+        self._just_restarted = True
 
     def step(self, x: np.ndarray, gx: np.ndarray) -> np.ndarray:
         """Return the accelerated iterate given x = d_old and gx = G(d_old).
@@ -106,8 +115,19 @@ class AndersonAccelerator:
         # in the decreasing-residual regime, because at a fixed tolerance it
         # converges to a slightly different state and degrades the reaction.
         if len(self._X) == 0:
-            x_new = x + self.omega * f          # (re)seed; omega=1.0 => plain
-            self.last_mode = "plain" if self.omega == 1.0 else "overrelax"
+            if self._just_restarted:
+                # 破极限环:restart 后的第一步用 over-relax kick(restart_omega>1)
+                # 把迭代扰动出极限环——这正是起裂步真正需要的"大跳"。仅此一步,
+                # 不影响稳态。
+                seed_omega = self.restart_omega
+                self._just_restarted = False
+                self.last_mode = "kick"
+            else:
+                # 每载荷步首迭代的自然播种:plain(omega 通常 1.0),稳态不 over-relax,
+                # 以保稳定段反力精度(over-relax 在固定 tol 下会把解推偏)。
+                seed_omega = self.omega
+                self.last_mode = "plain" if self.omega == 1.0 else "overrelax"
+            x_new = x + seed_omega * f
         else:
             dX = np.column_stack([x - xi for xi in self._X])
             dF = np.column_stack([f - fi for fi in self._F])

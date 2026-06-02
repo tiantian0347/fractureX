@@ -1,4 +1,9 @@
 # fracturex/discretization/huzhang_discretization.py
+"""Hu-Zhang 混合元离散化容器：统一管理网格、有限元空间与状态量。
+
+``HuZhangDiscretization`` 只负责"网格 + 空间 + state"的构建与（自适应）重建，不涉及装配/
+求解/迭代；``HuZhangState`` 聚合应力 σ、位移 u、损伤 d、局部损伤历史 r_hist 与相场历史 H。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -30,6 +35,7 @@ class HuZhangState:
     H: Optional[Any] = None
 
     def as_view(self) -> Dict[str, Any]:
+        """以 dict 形式返回各状态量（``sigma``/``u``/``d``/``r_hist``/``H``），供装配/损伤模型读取。"""
         return dict(sigma=self.sigma, u=self.u, d=self.d, r_hist=self.r_hist, H=self.H)
 
 
@@ -192,10 +198,12 @@ class HuZhangDiscretization:
 
     @property
     def gdof_sigma(self) -> int:
+        """应力空间的全局自由度数。"""
         return int(self.space_sigma.number_of_global_dofs())
 
     @property
     def gdof_u(self) -> int:
+        """位移空间的全局自由度数。"""
         return int(self.space_u.number_of_global_dofs())
 
     @property

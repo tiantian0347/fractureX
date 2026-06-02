@@ -9,6 +9,7 @@ from fealpy.mesh import TriangleMesh
 
 
 def mesh_h_stats(mesh) -> dict:
+    """统计网格边长。输入 mesh，返回含 ``h_min``/``h_max``/``h_mean`` 的 dict。"""
     h = np.asarray(mesh.edge_length(), dtype=float)
     return {
         "h_min": float(h.min()),
@@ -18,6 +19,14 @@ def mesh_h_stats(mesh) -> dict:
 
 
 def phasefield_h_target(l0: float, *, safety: Optional[float] = None) -> float:
+    """相场网格目标最大边长 ``safety · l0/2``。
+
+    Args:
+        l0: 相场长度尺度。
+        safety: 安全系数；缺省读环境变量 ``FRACTUREX_H_SAFETY``（默认 0.92）。
+    Returns:
+        目标 ``h_max`` 上界。
+    """
     if safety is None:
         safety = float(os.environ.get("FRACTUREX_H_SAFETY", "0.92"))
     return float(safety) * (float(l0) / 2.0)

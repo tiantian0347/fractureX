@@ -1,4 +1,10 @@
 # fracturex/damage/base.py
+"""损伤模型的接口基类与状态视图约定。
+
+定义 driver/assembler 与具体损伤模型之间的解耦边界：``DamageStateView`` 约定状态字段、
+``DamageModelBase`` 约定退化系数评估与历史场更新接口、``DecompositionMaterial`` 约定相场
+分解材料的最小协议。具体实现见 ``phasefield_damage.py``、``local_node_damage.py``。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,6 +23,14 @@ class DecompositionMaterial(Protocol):
     - 给定应变/应力，返回“张拉驱动能量密度”或“等效历史量”用于更新 H
     """
     def tensile_energy_density(self, strain_or_stress: Any, *, lam: float, mu: float) -> Any:
+        """返回张拉驱动能量密度（用于更新历史场 H）。
+
+        Args:
+            strain_or_stress: 应变或应力张量。
+            lam, mu: Lamé 参数。
+        Returns:
+            正（张拉）部能量密度。
+        """
         ...
 
 

@@ -1,3 +1,9 @@
+"""Hu-Zhang 混合元 + 局部损伤的求解器（早期/简化版驱动）。
+
+直接基于 FEALPy 的 ``HuZhangFESpace2d`` 装配应力-位移鞍点系统并交错更新局部损伤
+（指数型损伤律 + 等效应力阈值），支持角点松弛（relaxation）变换。属较早的一体化实现，
+后续解耦版见 ``drivers/huzhang_phasefield_staggered.py`` 等。
+"""
 from fealpy.backend import backend_manager as bm
 from fealpy.utils import timer
 
@@ -21,6 +27,8 @@ from scipy.sparse.linalg import lgmres
 from scipy.sparse import bmat
 
 class HuZhangFESolve():
+    """Hu-Zhang 应力-位移混合元求解器，含局部损伤交错迭代。"""
+
     def __init__(self, model, mesh, p:int, q:int=None, use_relaxation:bool=True, isNedge:TensorLike=None):
         """
         @brief 

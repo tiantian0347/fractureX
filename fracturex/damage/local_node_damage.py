@@ -1,4 +1,12 @@
 # fracturex/damage/local_node_damage.py
+"""局部节点损伤模型（P1 节点损伤，非相场）。
+
+基于等效应力准则（Rankine 最大主应力 / von Mises）的不可逆局部损伤演化：
+``r_hist ← max(r_hist, r)``、``d = 1 - (ft/r)·exp(-2 Hd (r-ft)/ft)``，``d`` 单调不减。
+弹性侧用退化系数 ``g(d)=(1-d)²`` 耦合到 Hu-Zhang 应力本构。
+
+模块内自由函数为 Voigt↔矩阵转换与等效应力度量等工具。
+"""
 
 from __future__ import annotations
 
@@ -15,6 +23,7 @@ try:
 
 except Exception:  # pragma: no cover
     class DamageModelBase:  # minimal fallback
+        """当 ``fracturex.damage.base`` 不可导入时的最小占位基类（仅声明接口方法）。"""
         def on_build(self, discr, state, case): ...
         def on_mesh_changed(self, old_discr, new_discr, old_state, new_state, case): ...
         def coef_bary(self, state, bcs, index=None): ...

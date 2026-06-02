@@ -9,6 +9,7 @@ import numpy as np
 
 
 def _matrix_to_scipy_csr(A: Any):
+    """把 FEALPy/SciPy 稀疏矩阵统一转为 ``scipy.sparse.csr_matrix``（无对应接口则原样返回）。"""
     if hasattr(A, "to_scipy"):
         return A.to_scipy().tocsr()
     if hasattr(A, "tocsr"):

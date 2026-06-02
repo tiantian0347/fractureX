@@ -1,9 +1,17 @@
+"""网格实例级补丁：把额外边（如预置裂纹边）并入边界边集合。"""
 from fealpy.backend import backend_manager as bm
 
 def augment_boundary_edges_inplace(mesh, extra_edge_mask):
-    """
-    把 mesh.boundary_edge_flag() 的返回值扩展为 原边界 ∪ extra_edge_mask。
-    只 patch 这个 mesh 实例，不改 mesh 类，不影响其它模型。
+    """把 ``mesh.boundary_edge_flag()`` 扩展为 原边界 ∪ ``extra_edge_mask``（仅 patch 此实例）。
+
+    通过替换实例方法实现，不改 mesh 类，不影响其它模型；2D 下同时 patch
+    ``boundary_face_index``。
+
+    Args:
+        mesh: 目标网格（就地 patch）。
+        extra_edge_mask: 额外边的布尔掩码 ``(NE,)``；``None`` 时直接返回原 mesh。
+    Returns:
+        patch 后的同一 mesh 对象。
     """
     if extra_edge_mask is None:
         return mesh

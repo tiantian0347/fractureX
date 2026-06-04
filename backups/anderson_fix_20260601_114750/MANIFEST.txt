@@ -1,0 +1,10 @@
+Backup before Anderson aux-path fix (plan: toasty-honking-simon)
+created: 2026-06-01T03:47:50Z
+
+== original mtimes ==
+2026-05-31 16:07:42.345618997 +0800  fracturex/drivers/anderson_acceleration.py
+2026-05-31 16:02:20.845042286 +0800  fracturex/drivers/huzhang_phasefield_staggered.py
+
+== sha256 ==
+a71f16b3d62d48a854f434d5919f75b002e7d1d98c52df447d9cd3073d8b0135  fracturex/drivers/anderson_acceleration.py
+7d1b8f3e190b646206dcd1c2ef5aa66ee787d1117451ab93e5f5c30ea335af71  fracturex/drivers/huzhang_phasefield_staggered.py

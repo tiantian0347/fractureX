@@ -44,6 +44,10 @@ setup(
         "doc": ["sphinx", "sphinx-rtd-theme"],  # Documentation dependencies
         "dev": ["pytest", "pytest-cov", "ipdb"],
         "direct": ["pypardiso"],  # optional Intel MKL PARDISO (MUMPS: install separately)
+        # Operator-learning surrogate (fracturex/learn). Solver-decoupled: only
+        # needs the SURROGATE_DATA_SCHEMA npz protocol + PyTorch. scipy is used
+        # by the eval metrics (KD-tree / morphology).
+        "learn": ["torch", "scipy"],
         # Add any optional dependencies here
     },
     include_package_data=True,

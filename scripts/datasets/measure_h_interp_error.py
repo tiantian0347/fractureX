@@ -57,7 +57,7 @@ from fracturex.postprocess.dataset_export import (
 )
 from fracturex.learn.eval.metrics import relative_l2, relative_linf
 
-SCHEMES = ("I1", "I2")
+SCHEMES = ("I1", "I2", "const")
 
 
 @dataclass
@@ -179,7 +179,18 @@ def _measure_one(
     grid: GridSpec,
     mask_hw: np.ndarray,
 ) -> dict:
-    """Returns {scheme: {rel_L2, rel_Linf, max_grid, ...}}."""
+    """Returns {scheme: {rel_L2, rel_Linf, max_grid, ...}}.
+
+    Three rows are produced per call:
+
+    * ``I1``  — nearest-quadrature scatter then bilinear roundtrip;
+    * ``I2``  — L²-project to space_d then bilinear roundtrip;
+    * ``const`` — predict every qp with ``mean(H_qp)`` over Ω.
+                  Acts as a "zero-information" baseline. If ``I1.rel_L2``
+                  is close to ``const.rel_L2``, the residual is bounded
+                  by grid representational capacity (the cusp does not
+                  fit on the grid) rather than a poor 𝓘 choice.
+    """
     qp_in = _qp_inside_mask(xq, mask_hw.astype(bool), grid)
     out: dict = {"frac_qp_in_grid": float(qp_in.mean())}
 
@@ -216,8 +227,25 @@ def _measure_one(
     out["I1"]["max_ratio"] = out["I1"]["max_grid"] / max(out["max_qp_truth"], 1e-30)
     out["I2"]["max_ratio"] = out["I2"]["max_grid"] / max(out["max_qp_truth"], 1e-30)
 
+    # const baseline: replace every qp value with the inside-Ω mean.
+    if qp_in.any():
+        mean_in = float(truth_qp[qp_in].mean())
+    else:
+        mean_in = 0.0
+    pred_const = np.where(qp_in, mean_in, 0.0)
+    out["const"] = {
+        "rel_L2": float(relative_l2(pred_const, truth_qp_masked, qp_in)),
+        "rel_Linf": float(relative_linf(pred_const, truth_qp_masked, qp_in)),
+        "max_grid": mean_in,
+        "min_grid": mean_in,
+        "max_ratio": mean_in / max(out["max_qp_truth"], 1e-30),
+    }
+
     out["_grids"] = {"I1": _to_hw(H_grid_i1), "I2": _to_hw(H_grid_i2)}
     return out
+
+
+PLOT_SCHEMES = ("I1", "I2")  # const is a scalar baseline; not plotted.
 
 
 def _plot_compare(
@@ -230,7 +258,7 @@ def _plot_compare(
     n = len(steps)
     fig, axes = plt.subplots(n, 2, figsize=(7.5, 3.6 * n), squeeze=False)
     for r, t in enumerate(steps):
-        for c, scheme in enumerate(SCHEMES):
+        for c, scheme in enumerate(PLOT_SCHEMES):
             ax = axes[r, c]
             field = grid_pairs[t][scheme]
             im = ax.imshow(

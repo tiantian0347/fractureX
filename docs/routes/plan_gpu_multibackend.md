@@ -224,3 +224,96 @@ JAX-CUDA 的装配墙钟对比，至少覆盖 2 个网格规模（约 5e4 / 5e5 
    抽成 `_finalize_local_to_global`，先保持行为不变。
 4. 写 `fracturex/tests/test_backend_smoke.py`，跑 numpy + jax + torch 三个后端的 3×3 网格一致性。
 5. CI（或本地 `pytest -q`）通过后即可开 PR，作为后续 §M1 工作的基础。
+
+---
+
+## 7. Matrix-free 弹性应力块（③：内存 + GPU 前置）— 2026-06-02
+
+> 背景：受控扫描定论 2D 中等规模 aux 在时间(11–14×)与内存(≈持平)都输 pardiso，且 14× = ~2×线程 + ~6×算法硬墙（见记忆 `aux_loses_to_pardiso_2d`）。辅助空间预条件子的真正主场是 **3D / GPU / matrix-free**。本节实现 ③ 的第一步：把 Hu–Zhang 弹性系统中内存大头**应力块 M2 做成 matrix-free**（不显式存 M2 与 (ldof,ldof) 元核 Phi），后端无关，作为上 GPU（④）的前置。
+
+### 7.1 数学理论
+
+每个交错弹性子步求解鞍点系统（standard 公式，σ∈Hu–Zhang H(div,sym)，p=3）：
+
+$$A\begin{bmatrix}\sigma\\u\end{bmatrix}=\begin{bmatrix}M_2 & B_2\\ B_2^\top & 0\end{bmatrix}\begin{bmatrix}\sigma\\u\end{bmatrix},\quad M_2=\mathrm{TM}^\top M(d)\,\mathrm{TM},\ \ B_2=\mathrm{TM}^\top B$$
+
+其中 TM 为角点松弛变换、$B$ 为离散散度、$M(d)$ 为退化加权应力质量阵（系数 $1/g(d)$）。**只有 $M(d)$ 随 $d$ 变**；$B_2,\mathrm{TM}$ 与 $d$ 无关。
+
+**关键观察**：迭代解（GMRES）只需 $A$ 的 **matvec**，不需显式矩阵；预条件子需要的是 $B_2$（小）、Schur $S=B_2\,\mathrm{diag}(M_2)^{-1}B_2^\top$（u 空间，小）与 $\mathrm{diag}(M_2)$。故只把 $M_2$ 的作用 matrix-free，$B_2/\mathrm{TM}/S$ 仍装配。
+
+$M_2$ 作用 $y=\mathrm{TM}^\top M(d)\,(\mathrm{TM}\,x)$，其中 $M(d)$ 的单元作用**不形成任何 $(ldof,ldof)$ 块**，直接与输入向量收缩。设单元基 $\phi_{cqld}$（$d$ 为对称分量，nsym=3）、迹 $\mathrm{tr}\phi_{cql}$、权 $W_{cq}=|K_c|\,w_q$、系数 $\kappa_{cq}=1/g(d)$、对称重数 $\nu_d$、本构常数 $c_0=1/2\mu,\ c_1=\lambda/[2\mu(2\mu+n\lambda)]$：
+
+$$s_{cqd}=\sum_m\phi_{cqmd}x^{loc}_{cm},\quad t_{cq}=\sum_m\mathrm{tr}\phi_{cqm}x^{loc}_{cm}$$
+$$y^{loc}_{cl}=\sum_q W_{cq}\kappa_{cq}\Big(c_0\sum_d\nu_d\,\phi_{cqld}\,s_{cqd}-c_1\,\mathrm{tr}\phi_{cql}\,t_{cq}\Big)$$
+
+再按 `cell2dof` 散射累加。这与 `HuZhangStressIntegrator` 装配的元贡献是同一收缩，只是与向量缩并而非组装全局阵。
+
+- **diag(M2) 近似**：$\mathrm{diag}(M)$ 精确元素级算出（$Ke[c,l,l]$ 散射），再 $\mathrm{diag}(M_2)\approx(\mathrm{TM}\!\circ\!\mathrm{TM})^\top\mathrm{diag}(M)$。仅喂预条件子 $D^{-1}$ → 误差只影响 niter，不影响解。**实测在 model0 角点松弛下该近似几乎精确**（rel 3e-16）。
+- **本质边界（model0 有 σ 本质 BC）**：装配路做 $A\!\leftarrow\!T A T+T_{bd},\ F\!\leftarrow\!F-A u_{bd}$。matrix-free 等价实现为算子内 mask：$A_{\text{eff}}z=T(A(Tz))+T_{bd}z$，RHS 用一次 unmasked $A\,u_{bd}$ 生成（与装配路逐位一致）。
+
+### 7.2 实现
+
+- 新模块 [`fracturex/utilfuc/matfree_elastic.py`](../../fracturex/utilfuc/matfree_elastic.py)：`MatrixFreeElasticOperator(scipy LinearOperator)`，携带 $B_2/\mathrm{TM}$、元核（W/coef/num/cell2dof + phi 或 space+bcs）、近似 diag、可选本质 mask；暴露 `.diagonal()`、`.B_div/.B_div_T`、`.diag_inv_sigma()`。
+- 两种内存模式：**cache**（存 $\phi(NC,NQ,ldof,3)$，比装配路的 $(ldof,ldof)$ Phi+M2 省，但 $\phi$ 仍不小）；**recompute（分块）**（不存 $\phi$，每 matvec 按 cell-chunk 经 `space.basis(bcs,index=chunk)` 重算，瞬态内存有界——真省内存，CPU 更慢，GPU 兑现速度）。
+- env 旋钮：`FRACTUREX_ELASTIC_MATFREE=1`、`FRACTUREX_ELASTIC_MATFREE_RECOMPUTE=1`、`FRACTUREX_MATFREE_CHUNK`。仅 standard + iterative(fast/aux) 路径生效；direct/baseline 仍装配。
+- 求解器接缝（[`linear_solvers.py`](../../fracturex/utilfuc/linear_solvers.py)）duck-type：`as_scipy_csr` 早返回算子；`fast`/`auxspace` 用算子提供的 $B$/diag 替代切片，下游 Schur/GS 不变（装配路零改动）。
+- 顺带优化：`_prepare_constant_blocks` 的 `M2_const` 只在 effective_stress 用，standard 下白建（含三重积大瞬态）→ 改为按需建，**所有路径免费降峰值**。
+
+### 7.3 测试过程
+
+1. **单元 matvec 正确性**：同 state 下装配 $A_{ref}$ 与 matrix-free $A_{mf}$，对随机向量比 $\|A_{ref}x-A_{mf}x\|/\|A_{ref}x\|$ 与 $\|F_{ref}-F_{mf}\|$，覆盖 intact / half-cracked 两种损伤、走完整 `assemble()`（触发本质边界 mask），cache 与 recompute（chunk=256/4096）各测。
+2. **端到端**：model0 h1 fast，MATFREE=0 vs 1（cache 与 recompute），逐步比 max_d/反力/niter。
+3. **峰值内存**：h3（184k σ-dof）独立进程测 `ru_maxrss`，对比 assembled(默认缓存Phi) / assembled(关Phi缓存) / mf_cache / mf_recompute。
+
+### 7.4 测试结果
+
+**正确性**（机器精度，含本质边界）：
+
+| 项 | cache | recompute |
+|---|---|---|
+| $\|A_{ref}x-A_{mf}x\|$rel | 3.4e-16 | 3.4e-16（chunk 无关）|
+| $\|F\|$rel | 0 | 0 |
+| diag 近似 rel | 3e-16 | 3e-16 |
+| 端到端 max_d 逐步 Δ | ≤4e-15 | ≤4e-15 |
+| niter_elastic vs 装配 | 不变(6–7) | 不变(6–7) |
+
+**峰值内存**（h3, 184k σ-dof）：
+
+| 模式 | peak RSS | vs 精简装配 | vs 生产默认 |
+|---|---|---|---|
+| assembled（缓存Phi，生产默认，与扫描 5563MB 吻合）| 5558 MB | — | 1× |
+| assembled（关Phi缓存，精简）| 1374 MB | 1× | 4.0× |
+| mf_cache | 819 MB | 1.7× | 6.8× |
+| **mf_recompute** | **717 MB** | **1.9×** | **7.8×** |
+
+`_prepare_constant_blocks` 单独峰值 719MB——**mf_recompute(717MB) 几乎贴着常量块装配底**，即在常量块之上几乎不加内存。
+
+**速度**：CPU 上 matrix-free 单次弹性解约慢 ~18×（h1 step5: ~57s vs 装配 ~3s），因每次 GMRES 迭代重算元收缩；**这是预期代价，速度收益在 GPU 兑现**。
+
+### 7.5 内存底分析（2026-06-02 追加）
+
+为判断"再降内存"是否值得，逐步测 h3 峰值贡献：
+
+| 步骤 | peak RSS | current |
+|---|---|---|
+| mesh + discr.build | 327 | 326 |
+| **B 的 BilinearForm 装配** | **719**（瞬态 +392MB）| 478 |
+| B→csr / B2=TMᵀB | 719 | 479 |
+
+**结论：MF 的 717MB 峰值底完全由 `_prepare_constant_blocks` 里 B 的一次性 BilinearForm 装配瞬态(+392MB)设定**，与 MF 算子内部存储无关。推论：
+- $B_2/\mathrm{TM}$ 单副本只省**持久** ~40MB，**不动 717 峰值**（峰值是装配那一刻的瞬态）。
+- $B_2$ **不能完全 matrix-free**：Schur $S=B_2\,\mathrm{diag}^{-1}B_2^\top$ 与其上的 GS 都需 $B_2$ 显式。
+- 要降 717 须**分块装配 B**，但仓库现有 `_assemble_huzhang_mix_coupled_chunk` 调用的 `assembly_cell_matrix` 已随 fealpy API 失效（死代码）；重写版本兼容的 chunked mix 装配为中等工作量、且 fealpy 版本敏感，收益仅 CPU、1.9×→~2.7×。
+- MF **真正的内存赢已落袋**：它避开 M2/A 构建（lean-assembled 的 1374MB 峰值正是 M2/A），这就是 1.9×/7.8× 的来源；剩下的 B 瞬态是装配路也付的公共底。
+
+**判定：CPU 上的内存 floor-lowering 性价比低且被失效 helper 挡住，不再深挖。**
+
+### 7.6 下一步与定位（2026-06-02 修订）
+
+> **论文定位（专家建议）**：不卖计算效率（墙钟），卖**迭代稳定性 + 小内存**。matrix-free 在本论文中作为**内存支线**（与辅助空间预条件子的"迭代稳定"主线互补）；详见 `docs/preconditioner/D12_PRECONDITIONER_PAPER_PLAN.md` §13.4。**GPU 端口暂缓，本节作为 future work 记录**——CPU 上 matrix-free 的内存收益(1.9×/7.8×)与 niter 不变性已足以支撑内存支线论点，无需 GPU 即可成文。
+
+- ✅ ③ 在 CPU 上已达有用极限：matrix-free 算子正确（机器精度）、内存 1.9×/7.8×、niter 与装配版不变、M2_const 跳过为免费收益。
+- ⏸ **GPU 端口（④）= future work（暂缓）**：上 GPU 后元基重算廉价、带宽足，B 装配/元收缩留 device，可消解 CPU 时间(~18×)劣势与 B 装配瞬态——但**这是"双赢加速"的增量，不是当前论点所必需**。GPU 集群可用，待主线（迭代稳定 + 内存）成文后再推。
+- 后续：扩 square/model2 与 effective_stress；CPU 降底（chunked B 装配）性价比低，暂不做。
+
+> 交叉引用：aux-vs-direct 定位见 `docs/preconditioner/D12_PRECONDITIONER_PAPER_PLAN.md`；2D 失利定论见会话记忆 `aux_loses_to_pardiso_2d`。

@@ -112,11 +112,36 @@ def _precond_block_aux(
     return LinearOperator(shape=(n, n), matvec=_apply, dtype=A_scipy.dtype)
 
 
+def _precond_block_aux_fast(A_scipy, *, discr, damage, formulation: str, **_) -> LinearOperator:
+    """One application of the `fast` (symmetric two-level V-cycle) aux preconditioner.
+
+    论文主 aux 列（D12 §3.2）。同 `_precond_block_aux` 的做法：用 1 步 GMRES（rtol=1,
+    restart=1, maxit=1）从零初值得到 P^{-1} b 的一次作用，暴露算子供 ARPACK 估谱。
+    """
+    from fracturex.utilfuc.linear_solvers import solve_huzhang_block_gmres_fast
+
+    n = A_scipy.shape[0]
+    # Expose the exact block preconditioner operator P^{-1} (no GMRES run). Pass a
+    # nonzero dummy b to bypass the zero-rhs short-circuit; return_preconditioner=True
+    # returns (P, None) right after P is built.
+    P, _ = solve_huzhang_block_gmres_fast(
+        A_scipy, np.ones(n, dtype=float),
+        gdof_sigma=discr.gdof_sigma, vspace=discr.space_u,
+        return_preconditioner=True,
+        atol=0.0, rtol=1e-8, restart=60, maxit=1, q=3,
+        precond_rebuild_interval=1, schur_precond="auto",
+        weighted_aux=True, elastic_formulation=formulation,
+        damage=damage, state=discr.state,
+    )
+    return P
+
+
 PRECOND_FACTORIES = {
     "identity": _precond_identity,
     "ilu": _precond_ilu,
     "aux_weighted": lambda A, **kw: _precond_block_aux(A, weighted=True, **kw),
     "aux_unweighted": lambda A, **kw: _precond_block_aux(A, weighted=False, **kw),
+    "aux_fast": _precond_block_aux_fast,
 }
 
 
@@ -149,17 +174,22 @@ def estimate_spectrum(
     )
 
     eig_large, _ = eigs(K, k=int(k_large), which="LM", tol=tol, maxiter=maxiter)
-    try:
-        eig_small, _ = eigs(K, k=int(k_small), which="SM", tol=tol, maxiter=maxiter)
-    except Exception as exc:
-        print(f"[precond_spectrum] SM eigs failed ({exc}); falling back to shift-invert")
-        # Shift-invert near zero often more stable for SM
-        from scipy.sparse.linalg import eigs as _eigs
+    if int(k_small) <= 0:
+        # LM-only: ARPACK SM is slow/unstable on this non-normal block-preconditioned
+        # operator (kappa via SM is a heuristic anyway). Report the LM clustering range.
+        eig_small = np.asarray([], dtype=eig_large.dtype)
+        sm_abs = np.abs(eig_large)  # min over the computed LM set (lower bound proxy)
+    else:
+        try:
+            eig_small, _ = eigs(K, k=int(k_small), which="SM", tol=tol, maxiter=maxiter)
+        except Exception as exc:
+            print(f"[precond_spectrum] SM eigs failed ({exc}); falling back to shift-invert")
+            from scipy.sparse.linalg import eigs as _eigs
 
-        eig_small, _ = _eigs(K, k=int(k_small), sigma=0.0, which="LM", tol=tol, maxiter=maxiter)
+            eig_small, _ = _eigs(K, k=int(k_small), sigma=0.0, which="LM", tol=tol, maxiter=maxiter)
+        sm_abs = np.abs(eig_small)
 
     lm_abs = np.abs(eig_large)
-    sm_abs = np.abs(eig_small)
     kappa = float(lm_abs.max() / max(sm_abs.min(), 1e-30))
 
     return {
@@ -181,7 +211,7 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--case", default="model0", choices=list(CASE_BUILDERS))
     p.add_argument(
         "--algorithm",
-        default="aux_weighted",
+        default="aux_fast",  # 默认用最优算法（D12 §3.2）
         choices=list(PRECOND_FACTORIES),
     )
     p.add_argument("--formulation", default="standard", choices=["standard", "effective_stress"])

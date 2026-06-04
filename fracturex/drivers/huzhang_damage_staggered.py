@@ -1,4 +1,10 @@
 # fracturex/drivers/huzhang_damage_staggered.py
+"""Hu-Zhang 混合元 + 局部损伤的交错（staggered）求解驱动（解耦版）。
+
+按载荷步推进：每步用当前损伤装配并求解弹性应力-位移系统，再用 (σ,u) 更新不可逆损伤场，
+循环至 ``max(d^{k+1}-d^k) < tol``。负责反力后处理、记录器与 VTK 输出。预留 ``adapt_hook``
+（自适应）与 ``linear_solver``（替换线性求解器）钩子。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -23,6 +29,18 @@ from fealpy.backend import backend_manager as bm
 
 @dataclass
 class StepInfo:
+    """单个载荷步的局部损伤求解结果摘要。
+
+    Attributes:
+        step: 载荷步序号。
+        load: 该步规定载荷/位移值。
+        iters: 交错迭代次数。
+        converged: 是否收敛。
+        max_dd: 末次迭代损伤增量的最大绝对值。
+        max_d: 该步最大损伤值。
+        meta: 详细元信息（反力、各阶段耗时、线性残差等）。
+    """
+
     step: int
     load: float
     iters: int
@@ -63,6 +81,17 @@ class HuZhangLocalDamageStaggeredDriver:
         output_dir: Optional[str] = None,
         save_vtu_per_step: bool = False,
     ):
+        """初始化局部损伤交错驱动器。
+
+        Args:
+            case, discr, damage: 算例、离散化与损伤模型对象。
+            assembler: 可选的自定义弹性装配器。
+            tol, maxit: 交错收敛容差与最大迭代数。
+            linear_solver: 线性求解回调 ``(A, F) -> x``，缺省直接 spsolve。
+            adapt_hook: 每步后的自适应回调。
+            cell_mode, debug, timing, recorder: 输出与诊断开关。
+            output_dir, save_vtu_per_step: VTK 输出目录与是否逐步保存。
+        """
         self.case = case
         self.discr = discr
         self.damage = damage
@@ -87,6 +116,7 @@ class HuZhangLocalDamageStaggeredDriver:
         self._initialized = False
 
     def _timer_mark(self, tag: Optional[str]):
+        """向计时器发送阶段标记 ``tag``（计时关闭或失败时安全跳过）。"""
         if not self.timing:
             return
         try:
@@ -96,6 +126,7 @@ class HuZhangLocalDamageStaggeredDriver:
 
     @staticmethod
     def _relative_residual(A, x, b) -> float:
+        """计算相对残差 ``||Ax-b|| / ||b||``；异常时返回 ``nan``。"""
         try:
             Ax = A @ np.asarray(x).reshape(-1)
             b_ = np.asarray(b).reshape(-1)
@@ -120,6 +151,13 @@ class HuZhangLocalDamageStaggeredDriver:
     # main loop
     # --------------------------
     def run(self, loads: List[float]) -> List[StepInfo]:
+        """对所有载荷步运行交错求解。
+
+        Args:
+            loads: 各步规定载荷值列表。
+        Returns:
+            每步一个 :class:`StepInfo` 的列表。
+        """
         self.initialize()
         out: List[StepInfo] = []
 
@@ -152,6 +190,14 @@ class HuZhangLocalDamageStaggeredDriver:
         return out
 
     def solve_one_step(self, *, step: int, load: float) -> StepInfo:
+        """求解单个载荷步：弹性求解与损伤更新交错迭代至收敛。
+
+        Args:
+            step: 载荷步序号。
+            load: 当前规定载荷/位移值。
+        Returns:
+            含收敛统计与反力等元信息的 :class:`StepInfo`。
+        """
         discr = self.discr
         state = discr.state
         if state is None:
@@ -164,6 +210,13 @@ class HuZhangLocalDamageStaggeredDriver:
         t_elastic_solve = 0.0
         t_damage_update = 0.0
         r_lin_e = float("nan")
+
+        # Precompute load-dependent, d-independent data once per load step so the
+        # staggered iterations below reuse the cached Dirichlet/Neumann/essential-σ
+        # data instead of recomputing it each inner solve (mirrors the main driver).
+        disable_step_cache = os.environ.get("FRACTUREX_DISABLE_LOADSTEP_CACHE", "0") == "1"
+        if (not disable_step_cache) and hasattr(self.assembler, "begin_load_step"):
+            self.assembler.begin_load_step(float(load))
 
         # staggered iteration
         for k in range(self.maxit):
@@ -184,7 +237,9 @@ class HuZhangLocalDamageStaggeredDriver:
             t_elastic_solve += time.perf_counter() - t0
             r_lin_e = self._relative_residual(sys.A, X, sys.F)
 
-            sigma, u = sys.decode(X)
+            # decode returns (sigma_tilde, u, sigma_physical_or_none); the local-damage
+            # driver works in the (standard) transformed stress, so ignore the 3rd.
+            sigma, u, _sigma_phys = sys.decode(X)
 
             state.sigma[:] = sigma[:]
             state.u[:] = u[:]
@@ -312,6 +367,13 @@ class HuZhangLocalDamageStaggeredDriver:
     # output
     # --------------------------
     def _save_vtkfile(self, fname: str, *, cell_mode="mean", q=None):
+        """把损伤、位移（节点/单元）、应力（单元）等写入 VTK 文件。
+
+        Args:
+            fname: 输出路径。
+            cell_mode: 单元量聚合方式 ``'mean'``（积分平均）或 ``'barycenter'``（重心取值）。
+            q: 积分阶，缺省 ``discr.p+3``。
+        """
         os.makedirs(os.path.dirname(fname) or ".", exist_ok=True)
         discr = self.discr
         state = discr.state
@@ -401,6 +463,16 @@ class HuZhangLocalDamageStaggeredDriver:
     def attach_cell_sigma_damage(*, mesh, sigma_fun, d_fun=None,
                                 cell_mode: str = "mean", q: int | None = None,
                                 prefix: str = ""):
+        """把单元平均应力（Voigt/分量/von Mises/9 分量张量）及可选损伤写入 ``mesh.celldata``。
+
+        Args:
+            mesh: 目标网格（就地写入 celldata）。
+            sigma_fun: 应力可调用场，返回 ``(NC, NQ, 3)`` 或 ``(NC, 1, 3)``。
+            d_fun: 可选损伤可调用场；给定则附加单元平均损伤。
+            cell_mode: ``'mean'``（积分平均）或 ``'barycenter'``（重心取值）。
+            q: 积分阶（``mean`` 模式用，缺省 6）。
+            prefix: celldata 键名前缀。
+        """
         NC = mesh.number_of_cells()
 
         if cell_mode == "barycenter":
@@ -462,10 +534,12 @@ class HuZhangLocalDamageStaggeredDriver:
     # --------------------------
     @staticmethod
     def _default_spsolve(A, F) -> bm.ndarray:
+        """默认直接求解器：``scipy.sparse.linalg.spsolve(A, F)``，返回解向量。"""
         return spsolve(A, F)
-    
+
     @staticmethod
     def _lgmres_solver(A, F) -> bm.ndarray:
+        """LGMRES 迭代求解 ``A x = F``；不收敛时回退直接法并报错。返回解向量。"""
         if not np.isfinite(F).all():
             raise RuntimeError("RHS has NaN/Inf")
 

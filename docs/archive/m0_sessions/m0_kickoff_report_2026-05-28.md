@@ -1,13 +1,13 @@
 # M0 起步进度报告（2026-05-28）
 
-> 范围：[plan_operator_learning.md](../../plan_operator_learning.md) §8 立即可执行下一步的步骤 1–4。
+> 范围：[plan_operator_learning.md](../../operator_learning/plan_operator_learning.md) §8 立即可执行下一步的步骤 1–4。
 > 状态：闭环，20 个测试通过。
 
 ## 0. 起点 / 范围
 
 本次工作把"算子学习代理"路线的**数据导出管线**从空骨架推进到第一刀可用：
 能从一个 `RunRecorder` 输出目录 + 已 build 的 `HuZhangDiscretization`
-产出 [SURROGATE_DATA_SCHEMA.md](../../SURROGATE_DATA_SCHEMA.md) v0.1 兼容的
+产出 [SURROGATE_DATA_SCHEMA.md](../../operator_learning/SURROGATE_DATA_SCHEMA.md) v0.1 兼容的
 `sample.npz` + `sample.meta.json`。
 
 不动求解器主链；现有 P1/P2 论文实验完全兼容。
@@ -120,7 +120,7 @@ driver / dataset_export 自己读取并决定行为。
 - DOF：`sigma / u / d / r_hist` 全 0。
 - 2 步 checkpoint。
 
-**验证不变量（[SURROGATE_DATA_SCHEMA.md](../../SURROGATE_DATA_SCHEMA.md) §6）：**
+**验证不变量（[SURROGATE_DATA_SCHEMA.md](../../operator_learning/SURROGATE_DATA_SCHEMA.md) §6）：**
 1. 形状：`damage (T,1,H,W)`、`stress (T,3,H,W)`、`sdf (1,H,W)`、`mask
    (1,H,W)`、`coords (2,H,W)`、`material (5,)`、`time (T,)`、`load_history (T,1)`。
 2. dtype：float32 / uint8 按 schema 规定。
@@ -453,7 +453,7 @@ PYTHONPATH=$PWD $FEALPY_PYTHON scripts/datasets/render_m0_real_crack.py
   写起来，3×3×3=27 组参数小批跑一次。
 - §8 步骤 7：[fracturex/learn/datasets.py](../../../fracturex/learn/datasets.py)
   已有 stub，加 PyTorch `Dataset` + 一个 50 行 FNO toy。
-- §8 步骤 8：[m0_interpolation_error.md](../../m0_interpolation_error.md) 已是骨架，
+- §8 步骤 8：[m0_interpolation_error.md](../../operator_learning/m0_interpolation_error.md) 已是骨架，
   M0 跑通后填数据。
 
 设计层面的缺口，建议下一轮收掉：

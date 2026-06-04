@@ -3,7 +3,7 @@
 Role
 ----
 This is the **operator-learning correctness test case** (see
-``docs/plan_operator_learning.md`` §"L 型标准 FEM 校验算例"). It deliberately
+``docs/operator_learning/plan_operator_learning.md`` §"L 型标准 FEM 校验算例"). It deliberately
 lives outside the Hu-Zhang data pipeline:
 
 * The L-shape has a **re-entrant corner** at ``(250, 250)`` — a stress

@@ -2,7 +2,7 @@
 
 Verifies a sampling roundtrip: build a tiny HuZhang discretization, fabricate
 a few `step_*.npz` checkpoints, run :func:`export_recorder_to_sample`, then
-assert the schema invariants from `docs/SURROGATE_DATA_SCHEMA.md` §6.
+assert the schema invariants from `docs/operator_learning/SURROGATE_DATA_SCHEMA.md` §6.
 
 The simulator itself isn't exercised here — that's the job of the larger
 integration test that is out of M0's scope. The point of this file is to

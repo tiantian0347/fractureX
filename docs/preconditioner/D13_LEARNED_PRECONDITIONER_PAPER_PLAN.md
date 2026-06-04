@@ -4,7 +4,7 @@
 
 > 关系：本工作**寄生**于 D12。D12 先发，建立 baseline 与谱工具；D13 复用其离散（§2）、Schur / aux-space 构造（§3）、sweep 基建（§5）、谱脚本，正文只新增「学习模块 + 安全性命题 + 泛化实验」。两篇互引。
 
-> 实现说明：本文档**不修改任何代码**。其中涉及的 `coef_g`（[`linear_solvers.py:265`](../fracturex/utilfuc/linear_solvers.py#L265)）由作者后续自行从 `max(g(d), eps_g)` 调整为 `g(d)`，本计划的数学与代码引用以「权重场 = \(g(d)\)（带正性下界）」为准。
+> 实现说明：本文档**不修改任何代码**。其中涉及的 `coef_g`（[`linear_solvers.py:265`](../../fracturex/utilfuc/linear_solvers.py#L265)）由作者后续自行从 `max(g(d), eps_g)` 调整为 `g(d)`，本计划的数学与代码引用以「权重场 = \(g(d)\)（带正性下界）」为准。
 
 ---
 
@@ -27,11 +27,11 @@ K_h(d_h)\begin{bmatrix}\sigma\\ u\end{bmatrix}
 K_h(d_h)=\begin{bmatrix}A(d_h) & B^\top\\ B & 0\end{bmatrix},
 \]
 
-其中 \(A(d_h)\in\mathbb{R}^{m\times m}\) 为（可能退化的）应力块，\(B\in\mathbb{R}^{n\times m}\) 为离散散度算子（代码中 `A_sigma = A[:m,:m]`、`B_div = A[m:,:m]`，见 [`_extract_mechanical_blocks`](../fracturex/utilfuc/linear_solvers.py#L281)）。
+其中 \(A(d_h)\in\mathbb{R}^{m\times m}\) 为（可能退化的）应力块，\(B\in\mathbb{R}^{n\times m}\) 为离散散度算子（代码中 `A_sigma = A[:m,:m]`、`B_div = A[m:,:m]`，见 [`_extract_mechanical_blocks`](../../fracturex/utilfuc/linear_solvers.py#L281)）。
 
 ### 1.2 退化律 \(g(d)\)
 
-退化函数取自 [`energy_degradation_function.py`](../fracturex/phasefield/energy_degradation_function.py)：
+退化函数取自 [`energy_degradation_function.py`](../../fracturex/phasefield/energy_degradation_function.py)：
 
 \[
 g(d)=(1-d)^2+\varepsilon \quad(\text{quadratic}),
@@ -41,7 +41,7 @@ g(d)=3(1-d)^2-2(1-d)^3+\varepsilon \quad(\text{thrice}),
 
 其中 \(\varepsilon=10^{-10}\) 为模型层下界。注意区分两个下界：
 - \(\varepsilon\)：退化函数自身的数值下界（本构层，固定）；
-- \(\varepsilon_g\)：预条件中粗空间权重的截止下界（求解层，D12 §4.3 谱分析消融轴 \(\{10^{-3},10^{-6},10^{-9}\}\)；仅作 `damage.coef_bary` 内部下界，见 [`_make_coarse_diffusion_coef`](../fracturex/utilfuc/linear_solvers.py#L235)）。
+- \(\varepsilon_g\)：预条件中粗空间权重的截止下界（求解层，D12 §4.3 谱分析消融轴 \(\{10^{-3},10^{-6},10^{-9}\}\)；仅作 `damage.coef_bary` 内部下界，见 [`_make_coarse_diffusion_coef`](../../fracturex/utilfuc/linear_solvers.py#L235)）。
 
 定义退化比（贯穿全文，是所有谱界的核心量）：
 
@@ -53,7 +53,7 @@ g(d)=3(1-d)^2-2(1-d)^3+\varepsilon \quad(\text{thrice}),
 
 ### 1.3 两种公式（与代码 `formulation` 严格对应）
 
-见 [`_coarse_diffusion_uses_stress_weight`](../fracturex/utilfuc/linear_solvers.py#L175)：
+见 [`_coarse_diffusion_uses_stress_weight`](../../fracturex/utilfuc/linear_solvers.py#L175)：
 
 - **standard**：\(A(d_h)=\int (1/g(d_h))\,\sigma:\tau\)，退化在应力块上；\(B\) 与 \(d\) 无关。粗空间用 **\(g(d)\) 加权**向量 Poisson。
 - **effective_stress**：\(A\) 与 \(d\) 无关；\(B(d_h)=\int g(d_h)\,\tau:\varepsilon(v)\)，退化在耦合块上。粗空间用**不加权** Laplacian，\(d\) 仅通过 Schur 块进入。
@@ -66,7 +66,7 @@ D13 的学习模块**主攻 standard 公式**（粗权重显式可学），effec
 
 ### 2.1 Schur 补与对角近似
 
-精确 Schur 补与代码使用的 SPD 近似（[`_approximate_schur_spd`](../fracturex/utilfuc/linear_solvers.py#L305)）：
+精确 Schur 补与代码使用的 SPD 近似（[`_approximate_schur_spd`](../../fracturex/utilfuc/linear_solvers.py#L305)）：
 
 \[
 S(d_h)=B\,A(d_h)^{-1}B^\top,
@@ -75,7 +75,7 @@ S(d_h)=B\,A(d_h)^{-1}B^\top,
 = B\,D^{-1}B^\top,
 \]
 
-其中 \(D=\operatorname{diag}(A(d_h))\)，\(D^{-1}\) 见 [`_diag_inv_stress_block`](../fracturex/utilfuc/linear_solvers.py#L298)。在离散 inf-sup 条件下 \(S\succ 0\)；符号约定已吸收 \(-BA^{-1}B^\top\) 中的负号使 \(S\) 正定。
+其中 \(D=\operatorname{diag}(A(d_h))\)，\(D^{-1}\) 见 [`_diag_inv_stress_block`](../../fracturex/utilfuc/linear_solvers.py#L298)。在离散 inf-sup 条件下 \(S\succ 0\)；符号约定已吸收 \(-BA^{-1}B^\top\) 中的负号使 \(S\) 正定。
 
 ### 2.2 块上三角应用
 
@@ -89,7 +89,7 @@ S(d_h)=B\,A(d_h)^{-1}B^\top,
 
 ### 2.3 辅助空间近似 \(B_S\approx S^{-1}\)
 
-按 Chen et al. (2017) §5，把 \(S\) 用 \(H^1\) 上的（加权）向量 Poisson 算子近似，并以 P1 smoothed-aggregation GAMG 处理。standard 公式下，**粗算子的逐点扩散系数**就是本工作的学习对象。当前实现（[`_make_coarse_diffusion_coef`](../fracturex/utilfuc/linear_solvers.py#L241)）：
+按 Chen et al. (2017) §5，把 \(S\) 用 \(H^1\) 上的（加权）向量 Poisson 算子近似，并以 P1 smoothed-aggregation GAMG 处理。standard 公式下，**粗算子的逐点扩散系数**就是本工作的学习对象。当前实现（[`_make_coarse_diffusion_coef`](../../fracturex/utilfuc/linear_solvers.py#L241)）：
 
 \[
 c_{\text{coarse}}(x) \;=\; \max\big(g(d_h(x)),\ \varepsilon_g\big)
@@ -105,7 +105,7 @@ D13 把它替换为：
 w_\theta:\ \mathbb{R}^p \to [\,w_{\min},\,w_{\max}\,],\ \ 0<w_{\min}\le w_{\max}.
 \]
 
-P1 加权扩散的装配见 [`_assemble_p1_diffusion_pyamg`](../fracturex/utilfuc/linear_solvers.py#L185)（`ScalarDiffusionIntegrator(coef=...)`）。
+P1 加权扩散的装配见 [`_assemble_p1_diffusion_pyamg`](../../fracturex/utilfuc/linear_solvers.py#L185)（`ScalarDiffusionIntegrator(coef=...)`）。
 
 ---
 
@@ -254,7 +254,7 @@ D12 的扫描矩阵即数据集：每个 `(case, h, l0, eps_g, max_d, formulatio
 
 ### 5.2 目标函数（按可控性，先易后难）
 
-**目标 A1（代理谱目标，主结果）**：最小化粗预条件后 Schur 的谱分散。用已有幂迭代 [`_estimate_lambda_max_dinv_s_numpy`](../fracturex/utilfuc/linear_solvers.py#L99) 估 \(\lambda_{\max}\)，配 Lanczos 估 \(\lambda_{\min}\)：
+**目标 A1（代理谱目标，主结果）**：最小化粗预条件后 Schur 的谱分散。用已有幂迭代 [`_estimate_lambda_max_dinv_s_numpy`](../../fracturex/utilfuc/linear_solvers.py#L99) 估 \(\lambda_{\max}\)，配 Lanczos 估 \(\lambda_{\min}\)：
 
 \[
 \mathcal L_{\text{spec}}(\theta)
@@ -323,7 +323,7 @@ GMRES 迭代数 `KrylovInfo.niter`、是否收敛、残差曲线、预条件 set
 | 节 | 标题 | 内容 | 图表 |
 |----|------|------|------|
 | §1 | Introduction | 相场断裂 + 混合元 + 学习预条件文献；贡献：可证明安全的 learned 粗权重 | — |
-| §2 | 离散与鞍点系统 | 引 D12 / [architecture doc](HUZHANG_PHASEFIELD_ARCHITECTURE.en.md)；公式 §1 | — |
+| §2 | 离散与鞍点系统 | 引 D12 / [architecture doc](../architecture/huzhang_phasefield_architecture.en.md)；公式 §1 | — |
 | §3 | 预条件与学习模块 | §2–§3 构造；\(w_\theta\) 定义、正性约束、推理位置；**命题 4（安全性）** | 1 图（构造示意） |
 | §4 | 谱理论 | 命题 1–3（谱等价）、命题 5（谱界继承）、命题 6（参数无关，分档） | — |
 | §5 | 训练与泛化协议 | §5 目标函数、留出协议 | 1 图（特征/网络示意） |
@@ -383,7 +383,7 @@ GMRES 迭代数 `KrylovInfo.niter`、是否收敛、残差曲线、预条件 set
 
 ## 13. 维护说明
 
-- 本文件与代码同步：当 [`linear_solvers.py`](../fracturex/utilfuc/linear_solvers.py) 的 `coef_g` / Schur / aux-space 接口变化时更新 §2–§3 引用；
-- 待作者把 `coef_g`（[L265](../fracturex/utilfuc/linear_solvers.py#L265)）由 `max(g(d), eps_g)` 调整为 `g(d)` 后，§2.3 与命题 3 的「权重 = \(g(d)\)」即与实现一致；
+- 本文件与代码同步：当 [`linear_solvers.py`](../../fracturex/utilfuc/linear_solvers.py) 的 `coef_g` / Schur / aux-space 接口变化时更新 §2–§3 引用；
+- 待作者把 `coef_g`（[L265](../../fracturex/utilfuc/linear_solvers.py#L265)）由 `max(g(d), eps_g)` 调整为 `g(d)` 后，§2.3 与命题 3 的「权重 = \(g(d)\)」即与实现一致；
 - 学习模块代码落地时，建议新增 `fracturex/ml/learned_coarse_weight.py` 与 `fracturex/tests/precond_learned_sweep.py`，复用 `scripts/paper_precond/` 批跑框架；
 - 成稿后把 arXiv / 投稿链接补到本文件首部。

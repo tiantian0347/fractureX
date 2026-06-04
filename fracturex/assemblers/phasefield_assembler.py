@@ -1,4 +1,16 @@
 # fracturex/assemblers/phasefield_assembler.py
+"""相场（phase-field）损伤子问题的装配器（积分点历史场版本）。
+
+每次装配在当前积分点上先更新历史场 ``H``，再组装相场线性增量系统 ``A dd = F``：
+  - ``A = A_const + A_hist``：``A_const`` 为扩散 + 与 H 无关的质量项（AT1/AT2 下可缓存复用），
+    ``A_hist`` 为含历史场 ``g''(d)·H`` 的质量项；
+  - ``F = rhs - A d_old``（残差/增量形式），``decode(dd)`` 返回裁剪到 [0,1] 的新损伤场。
+
+模块内自由函数为线程并行装配的 per-cell-slice 内核及显式积分回退实现（当 FEALPy 积分器
+签名不兼容时使用 ``_explicit_scalar_*`` 直接 einsum 装配）；并行/进程数受环境变量
+``FRACTUREX_ASSEMBLY_PARALLEL`` / ``FRACTUREX_ASSEMBLY_NPROC`` 控制，
+``FRACTUREX_AHIST_KERNEL_CACHE`` 控制 d-无关质量内核缓存。
+"""
 
 from __future__ import annotations
 
@@ -21,10 +33,23 @@ from fealpy.fem import (
     ScalarSourceIntegrator,
     DirichletBC,
 )
+from fealpy.utils import process_coef_func
+from fealpy.typing import _S
+
+from fracturex.assemblers.huzhang_elastic_assembler import _build_square_csr_scatter
 
 
 @dataclass
 class PhaseFieldSystem:
+    """一次相场线性增量子问题的装配结果。
+
+    Attributes:
+        A: 系统矩阵（CSRTensor 或 scipy 稀疏阵）。
+        F: 右端向量（残差形式 ``rhs - A d_old``）。
+        decode: 把增量解 ``dd`` 映射为裁剪后新损伤场 ``d_new`` 的回调。
+        meta: 元信息 dict（模型类型、退化类型、load、gdof、q、Gc、l0 等）。
+    """
+
     A: Any
     F: Any
     decode: Callable[[Any], Any]   # dd -> d_new
@@ -32,24 +57,29 @@ class PhaseFieldSystem:
 
 
 def _default_assembly_nproc() -> int:
+    """默认并行装配进程数：逻辑 CPU 数（下限 1）。"""
     return max(1, int(os.cpu_count() or 1))
 
 
 def _bl_integrator_coef(integ: Any):
+    """取双线性积分器的系数属性（``coef`` 或 ``c``），都没有则返回 None。"""
     return getattr(integ, "coef", getattr(integ, "c", None))
 
 
 def _source_integrand(src_int: Any):
+    """取源项积分器的被积函数属性（``source`` 或 ``f``），都没有则返回 None。"""
     return getattr(src_int, "source", getattr(src_int, "f", None))
 
 
 def _space_ldof(space) -> int:
+    """返回有限元空间的单元局部自由度数（兼容两种 API）。"""
     if hasattr(space, "number_of_local_dofs"):
         return int(space.number_of_local_dofs())
     return int(space.dof.number_of_local_dofs())
 
 
 def _to_numpy_float_array(val: Any) -> np.ndarray:
+    """把标量或后端张量统一转成 ``float64`` numpy 数组。"""
     if isinstance(val, (int, float, np.integer, np.floating)):
         return np.array(float(val), dtype=np.float64)
     return np.asarray(bm.to_numpy(val), dtype=np.float64)
@@ -110,18 +140,25 @@ def _as_q_cell_values(values: Any, *, nc: int, nq: int, name: str) -> np.ndarray
 
 
 def _phi_grad_nq_nc_ld(space, bcs, index_sl, nc: int) -> np.ndarray:
+    """计算梯度基并整理为 ``(NQ, NC, ldof, GD)`` 布局（供显式扩散装配的 einsum 用）。"""
     phi_g = bm.asarray(space.grad_basis(bcs, index=index_sl))
     phi_c = np.asarray(bm.to_numpy(_as_cell_first(phi_g, nc)), dtype=np.float64)
     return np.transpose(phi_c, (1, 0, 2, 3))
 
 
 def _phi_basis_nq_nc_ld(space, bcs, index_sl, nc: int) -> np.ndarray:
+    """计算标量基并整理为 ``(NQ, NC, ldof)`` 布局（供显式质量/源项装配的 einsum 用）。"""
     phi_b = bm.asarray(space.basis(bcs, index=index_sl))
     phi_c = np.asarray(bm.to_numpy(_as_cell_first(phi_b, nc)), dtype=np.float64)
     return np.transpose(phi_c, (1, 0, 2))
 
 
 def _explicit_scalar_diffusion_cell(space, coef: Any, q: int, index_sl, out_cm: np.ndarray) -> None:
+    """显式装配标量扩散单元矩阵 ``∫ coef ∇φ·∇φ``（FEALPy 积分器不兼容时的回退）。
+
+    支持 coef 为 None / 标量 / ``(NC,)`` / ``(NQ,NC)`` / 各向异性 ``(GD,GD)`` 等多种形状，
+    结果**累加**到 ``out_cm``（``(NC, ldof, ldof)``，原地修改，无返回值）。
+    """
     mesh = space.mesh
     cellmeasure = np.asarray(bm.to_numpy(mesh.entity_measure("cell", index=index_sl)), dtype=np.float64)
     nc = int(cellmeasure.shape[0])
@@ -160,6 +197,10 @@ def _explicit_scalar_diffusion_cell(space, coef: Any, q: int, index_sl, out_cm: 
 
 
 def _explicit_scalar_mass_cell(space, coef: Any, q: int, index_sl, out_cm: np.ndarray) -> None:
+    """显式装配标量质量单元矩阵 ``∫ coef φ φ``（FEALPy 积分器不兼容时的回退）。
+
+    coef 支持 None / 标量 / ``(NC,)`` / ``(NQ,NC)``；结果**累加**到 ``out_cm``（原地，无返回）。
+    """
     mesh = space.mesh
     cellmeasure = np.asarray(bm.to_numpy(mesh.entity_measure("cell", index=index_sl)), dtype=np.float64)
     nc = int(cellmeasure.shape[0])
@@ -186,6 +227,10 @@ def _explicit_scalar_mass_cell(space, coef: Any, q: int, index_sl, out_cm: np.nd
 
 
 def _explicit_scalar_source_cell(space, f: Any, q: int, index_sl, out_bb: np.ndarray) -> None:
+    """显式装配标量源项单元向量 ``∫ f φ``（FEALPy 积分器不兼容时的回退）。
+
+    f 支持标量 / ``(NC,)`` / ``(NQ,NC)``；结果**累加**到 ``out_bb``（``(NC, ldof)``，原地，无返回）。
+    """
     mesh = space.mesh
     cellmeasure = np.asarray(bm.to_numpy(mesh.entity_measure("cell", index=index_sl)), dtype=np.float64)
     nc = int(cellmeasure.shape[0])
@@ -208,6 +253,18 @@ def _explicit_scalar_source_cell(space, f: Any, q: int, index_sl, out_bb: np.nda
 
 
 def _call_scalar_integrator_cell_matrix(integrator, space, index_sl, out_cm: np.ndarray, *, accumulate: bool) -> None:
+    """调用 FEALPy 积分器的 ``assembly_cell_matrix``，容忍跨版本签名差异。
+
+    Args:
+        integrator: 标量双线性积分器。
+        space: 有限元空间。
+        index_sl: cell 切片。
+        out_cm: 输出单元矩阵 ``(NC, ldof, ldof)``，原地写入/累加。
+        accumulate: True 累加到 ``out_cm``，False 覆盖。
+    Raises:
+        AttributeError: 积分器无 ``assembly_cell_matrix``。
+        TypeError: 所有签名尝试均失败。
+    """
     fn = getattr(integrator, "assembly_cell_matrix", None)
     if fn is None:
         raise AttributeError("assembly_cell_matrix")
@@ -236,6 +293,17 @@ def _call_scalar_integrator_cell_matrix(integrator, space, index_sl, out_cm: np.
 
 
 def _call_scalar_integrator_cell_vector(integrator, space, index_sl, out_bb: np.ndarray) -> None:
+    """调用 FEALPy 积分器的 ``assembly_cell_vector``，容忍跨版本签名差异。
+
+    Args:
+        integrator: 标量源项积分器。
+        space: 有限元空间。
+        index_sl: cell 切片。
+        out_bb: 输出单元向量 ``(NC, ldof)``，原地累加。
+    Raises:
+        AttributeError: 积分器无 ``assembly_cell_vector``。
+        TypeError: 所有签名尝试均失败。
+    """
     fn = getattr(integrator, "assembly_cell_vector", None)
     if fn is None:
         raise AttributeError("assembly_cell_vector")
@@ -309,6 +377,14 @@ def _assemble_phase_rhs_chunk(args):
 
 
 def _assemble_scalar_mass_chunk(args):
+    """装配含系数的标量质量块 ``∫ coef φ φ`` 在一段 cell 上的 COO 贡献。
+
+    Args:
+        args: 元组 ``(phi_chunk, coef_chunk, ws, cm_chunk, cell2dof_chunk)``——基函数、
+            积分点系数、权重、cell 测度、cell-to-dof（均已按 cell 切片）。
+    Returns:
+        ``(I, J, V)`` 三个 1D numpy 数组。
+    """
     phi_chunk, coef_chunk, ws, cm_chunk, cell2dof_chunk = args
     phi_chunk = bm.asarray(phi_chunk)
     coef_chunk = bm.asarray(coef_chunk)
@@ -395,6 +471,13 @@ class PhaseFieldAssembler:
         self._g0_const_coef = None
         self._aconst_cache = None
         self._aconst_cache_key = None
+        # Value-only A_hist kernel cache (P1): constant mass kernel Phi[c,q,l,m],
+        # weights W[c,q]=cm*ws, CSR pattern/scatter; only coef=g''(d)*H varies.
+        self._ahist_kernel = None
+        self._ahist_kernel_key = None
+        self._ahist_kernel_cache_enabled = str(
+            os.getenv("FRACTUREX_AHIST_KERNEL_CACHE", "1")
+        ).strip().lower() in ("1", "true", "yes", "on")
         # Per load-step: phase-field Dirichlet descriptor and quadrature pre-warm.
         self._load_step_value: Optional[float] = None
         self._pf_bcdata_cache: Any = None
@@ -615,6 +698,14 @@ class PhaseFieldAssembler:
         return PhaseFieldSystem(A=A, F=F, decode=decode, meta=meta)
 
     def _assemble_A_const_parallel(self, space, diff_int: ScalarDiffusionIntegrator, mass_int: ScalarMassIntegrator):
+        """线程并行装配与历史场无关的 ``A_const = 扩散 + mass_coef1`` 块。
+
+        Args:
+            space: 损伤空间。
+            diff_int, mass_int: 扩散、质量积分器（系数为 d 的函数但与 H 无关）。
+        Returns:
+            ``CSRTensor`` 形式的 ``(gdof, gdof)`` 矩阵。
+        """
         mesh = self.discr.mesh
         nc = int(mesh.number_of_cells())
         gdof = int(space.number_of_global_dofs())
@@ -639,6 +730,14 @@ class PhaseFieldAssembler:
         return CSRTensor.from_scipy(A_sp)
 
     def _assemble_rhs_parallel(self, space, src_int: ScalarSourceIntegrator):
+        """线程并行装配相场源项右端向量 ``∫ source_coef φ``。
+
+        Args:
+            space: 损伤空间。
+            src_int: 源项积分器（系数含历史场 H）。
+        Returns:
+            ``(gdof,)`` 的 float64 numpy 向量。
+        """
         mesh = self.discr.mesh
         nc = int(mesh.number_of_cells())
         gdof = int(space.number_of_global_dofs())
@@ -663,6 +762,22 @@ class PhaseFieldAssembler:
         return rhs
 
     def _assemble_A_hist(self, space, q: int, coef_callable):
+        """装配含历史场的质量块 ``A_hist = ∫ (g''(d)·H) φ φ``，按可用性择优分派。
+
+        依次尝试：缓存几何内核 → 线程并行 → 串行 ``BilinearForm``。
+
+        Args:
+            space: 损伤空间。
+            q: 积分阶。
+            coef_callable: 重心坐标系数闭包（``mass_coef2``，返回 ``g''(d)·H``）。
+        Returns:
+            ``CSRTensor``/稀疏矩阵形式的 ``(gdof, gdof)`` 矩阵。
+        """
+        if self._ahist_kernel_cache_enabled:
+            try:
+                return self._assemble_A_hist_cached(space, q, coef_callable)
+            except Exception as exc:
+                print(f"[PhaseFieldAssembler] cached A_hist kernel failed, fallback: {exc}")
         if self.assembly_parallel:
             try:
                 return self._assemble_A_hist_parallel(space, q, coef_callable)
@@ -672,7 +787,65 @@ class PhaseFieldAssembler:
         bform_hist.add_integrator(ScalarMassIntegrator(coef=coef_callable, q=q))
         return bform_hist.assembly()
 
+    def _build_ahist_kernel(self, space, q: int):
+        """Cache d-independent material for the A_hist mass block (P1).
+
+        Mirrors FEALPy's ``bilinear_integral(phi, phi, ws, cm, coef)`` with coef
+        factored out: ``Phi[c,q,l,m] = phi_l phi_m``, ``W[c,q] = cm ws``, so that
+        ``A_e = Σ_q W coef Phi``. Also caches the CSR pattern + scatter map.
+        """
+        mesh = self.discr.mesh
+        gdof = int(space.number_of_global_dofs())
+        key = (id(mesh), gdof, int(q))
+        if self._ahist_kernel is not None and self._ahist_kernel_key == key:
+            return self._ahist_kernel
+
+        qf = mesh.quadrature_formula(int(q), "cell")
+        bcs, ws = qf.get_quadrature_points_and_weights()
+        ws = bm.asarray(ws)
+        cm = bm.asarray(mesh.entity_measure("cell"))
+        nc = int(mesh.number_of_cells())
+        phi = _as_cell_first(bm.asarray(space.basis(bcs)), nc)   # (NC, NQ, ldof)
+        Phi = bm.einsum("cql, cqm -> cqlm", phi, phi)
+        W = bm.einsum("c, q -> cq", cm, ws)
+
+        cell2dof = np.asarray(bm.to_numpy(space.cell_to_dof()), dtype=np.int64)
+        indptr, indices, inv, nnz = _build_square_csr_scatter(cell2dof, gdof)
+
+        self._ahist_kernel_key = key
+        self._ahist_kernel = {
+            "bcs": bcs,
+            "W": W,
+            "Phi": Phi,
+            "indptr": indptr,
+            "indices": indices,
+            "inv": inv,
+            "nnz": nnz,
+            "gdof": gdof,
+        }
+        return self._ahist_kernel
+
+    def _assemble_A_hist_cached(self, space, q: int, coef_callable):
+        """用缓存的 d-无关质量内核装配 ``A_hist``：只重算系数并 bincount 散射。
+
+        Args/Returns 同 :meth:`_assemble_A_hist`。
+        """
+        K = self._build_ahist_kernel(space, q)
+        mesh = self.discr.mesh
+        val = process_coef_func(coef_callable, bcs=K["bcs"], mesh=mesh, etype="cell", index=_S)
+        val = bm.asarray(val)                                    # (NC, NQ)
+        Ke = bm.einsum("cq, cq, cqlm -> clm", K["W"], val, K["Phi"])
+        Ke = np.asarray(bm.to_numpy(Ke), dtype=np.float64)
+        data = np.bincount(K["inv"], weights=Ke.reshape(-1), minlength=K["nnz"])
+        from scipy.sparse import csr_matrix
+        A_sp = csr_matrix((data, K["indices"], K["indptr"]), shape=(K["gdof"], K["gdof"]))
+        return CSRTensor.from_scipy(A_sp)
+
     def _assemble_A_hist_parallel(self, space, q: int, coef_callable):
+        """线程并行装配含历史场的质量块 ``A_hist``（按 cell 切片分块）。
+
+        Args/Returns 同 :meth:`_assemble_A_hist`。
+        """
         mesh = self.discr.mesh
         qf = mesh.quadrature_formula(q, "cell")
         bcs, ws = qf.get_quadrature_points_and_weights()

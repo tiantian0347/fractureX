@@ -282,5 +282,6 @@ $k$ 为材料参数维度（默认 5：$\lambda,\mu,G_c,\ell_0,\eta$）。
 
 - 完整数学定义：[plan_operator_learning.md](plan_operator_learning.md) §3
 - 插值误差量化：[m0_interpolation_error.md](m0_interpolation_error.md)
-- 实现入口：`fracturex/postprocess/dataset_export.py`
+- **接入新模型指南（SolverAdapter 接口）**：[surrogate_porting_guide.md](surrogate_porting_guide.md)
+- 实现入口：`fracturex/postprocess/dataset_export/`（包；`adapter.py` 为接口，`adapters/huzhang_phasefield.py` 为参考实现）
 - Roundtrip 测试：`tests/test_dataset_roundtrip.py`

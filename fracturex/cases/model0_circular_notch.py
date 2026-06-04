@@ -72,10 +72,17 @@ class Model0CircularNotchCase(CaseBase):
         return bm.abs(points[:, 1] - y1) < self.top_tol
 
     def _on_inner_circle(self, points: TensorLike) -> TensorLike:
+        # NB: the Hu-Zhang mixed displacement BC selects boundary *edges* and
+        # tests their midpoints, which sit a chord-depth (~few % of r) *inside*
+        # the nominal radius on a coarse distmesh. The original primal case
+        # tested on-circle *nodes*, so its tight `|rr - r^2| < 1e-3` worked
+        # there but selects 0 edges here. Use a radius tolerance that scales
+        # with the mesh size so edge midpoints are caught.
         x = points[:, 0]
         y = points[:, 1]
-        rr = (x - self.circle_cx) ** 2 + (y - self.circle_cy) ** 2
-        return bm.abs(rr - self.circle_r ** 2) < self.circle_tol
+        r = bm.sqrt((x - self.circle_cx) ** 2 + (y - self.circle_cy) ** 2)
+        tol = max(self.circle_tol, 0.35 * self.hmin)
+        return bm.abs(r - self.circle_r) < tol
 
     def isD_bd(self, points: TensorLike) -> TensorLike:
         # HuZhang boundary classification: top load + inner hole fixed

@@ -250,7 +250,7 @@ FractureX does **not** replace FEALPy; it adds a **domain layer** on top. Rough 
 - **Automated check (not auto-generated prose)**: from the repo root run  
   `python scripts/verify_huzhang_docs.py`  
   to verify that **key source paths** listed in the script still exist. When you **add or move modules**, update both `.md` files and the manifest at the top of the script.
-- **Index**: [docs/readme.md](readme.md)
+- **Index**: [docs/readme.md](../readme.md)
 
 ---
 

@@ -33,7 +33,7 @@ $$
 (\mathcal I_1 f)(x_{ij}) = f(q_{ij}).
 $$
 
-实现：[`sample_field_nearest_quad`](../fracturex/postprocess/dataset_export.py#L398) — `scipy.spatial.cKDTree`。
+实现：[`sample_field_nearest_quad`](../../fracturex/postprocess/dataset_export/sampling.py) — `scipy.spatial.cKDTree`。
 $L^\infty$ 误差预期 $O(h)$。
 
 ### 2.2 $\mathcal I_2$：$L^2$ 投影到节点 P1
@@ -46,7 +46,7 @@ $$
 $$
 
 然后在 grid 点上用 P1 基函数求值。
-实现：[`sample_field_l2_projection`](../fracturex/postprocess/dataset_export.py#L416) — fealpy
+实现：[`sample_field_l2_projection`](../../fracturex/postprocess/dataset_export/sampling.py) — fealpy
 `BilinearForm + ScalarMassIntegrator(coef=1, q=5)` 装质量矩阵，
 scipy `spsolve` 解，再用 `_evaluate_lagrange_on_grid` 评估。
 
@@ -66,8 +66,8 @@ $$
 
 **参考"truth"** $\sigma_h^{\text{grid}}$ 不是某个收敛参考解，而是 Hu-Zhang 基函数在 grid 上**逐点直接求值**（无重构误差）。这把"插值误差"的定义聚焦到"qp 数据 → grid 还原 σ_h"这一环本身的损失，与 FE 离散误差解耦。
 
-实现：[`measure_interpolation_error.py`](../scripts/datasets/measure_interpolation_error.py)。
-metrics：[`fracturex/learn/eval/metrics.py`](../fracturex/learn/eval/metrics.py) 的
+实现：[`measure_interpolation_error.py`](../../scripts/datasets/measure_interpolation_error.py)。
+metrics：[`fracturex/learn/eval/metrics.py`](../../fracturex/learn/eval/metrics.py) 的
 `relative_l2 / relative_linf`。
 
 ---
@@ -77,7 +77,7 @@ metrics：[`fracturex/learn/eval/metrics.py`](../fracturex/learn/eval/metrics.py
 ### 3.1 网格档
 
 实测来源：`results/phasefield/model0_circular_notch/paper_aux_h{1,2,3}/epsg_1e-06`。
-`mesh.npz` 缺失的 h2/h3 用 [`recover_mesh_from_vtu.py`](../scripts/datasets/recover_mesh_from_vtu.py) 反推。
+`mesh.npz` 缺失的 h2/h3 用 [`recover_mesh_from_vtu.py`](../../scripts/datasets/recover_mesh_from_vtu.py) 反推。
 
 | 标签 | NC | gdof_σ | gdof_d (P1) | $h_{\text{proxy}} = \sqrt{2/NC}$ |
 | --- | --- | --- | --- | --- |
@@ -102,7 +102,7 @@ metrics：[`fracturex/learn/eval/metrics.py`](../fracturex/learn/eval/metrics.py
 
 ## 4. 结果
 
-数据全在 [docs/figures/m0/interp_error/sigma_interp_error.csv](figures/m0/interp_error/sigma_interp_error.csv)，本节选关键行。
+数据全在 [docs/figures/m0/interp_error/sigma_interp_error.csv](../figures/m0/interp_error/sigma_interp_error.csv)，本节选关键行。
 
 ### 4.1 σ 的插值误差
 
@@ -135,7 +135,7 @@ metrics：[`fracturex/learn/eval/metrics.py`](../fracturex/learn/eval/metrics.py
 **实测来源**：`results/operator_learning_runs/h_qp_patch_h1/`（2026-05-29 跑），与
 paper_aux_h1 同 `model0_circular_notch` 配置（hmin=0.05，NC=640，p_σ=3，
 damage_p=2），打开 `RunRecorder.save_quadrature_fields=True` 落盘
-[`step_XXX_qp.npz`](../scripts/datasets/run_h_qp_patch.py)：含 `H_qp (NC,NQ)`、
+[`step_XXX_qp.npz`](../../scripts/datasets/run_h_qp_patch.py)：含 `H_qp (NC,NQ)`、
 `xq (NC,NQ,2)`、`q_order=5`。每 10 步保存，正好对齐 §4.1(a) 的 t_a / t_b / t_c。
 
 **测量协议**：与 σ 不同，𝓗 没有 FE 基函数表示，无法构造"无损 grid 真值"。
@@ -148,7 +148,7 @@ e_{L^2} = \frac{\|m_q \odot (\tilde H^* - H_{qp})\|_2}{\|m_q \odot H_{qp}\|_2 + 
 $$
 
 `m_q` 为 qp 落在 Ω 内 grid pixel 的掩码（实测 99.6% qp 命中）。脚本：
-[`measure_h_interp_error.py`](../scripts/datasets/measure_h_interp_error.py)。
+[`measure_h_interp_error.py`](../../scripts/datasets/measure_h_interp_error.py)。
 
 **(a) h_qp_patch_h1 上 t_a / t_b / t_c**
 
@@ -156,13 +156,23 @@ $$
 | --- | --- | --- | --- | --- | --- |
 | t_a (step_010, max_d=0.04) | 𝓘₁ | 0.086 | 0.451 | **0.86** | 18.2 |
 | t_a | 𝓘₂ | 0.111 | 0.429 | 0.81 | 18.2 |
+| t_a | const | 0.824 | 0.918 | 0.08 | 18.2 |
 | t_b (step_020, max_d=0.71) | 𝓘₁ | 0.593 | 0.759 | **1.000** | 6.79e+3 |
 | t_b | 𝓘₂ | 0.687 | 0.588 | 0.461 | 6.79e+3 |
+| t_b | const | 0.997 | 0.997 | 0.003 | 6.79e+3 |
 | t_c (step_030, max_d=0.99) | 𝓘₁ | 0.599 | 0.799 | **0.999** | 1.85e+4 |
 | t_c | 𝓘₂ | 0.721 | 0.722 | **0.404** | 1.85e+4 |
+| t_c | const | 0.994 | 0.994 | 0.006 | 1.85e+4 |
 
 `max_ratio` 是 `max(𝓘_*(H) on grid) / max(H_qp)`，反映"裂尖能量峰值"是否
 被 grid 化损失掉。
+
+`const` 是"零信息"基线：每个 qp 用 inside-Ω 平均值预测。$L^2$ 误差接近 1.0
+说明 𝓗 在 t_b/t_c 几乎都是裂尖局部能量，全域取均值丢光了所有信息；𝓘₁ 把
+这一基线从 0.99 拉到 0.60（解释约 64% 残差能量，1 − 0.6/0.99 ≈ 0.40 在
+$L^2$，但等价于 explain 1 − 0.6²/0.99² ≈ 0.63 的方差），证明 t_b/t_c 上的
+60% 不是 𝓘 失败而是 grid 表示力的硬上限：cusp 在结构网格上不可还原，剩余
+全是表示性下界。
 
 **(b) 关键观察**
 
@@ -172,8 +182,9 @@ $$
 2. **𝓘₁ 几乎守峰**。t_b/t_c 上 max_ratio ≈ 1.000（仅在 t_a 上略低，差额来自
    离 notch 最近的 qp 落到 mask 外的 0.4% 漏点）。
 3. **roundtrip $e_{L^2}$ 都很大**。t_b/t_c 的 60-72% 不代表"𝓘₁ 不行"，
-   而是反映 cusp 在结构网格 + bilinear 回采下 fundamentally 不能被恢复。
-   这条路径下 𝓘₁ 比 𝓘₂ 的核心优势在 $\max$-保持，不在 $L^2$。
+   而是反映 cusp 在结构网格 + bilinear 回采下 fundamentally 不能被恢复
+   （const 基线在 0.99，𝓘₁ 至少把这个数压到 0.60）。这条路径下 𝓘₁ 比
+   𝓘₂ 的核心优势在 $\max$-保持，不在 $L^2$。
 4. **与 v0.2 草案预判相反**。v0.2 §4.2 写"𝓗 已是低阶，预判 𝓘₂ 在 𝓗 上反胜
    𝓘₁"，是基于 σ p=3 → P1 投影损 cubic 的类比。但 𝓗 在裂尖是几何意义上的
    不光滑函数，不属于"低阶"的范畴；P2 投影同样磨平。预判错误已在表里推翻。
@@ -195,7 +206,7 @@ $$
 **根本原因**：σ_h 在 Hu-Zhang p=3 空间内有 cubic 分辨率，把它投影到节点 P1 必然丢失高阶信息；这一损失在裂尖梯度区被进一步放大。
 
 **默认实现选项**：
-- 数据集 npz 的 `stress` 通道：直接走 [`_evaluate_huzhang_on_grid`](../fracturex/postprocess/dataset_export.py#L349)（HuZhang 基函数 × σ DOF 在 grid 上逐点求值，**无重构误差**）。`encode_outputs` 已默认走这条。
+- 数据集 npz 的 `stress` 通道：直接走 [`_evaluate_huzhang_on_grid`](../../fracturex/postprocess/dataset_export/adapters/huzhang_phasefield.py)（HuZhang 基函数 × σ DOF 在 grid 上逐点求值，**无重构误差**）。`encode_outputs` 已默认走这条。
 - `sample_field_nearest_quad` / `sample_field_l2_projection` 留作 𝓗 / 工具用，不进 σ 主路径。
 - `metadata.interpolation` 字段对 σ 无意义（直接求值），保留语义专门用于 𝓗 通道；schema §3.5 注释将在 D-B 后据 §4.2 实测更新。
 
@@ -208,7 +219,7 @@ $$
 
 **默认实现选项**：
 - 数据集 npz 的 `history` 通道（schema §3.2 可选字段）：默认走 𝓘₁ —
-  [`sample_field_nearest_quad`](../fracturex/postprocess/dataset_export.py#L398) 应用
+  [`sample_field_nearest_quad`](../../fracturex/postprocess/dataset_export/sampling.py) 应用
   到 `H_qp` + `xq`，然后按 `mask` 域外置零。
 - `metadata.interpolation` 字段对 𝓗 通道有意义；schema 默认值
   `"I1_nearest_quad"`（见 schema §3.5 注释更新）。
@@ -234,12 +245,12 @@ $$
 
 | 文档符号 | 实现 |
 | --- | --- |
-| $\mathcal I_1$ | [`fracturex/postprocess/dataset_export.py::sample_field_nearest_quad`](../fracturex/postprocess/dataset_export.py#L398) |
-| $\mathcal I_2$ | [`fracturex/postprocess/dataset_export.py::sample_field_l2_projection`](../fracturex/postprocess/dataset_export.py#L416) |
-| HuZhang 逐点求值（实际默认） | [`_evaluate_huzhang_on_grid`](../fracturex/postprocess/dataset_export.py#L349) |
-| 误差度量 | [`fracturex/learn/eval/metrics.py::relative_l2`, `::relative_linf`](../fracturex/learn/eval/metrics.py) |
-| 扫描脚本 | [`scripts/datasets/measure_interpolation_error.py`](../scripts/datasets/measure_interpolation_error.py) |
-| 解析场单测 | [`fracturex/tests/test_interpolation.py`](../fracturex/tests/test_interpolation.py) — 16 测试通过 |
+| $\mathcal I_1$ | [`fracturex/postprocess/dataset_export.py::sample_field_nearest_quad`](../../fracturex/postprocess/dataset_export/sampling.py) |
+| $\mathcal I_2$ | [`fracturex/postprocess/dataset_export.py::sample_field_l2_projection`](../../fracturex/postprocess/dataset_export/sampling.py) |
+| HuZhang 逐点求值（实际默认） | [`_evaluate_huzhang_on_grid`](../../fracturex/postprocess/dataset_export/adapters/huzhang_phasefield.py) |
+| 误差度量 | [`fracturex/learn/eval/metrics.py::relative_l2`, `::relative_linf`](../../fracturex/learn/eval/metrics.py) |
+| 扫描脚本 | [`scripts/datasets/measure_interpolation_error.py`](../../scripts/datasets/measure_interpolation_error.py) |
+| 解析场单测 | [`fracturex/tests/test_interpolation.py`](../../fracturex/tests/test_interpolation.py) — 16 测试通过 |
 
 ---
 
@@ -252,23 +263,22 @@ $$
 - [x] §4.2 𝓗 表（2026-05-29 完成；max-preservation 判据决定 𝓘₁ 默认）。
 - [x] §5.2 𝓗 默认选择写入 schema 文档 §3.5 注释（2026-05-29 完成）。
 - [ ] paper_aux_h{2,3} 重跑到 t_c，补全 §4.1(a) 跨 h 的时间扫描。
-      h2 进行中：`paper_aux_h2_dB`（hmin=0.024，NC=3072，aux 模式，2026-05-29 起跑，
-      预计 4-5 小时）。h3 命令已就绪未发起，见 §7.1。
+      用户论文实验进程已在跑：PID 2475007（h2，hmin=0.025，elapsed 2 d 11 h）
+      与 PID 2475223（h3，hmin=0.013，elapsed 2 d 11 h），输出落在 canonical
+      路径 `paper_aux_h2/` 与 `paper_aux_h3/`（覆盖原 short-run 数据）。
+      [`measure_interpolation_error.py`](../../scripts/datasets/measure_interpolation_error.py)
+      的 `_default_cases` 优先选 canonical 路径，自动接入这两份数据，
+      不需要再起 `_dB` 后台 run。
 
-### 7.1 h3 重跑命令（待 h2 完成 + 用户后台空档）
+### 7.1 历史：D-B 期间起的 `paper_aux_h2_dB` 已 kill（2026-05-30）
 
-```bash
-FEALPY_PYTHON=/home/gongshihua/miniconda3/envs/py312/bin/python \
-FRACTUREX_PYTHON=/home/gongshihua/miniconda3/envs/py312/bin/python \
-FRACTUREX_RUN_LABEL_SUFFIX=h3_dB \
-FRACTUREX_HMIN=0.012 \
-FRACTUREX_FAST_COARSE_MESH=0 \
-FRACTUREX_ENV_QUIET=1 \
-nohup nice -n 19 bash scripts/paper_huzhang/run_aux_model0.sh \
-    > results/logs/paper_aux_h3_dB.log 2>&1 &
-```
+D-B 写报告时不知道 PID 2475007/2475223 已经在跑同样的 h2/h3 重跑（hmin
+分别 0.025 / 0.013，与 D-B 计划的 0.024 / 0.012 几乎一致）。为避免冗余，
+D-B 起的 nohup `paper_aux_h2_dB`（PID 395250，nice -n 19，已跑 16 小时
+到 step 13）已 kill；已落盘的 step_000/010 数据保留在
+`results/phasefield/model0_circular_notch/paper_aux_h2_dB/epsg_1e-06/`，
+作为 hmin=0.024 配置的副本但不进 §4.1 表 —— canonical paper_aux_h2 为准。
 
-预计 NC ≈ 11–12k，单步 GMRES auxspace ~30-60 分钟，全 31 步 15-30 小时。
-建议在用户当前后台 P2 任务完成、机器空闲时再起。h3 完成后用同一个
-[`measure_interpolation_error.py`](../scripts/datasets/measure_interpolation_error.py)
-脚本扫描，新数据自动汇入 §4.1 表。
+D-B 期间起 h2_dB 时假设需要新后缀避免覆盖原 short-run 数据，但
+PID 2475007 写的就是 paper_aux_h2 dir 本身（覆盖原 short-run）。
+这一假设不再成立。

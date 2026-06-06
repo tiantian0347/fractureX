@@ -328,3 +328,8 @@ aux_fast niter 在 maxd≤0.82 时恒 =7,局部化处**骤升到 ~95–121**(约
 - [2026-06-06 22:42:32] aux_h2 进行中 [pid 337913] rows=15 step=14 maxd=0.9981 niter_e=95 load=0.0898
 - [2026-06-06 22:42:32] aux_h3 进行中 [pid 337916] rows=14 step=13 maxd=0.4188 niter_e=8 load=0.08760000000000001
 - [2026-06-06 22:42:32] model1 进行中 [pid 337919] rows=65 step=64 maxd=1.0000 niter_e=1 load=0.0051400000000000005
+- [2026-06-06 22:58:20] model2 direct_full 首次续算尝试中止: 默认 nx/load 步在原 run 后被改过
+  (nx 160→216, n_load_steps 240→2400),checkpoint NC 不匹配。须显式 pin FRACTUREX_NX=160
+  + FRACTUREX_N_LOAD_STEPS=240 复现原网格/载荷,见下条重启。
+- [2026-06-06 23:10:02] model2 direct_full 续算启动 (pardiso, nx=160, 240步, SAVE_EVERY=1, resume@latest checkpoint, 目标 step240)
+- [2026-06-06 23:10:02] model2 direct_full PID=22799

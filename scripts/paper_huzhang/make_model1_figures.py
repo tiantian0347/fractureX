@@ -36,10 +36,19 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 import numpy as np
-import pyvista as pv
+# pyvista is only needed by the VTU-based crack figures; import lazily so the
+# load-displacement figure (history.csv only) works on machines without it.
 
 ROOT = Path("/home/gongshihua/tian/fracturex")
-RUN = ROOT / "results/phasefield/square_tension_precrack/paper_direct/epsg_1e-06"
+# Run directory is env-overridable so the same script serves the original
+# paper_direct run and the full-range paper_direct_full_nx120 run:
+#   FRACTUREX_MODEL1_RUN=results/.../paper_direct_full_nx120/epsg_1e-06
+import os as _os
+_run_env = _os.environ.get("FRACTUREX_MODEL1_RUN", "").strip()
+RUN = (Path(_run_env) if _run_env else
+       ROOT / "results/phasefield/square_tension_precrack/paper_direct/epsg_1e-06")
+if not RUN.is_absolute():
+    RUN = ROOT / RUN
 OUT = Path("/home/gongshihua/tian/Frac_huzhang/figures")
 OUT.mkdir(parents=True, exist_ok=True)
 
@@ -74,6 +83,7 @@ def reaction_from_vtu(mesh):
 
 
 def collect_vtu():
+    import pyvista as pv  # lazy: only the VTU-based figures need the reader
     data = []  # (disp, reaction, max_d, mesh)
     for load, f in vtu_files():
         m = pv.read(f)
@@ -83,13 +93,18 @@ def collect_vtu():
 
 def fig_loaddisp(hist, vtu):
     hd, hr = hist
-    vd = np.array([d[0] for d in vtu])
-    vr = np.array([d[1] for d in vtu])
-    # merged full curve: dense elastic history up to its end, then vtu beyond
-    cut = hd.max()
-    extra = vd > cut + 1e-12
-    full_d = np.concatenate([hd, vd[extra]])
-    full_r = np.concatenate([hr, vr[extra]])
+    if vtu:
+        vd = np.array([d[0] for d in vtu])
+        vr = np.array([d[1] for d in vtu])
+        # merged full curve: dense elastic history up to its end, then vtu beyond
+        cut = hd.max()
+        extra = vd > cut + 1e-12
+        full_d = np.concatenate([hd, vd[extra]])
+        full_r = np.concatenate([hr, vr[extra]])
+    else:
+        # no VTU (e.g. pyvista absent): load-disp from history.csv alone
+        vd = vr = np.array([])
+        full_d, full_r = hd, hr
     order = np.argsort(full_d)
     full_d, full_r = full_d[order], full_r[order]
     ipk = int(np.argmax(full_r))
@@ -97,8 +112,9 @@ def fig_loaddisp(hist, vtu):
     fig, ax = plt.subplots(figsize=(5.2, 4.0))
     ax.plot(full_d * 1e3, full_r, "-", color="#1f3b73", lw=1.8, zorder=2,
             label="Hu--Zhang, direct solver")
-    ax.plot(vd * 1e3, vr, "o", color="#c0392b", ms=5, zorder=3,
-            label=r"reconstructed from $\sigma_{yy}$ (exported states)")
+    if vtu:
+        ax.plot(vd * 1e3, vr, "o", color="#c0392b", ms=5, zorder=3,
+                label=r"reconstructed from $\sigma_{yy}$ (exported states)")
     ax.plot(full_d[ipk] * 1e3, full_r[ipk], "*", color="k", ms=13, zorder=4)
     ax.annotate(
         f"peak $|F_y|$={full_r[ipk]:.3f}\nat $\\bar u$={full_d[ipk]*1e3:.2f}" + r"$\times10^{-3}$",
@@ -176,10 +192,15 @@ def fig_crack_evolution(vtu):
 
 def main():
     hist = load_history()
-    vtu = collect_vtu()
+    try:
+        vtu = collect_vtu()
+    except ModuleNotFoundError as e:
+        print(f"[skip] VTU figures need pyvista ({e}); load-disp + table from history.csv only")
+        vtu = []
     pk = fig_loaddisp(hist, vtu)
-    fig_crack_final(vtu)
-    fig_crack_evolution(vtu)
+    if vtu:
+        fig_crack_final(vtu)
+        fig_crack_evolution(vtu)
     print("peak (disp, reaction) =", pk)
     print("wrote figures to", OUT)
 

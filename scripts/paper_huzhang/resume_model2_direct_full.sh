@@ -3,8 +3,8 @@
 #
 # model2 (notch x-stretch) direct/pardiso 的 paper_direct_full run 之前只跑到
 # step59/240(disp_x=0.0059)就停了,reaction-force 曲线不完整。本脚本从最新
-# checkpoint 续算到 240 步(241 个载荷点, disp_x 0→0.024),拿到完整的
-# reaction_x(disp_x) 曲线。
+# checkpoint 续算到 200 步(默认; 可设 FRACTUREX_RUN_NSTEPS=240 跑满),
+# 拿到 reaction_x(disp_x) 曲线。
 #
 # 求解器选型: 2D 算例 pardiso direct 最快(记忆 aux_loses_to_pardiso_2d:
 #   aux fast 在 2D 上时间输给 pardiso 11-14x),原 run 也是 solve_direct_pardiso
@@ -38,10 +38,10 @@ ts()   { date '+%F %T'; }
 note() { printf -- '- [%s] %s\n' "$(ts)" "$1" >> "$STATUS"; }
 
 # ---- launch (backgrounded) -------------------------------------------------
-note "model2 direct_full 续算启动 (pardiso, nx=160, 240步, SAVE_EVERY=1, resume@latest checkpoint, 目标 step240)"
+note "model2 direct_full 续算启动 (pardiso, nx=160, RUN_NSTEPS=${FRACTUREX_RUN_NSTEPS:-200}, SAVE_EVERY=1, resume@latest checkpoint)"
 FRACTUREX_RESUME=1 FRACTUREX_SAVE_EVERY=1 \
 FRACTUREX_RUN_LABEL_SUFFIX=full \
-FRACTUREX_NX=160 FRACTUREX_N_LOAD_STEPS=240 \
+FRACTUREX_NX=160 FRACTUREX_N_LOAD_STEPS=240 FRACTUREX_RUN_NSTEPS="${FRACTUREX_RUN_NSTEPS:-200}" \
 FRACTUREX_ELASTIC_DIRECT_BACKEND=pardiso \
 FRACTUREX_ASSEMBLY_NPROC=24 MKL_NUM_THREADS=24 OMP_NUM_THREADS=24 \
   "$PY" scripts/paper_huzhang/run_case.py --case model2 --mode direct --out-root results \

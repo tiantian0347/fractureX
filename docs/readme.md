@@ -6,6 +6,7 @@
 - [整体架构与技术路线（中文）](architecture/huzhang_phasefield_architecture.md)
 - [Hu–Zhang + 相场架构（English, focused）](architecture/huzhang_phasefield_architecture.en.md)
 - [HuZhang 相场接口测试手册（中文）](architecture/huzhang_interface_test_manual.md)
+- [多后端编码规范（统一约定）](architecture/multibackend_convention.md) — 计算用 `bm` 不用 `np`；numpy 仅限 I/O/scipy 边界（`bm.to_numpy` 跨界）；新代码强制、存量随改随迁
 
 ## operator_learning/ — 算子学习代理（论文路线 + 协议）
 - [路线规划 plan_operator_learning](operator_learning/plan_operator_learning.md) — 任务定义、数学、Milestone（M0→M3）

@@ -196,3 +196,24 @@ results/logs/*.pid
 results/logs/*.status
 results/logs/*.started_at
 results/logs/*.exit
+
+# Run dumps under results/ are not committed; keep only the human-readable
+# reports (Markdown) and the paper index. Everything else is local.
+results/**/*.npz
+results/**/*.npy
+results/**/*.vtu
+results/**/*.vtk
+results/**/*.pvd
+results/**/*.csv
+results/**/*.json
+results/**/*.png
+results/**/*.pdf
+results/**/*.h5
+results/**/*.xdmf
+results/**/*.log
+results/**/*.txt
+results/**/*.pt
+# transient background-job bookkeeping / nohup logs
+results/logs/**
+# but keep the paper index json
+!results/PAPER_INDEX.json

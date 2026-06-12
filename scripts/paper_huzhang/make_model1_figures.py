@@ -112,8 +112,8 @@ def fig_loaddisp(hist, vtu):
     fig, ax = plt.subplots(figsize=(5.2, 4.0))
     ax.plot(full_d * 1e3, full_r, "-", color="#1f3b73", lw=1.8, zorder=2,
             label="Hu--Zhang, direct solver")
-    if vtu:
-        ax.plot(vd * 1e3, vr, "o", color="#c0392b", ms=5, zorder=3,
+    if vtu and extra.any():
+        ax.plot(vd[extra] * 1e3, vr[extra], "o", color="#c0392b", ms=5, zorder=3,
                 label=r"reconstructed from $\sigma_{yy}$ (exported states)")
     ax.plot(full_d[ipk] * 1e3, full_r[ipk], "*", color="k", ms=13, zorder=4)
     ax.annotate(
@@ -169,9 +169,8 @@ def fig_crack_final(vtu):
 
 
 def fig_crack_evolution(vtu):
-    loads = [v[0] for v in vtu]
-    peak_load = 4.8e-3
-    ipk = int(np.argmin([abs(l - peak_load) for l in loads]))
+    # peak panel = exported state with the largest reconstructed reaction
+    ipk = int(np.argmax([v[1] for v in vtu]))
     picks = [(0, "initial pre-crack"), (ipk, "at peak load"), (len(vtu) - 1, "post-peak")]
     fig, axes = plt.subplots(1, 3, figsize=(11.4, 3.9))
     for ax, (idx, tag) in zip(axes, picks):

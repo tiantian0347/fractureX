@@ -157,15 +157,45 @@ def _env_int(name: str, default: int) -> int:
 
 def _aux_gmres_settings() -> dict:
     """GMRES parameters for the aux-space / fast elastic solver, overridable
-    via FRACTUREX_GMRES_{RTOL,ATOL,RESTART,MAXIT}. Used for rtol/maxit tuning
-    experiments without touching the rest of the pipeline.
+    via FRACTUREX_GMRES_{RTOL,ATOL,RESTART,MAXIT}.
+
+    The restart default is 200 (was 60). On the localized phase-field saddle system,
+    GMRES(60) restarts before the superlinear phase and STALLS on the non-normal block
+    operator: niter inflates 9->93 (maxd 0.998) or even fails to converge (maxd=1.0, DNF)
+    purely as a restart artifact (see docs/.../D13_IMPL §9.4 d12_recheck). restart>=200
+    keeps the Krylov basis long enough for the preconditioner's true O(10-50) localized
+    convergence; restart only changes niter, never the solution. Pre-localization niter is
+    already O(2-8) so the larger restart never triggers and costs nothing but a bit of
+    Krylov-basis memory (200 * ndof * 8B ~= 0.1 GB, negligible).
     """
     return {
         "rtol": _env_float("FRACTUREX_GMRES_RTOL", 1e-8),
         "atol": _env_float("FRACTUREX_GMRES_ATOL", 1e-12),
-        "restart": _env_int("FRACTUREX_GMRES_RESTART", 60),
-        "maxit": _env_int("FRACTUREX_GMRES_MAXIT", 200),
+        "restart": _env_int("FRACTUREX_GMRES_RESTART", 200),
+        "maxit": _env_int("FRACTUREX_GMRES_MAXIT", 400),
     }
+
+
+def _adaptive_restart(base_restart: int, max_d: float) -> int:
+    """maxd-adaptive GMRES restart: small pre-localization, large at localization.
+
+    Pre-localization (max_d < 0.9) the preconditioner converges in O(2-8) iters, so a
+    small restart suffices and saves Krylov-basis memory. At localization (max_d >= 0.9)
+    the non-normal operator needs a longer basis to avoid restart stall, so bump to >=300.
+    Disabled (returns base_restart unchanged) when FRACTUREX_GMRES_ADAPTIVE_RESTART != 1.
+
+    Args:
+        base_restart: the configured restart (from _aux_gmres_settings).
+        max_d: current maximum damage in the field.
+    Returns:
+        the restart to use for this solve.
+    """
+    if os.environ.get("FRACTUREX_GMRES_ADAPTIVE_RESTART", "0").strip() != "1":
+        return int(base_restart)
+    thr = _env_float("FRACTUREX_GMRES_ADAPTIVE_MAXD", 0.9)
+    hi = _env_int("FRACTUREX_GMRES_ADAPTIVE_HI", 300)
+    lo = _env_int("FRACTUREX_GMRES_ADAPTIVE_LO", 60)
+    return int(hi) if float(max_d) >= thr else int(lo)
 
 
 def _phase_gmres(
@@ -508,6 +538,13 @@ def _build_driver(
         _gmres_kw = _aux_gmres_settings()
 
         def elastic_solver(A, F):
+            # maxd-adaptive restart (opt-in): large only at localization, where GMRES(60)
+            # would otherwise stall (D13_IMPL §9.4). No-op unless ADAPTIVE_RESTART=1.
+            try:
+                _maxd = float(np.max(np.asarray(discr.state.d[:], dtype=float)))
+            except Exception:
+                _maxd = 1.0
+            _restart = _adaptive_restart(_gmres_kw["restart"], _maxd)
             return solve_huzhang_block_gmres_fast(
                 A,
                 F,
@@ -515,7 +552,7 @@ def _build_driver(
                 vspace=discr.space_u,
                 atol=_gmres_kw["atol"],
                 rtol=_gmres_kw["rtol"],
-                restart=_gmres_kw["restart"],
+                restart=_restart,
                 maxit=_gmres_kw["maxit"],
                 q=3,
                 # Setup amortization: reuse the expensive Schur S + weighted P1-coarse
@@ -530,6 +567,12 @@ def _build_driver(
                 gs_iterations=_env_int("FRACTUREX_FAST_GS_ITERS", 2),
                 schur_precond=os.environ.get("FRACTUREX_FAST_SCHUR_PRECOND", "auto").strip() or "auto",
                 weighted_aux=True,
+                # B1 (interface-aware coarse space): boost g(d) coarse weight near sharp
+                # damage interfaces to recover O(10) niter under localization. Off by
+                # default; enable via FRACTUREX_AUX_INTERFACE_AWARE=1, tune alpha via
+                # FRACTUREX_AUX_INTERFACE_ALPHA (default 1.0).
+                interface_aware=os.environ.get("FRACTUREX_AUX_INTERFACE_AWARE", "0").strip() == "1",
+                interface_alpha=_env_float("FRACTUREX_AUX_INTERFACE_ALPHA", 1.0),
                 elastic_formulation=ELASTIC_FORMULATION,
                 damage=damage,
                 state=discr.state,

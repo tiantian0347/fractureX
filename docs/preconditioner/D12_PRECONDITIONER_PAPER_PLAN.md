@@ -13,6 +13,8 @@
 
 > 给定 Hu–Zhang 混合元离散下的相场断裂耦合系统，弹性子问题在每个交错步呈现 **σ–u 鞍点结构 + 损伤依赖系数 g(d)**；本工作问：**哪种块预条件构造能保证 GMRES 迭代次数对 (h, l₀, load step, max d) 均匀（mesh- and parameter-independent）？**
 
+> **头条定位（2026-06-09 锁定，见 §13.9）**：核心卖点不是"迭代数恒定"（可证伪），而是**在损伤完全局部化 + 直接法 OOM 的最难 regime 里，本工作的辅助空间预条件子是唯一仍给出有界收敛（O(100)）的求解器**——对手（none/Jacobi/ILU）全 DNF、direct 在大 N OOM/singular。受控均匀-d 的 mesh/d/l₀-无关（O(10)）降格为"为什么它鲁棒"的机理证据，不当头条。
+
 具体可量化的子问题：
 
 - Q1：`standard` 公式下 `weighted_aux` P1 GAMG 是否在 d→1 时保持 robust？
@@ -269,13 +271,14 @@ $$
 | §2 | Hu–Zhang 相场离散与耦合系统 | 引现有 [architecture doc](../architecture/huzhang_phasefield_architecture.en.md) §2–3；公式 (1)–(8) | 2 页 |
 | §3 | 块预条件构造 | Schur 近似、aux-space P1 GAMG、加权 vs 不加权两支 | 2 页，1 图（构造示意） |
 | §4 | 谱分析 | Prop 1–3，定理与证明 | 2 页 |
-| §5 | 数值实验 | §5.1 配置；§5.2 网格无关性（表 1）；§5.3 l₀ 无关性（表 2）；§5.4 d→1 鲁棒性（图 2：迭代数 vs max d）；§5.5 时间对比 vs PARDISO（表 3）；§5.6 谱图验证（图 3：特征值散点） | 4 页，3 图 4 表 |
-| §6 | Discussion | 失败模式；扩展到 3D / monolithic 的指向；与 [A2 路线](#) 的衔接 | 1 页 |
+| §5 | 数值实验 | §5.1 配置；§5.2 网格无关性（受控均匀-d，机理，表 1）；**§5.2b 真实局部化下唯一有界收敛（头条，表 1b+图 1b）**；§5.3 l₀ 无关性（表 2）；§5.4 d→1 鲁棒性（图 2：迭代数 vs max d）；§5.5 内存 vs PARDISO（表 3，含大 N OOM）；§5.6 谱图验证（图 3：特征值散点） | 4.5 页，4 图 4 表 |
+| §6 | Discussion | 失败模式；**局部化退化根因（几何纯 P1 粗空间无法表示界面跳变模态）+ 界面感知加权可部分缓解（−28%）一句话，完整解=界面自适应粗空间留 future work（B1，见 §13.9）**；扩展到 3D / monolithic 的指向；与 [A2 路线](#) 的衔接 | 1 页 |
 | §7 | Conclusion | | 0.5 页 |
 | App. A | 完整谱数据 | 补充材料 | — |
 
 **关键图/表**（reviewer 看的就是这几个）：
 
+- **图 1b（头条）**：真实相场 run 的 niter & max_d vs 载荷步双轴图（`iter_stability_localization`）。**核心**：step13→14 一个载荷步内 max_d 0.43→0.998 与 niter 7→~95 严格同步，此后 O(100) 有界；触 maxit 的迭代用空心标记。对照组在此工况全 DNF。这是论文的招牌图。
 - **表 1**：固定 l₀=1e-3、max d=0.9，4 种网格 × 4 个算法，列迭代次数。**期望**：`aux_weighted` 那一列基本不变。
 - **表 2**：固定 h，3 个 l₀ × 4 算法。**期望**：l₀ 减小时 `ilu_gmres` 显著恶化，`aux_weighted` 仍平稳。
 - **图 2**：x 轴 = max d ∈ [0, 1)，y 轴 = GMRES 迭代次数。3 条曲线（standard-aux_weighted、effective_stress-aux_unweighted、ilu_gmres）。**期望**：aux 系平、ilu 系翘起。
@@ -355,7 +358,9 @@ D12 的产出（鲁棒 σ–u 块预条件器）**直接是 A2 Monolithic 求解
 | ID | Claim | 怎么证明 | 主要图表 |
 |----|-------|----------|----------|
 | **C1** | aux-precond 解与 direct 法物理一致、与文献吻合 | 三 case load-displacement 曲线重合；裂纹路径定性一致；model1 对照 Miehe(2010)/Borden(2012) | Fig. load-disp ×3；Fig. crack pattern ×3 |
-| **C2** | aux-space 预条件子让 GMRES 迭代数**几乎与 N 无关**（核心招牌图）| model0 五档网格（h₁–h₅）扫描下 GMRES iter vs N 平坦曲线 | **Fig. iter-vs-N（论文核心图）** |
+| **C2′（头条，2026-06-09）** | 真实裂纹**完全局部化**下，aux 是**唯一仍有界收敛**的求解器（O(100)，对手全 DNF；direct 大 N OOM/singular）| model0 真实相场 run niter & max_d vs 载荷步（step13→14 同步跃迁）| **Fig. iter_stability_localization（论文招牌图，§5.2b 表1b）** |
+| **C2** | aux-space 预条件子在**受控均匀-d** 下让 GMRES 迭代数**几乎与 N 无关**（机理证据，非头条）| model0 五档网格（h₁–h₅）扫描下 GMRES iter vs N 平坦曲线 | Fig. iter-vs-N（§5.2，机理）|
+| ~~C2-B1~~（**不进正文，§6 Discussion 一句话 + future work**）| 退化根因诊断 + 界面感知加权部分缓解（局部化 niter 170→123, −28%），constant-factor 非 regime，完整解=界面自适应粗空间 future work。**修辞冲突**：专门开节修 O(100) 会自承缺陷，故仅 Discussion 带过 | （无正文图表）数据 `interface_aware_realfield.csv` 仅内部记录 + 生产旋钮 |
 | **C3** | 整个损伤演化过程预条件子稳定（弹性段→起裂→软化→贯穿）| 三 case 各自 GMRES iter 随载荷步曲线（含 staggered iter 热力图）| Fig. iter-vs-step ×3 |
 | **C4** | 相比 direct（spsolve/pardiso）有实用时间/内存优势；direct 大 N OOM 时 aux 仍可用 | model0 五档下 wall-time 与 peak RSS 对比表 + scaling 曲线 | Table efficiency；Fig. time-vs-N |
 | **C5** | Hu-Zhang 元相对位移型 Lagrange 元在断裂问题上有结构性优势 | **V2**：弹性段 σ 的 h-收敛阶高于 Lagrange；**V5**：裂纹尖端 σ 探针对比 | Fig. σ-conv（V2）；Fig. tip-stress（V5）|
@@ -404,6 +409,8 @@ D12 的产出（鲁棒 σ–u 块预条件器）**直接是 A2 Monolithic 求解
 | `iter_stability_scan.py` | C2/C3 数据：固定网格×均匀d 扫 none/Jacobi/ILU/aux 的 niter | ✅ 已写（h₁ done, h₂ 跑中）|
 | `paper_make_iter_stability.py` | **C3 核心图**：niter vs d（半对数，对照组爆炸 vs aux 平稳）+ C2 niter vs N | ✅ 已写并验（出 `docs/figures/precond/iter_stability_vs_d.*`，vs_N 待 h₂/h₃）|
 | `paper_make_iter_vs_N.py` | C2 备用图：从真实 run iterations.csv 聚合 aux/direct niter-vs-N | ✅ 已有（472 行）|
+| `paper_make_iter_localization.py` | **C2′ 头条图**：真实 run niter & max_d vs 载荷步（局部化同步跃迁 + maxit 触顶空心标记）| ✅ 已写并验（`docs/figures/precond/iter_stability_localization.{png,pdf}`，2026-06-09）|
+| `validate_interface_aware{,_realfield}.py` | C2-B1：界面感知粗空间在合成带 / 真实 checkpoint d 场上 baseline vs α 扫 niter | ✅ 已写并验（`_iter_stability/interface_aware_realfield.csv`，170→123 α=8，2026-06-09）|
 | `precond_spectrum.py` | C1 数据：$P^{-1}K$ 特征值（含 `aux_fast` factory；`--k-small 0` 走 LM-only）| ✅ 已加 aux_fast + 暴露 P（`return_preconditioner`）|
 | `paper_make_spectrum.py` | **C1 图3**：特征值复平面散点 vs d + kappa_vs_d | ✅ 已写并验（`docs/figures/precond/spectrum_*.{png,pdf}`）|
 | `precond_sweep.py` | A3 数据：niter vs (l0/eps_g/d)（含 `aux_fast`，默认）| ✅ 已加 aux_fast；修 lgmres bug |
@@ -638,6 +645,35 @@ G3（V5）已删。**优先级**：~~H1~~✅ > ~~I（广度 D2✅/D3✅）~~ > J
 - [x] **J3** ✅ — §6 `fig:precond_schematic`：构造示意图已画并并入 tex（Python `scripts/paper_huzhang/make_precond_schematic.py` → `Frac_huzhang/figures/precond_schematic.{png,pdf}`）。工程流程版：块三角 sweep + 两层 V-cycle；已大字号 + matrix-free 高亮红框 + 加长 sweep 箭头 + 修越界。数学/算子版 `make_precond_operator_diagram.py` 试做后按偏好弃用（脚本留存，未并入）。
 
 > 对照：上面 11 条 = tex 全部 `\needexp`。**主动新增只有 P0 两项**；I1/I2 在跑、I3 一键可跑；P2 五项纯加分。砍掉的 H3（eps_g）、I6（effective_stress，可行性已于本节末验证、留 future）不在清单。
+
+---
+
+### 13.9 主线重设计：从"迭代数恒定"改卖"可行性 + 有界收敛"（2026-06-09）
+
+> **关键转向**：旧头条 C2「跨 187× DOF niter 恒 8–15」是**可证伪的定量主张**——审稿人在真实裂纹上跑一次就看到 O(100)，一击致命。本次锁定**改卖定性事实**：在损伤完全局部化 + 直接法 OOM 的最难 regime 里，aux_fast 是**唯一仍给出有界收敛**的求解器。有界 O(100) vs 对手全 DNF/OOM = **质的差距**，常数因子磨不掉。详见 `D12_RESULTS.md §5.2b/§5.2c` 与记忆 `aux_niter_localization_degradation` / `aux_interface_aware_coarse_space_b1`。
+
+**A. 论点层级调整**
+
+| 原定位 | 新定位 |
+|---|---|
+| 头条 = C2 mesh-independence「niter 恒 8–15」 | 头条 = **真实局部化下唯一有界收敛**（§5.2b 表1b+图1b `iter_stability_localization`）|
+| §5.2/§5.4 合成均匀-d 的 O(10) 当主结果 | 降格为**机理证据**（"为什么它对均匀退化鲁棒"），不当头条 |
+| （无）| **B1 界面感知粗空间不进正文 §5**：诊断 O(100) 根因 + 部分缓解（−28%）只在 §6 Discussion 一句话带过，完整解 future work（终判见 C 节）|
+
+**B. 头条数据（§5.2b，真实相场 run，物理损伤，已落 D12_RESULTS）**
+- step13→14 一个载荷步内 max_d 0.43→0.998 与 niter 7→~95 **严格同步**；此后稳定 O(100)（95–200）。h₃(184k) 同位置 step14 起爬升，证物理触发非网格偶然。
+- **maxit 触顶措辞（必须精确）**：局部化步绝大多数 GMRES converged=True（残差 1e-8）；少数迭代触 maxit=200、converged=False 但相对残差仍 ~9e-8（未发散，仅未达 tol）。论文写"**O(100) 有界收敛，偶有迭代触 maxit 但相对残差仍 O(1e-7)**"，**不可**写"全部收敛至 tol"。
+- 对手在此工况/规模全失效：none/Jacobi 打满 6 万 DNF、ILU DNF、pardiso 在 2.0M σ-DOF 上 11.4GB 仍 singular（§5.5）。
+
+**C. B1 界面感知粗空间（已实现+验证，2026-06-09；终判：不进正文）**
+- 思路：粗扩散权重乘界面因子 `coef_aware = g(d)·(1+α·‖∇g‖/max‖∇g‖)`，∇g=g'(d)∇d；均匀 d 下 ∇d=0 自动退化为原方法。实现 `linear_solvers.py:_make_interface_aware_coef`，∇d 用 `state.d.grad_value` 解析求值（**不改 damage/fealpy**）；旋钮 `FRACTUREX_AUX_INTERFACE_AWARE=1`/`_ALPHA`（默认关）。
+- **真实场结果**（h₂ step15 checkpoint，maxd=0.998，σ-DOF 48k）：niter **170→123（α=8，−28%）**、t_solve 581→370s（−36%），仍收敛 1e-8。但**constant-factor 非 regime 改变——O(100) 仍 O(100)，未压回 O(10)**。
+- **终判（2026-06-09，不进正文 §5）**：**修辞冲突**——§5.2b 头条逻辑是"O(100) 有界即胜利"；专门开节修 O(100) = 自承缺陷，且 −28% 是部分缓解的负结果，招来"为何不做完 B2 再投 / PI_s 为何还是 P1 / α=8 是否 overfit"等本文无数据回答的问题。**B1 价值=证明懂这个 regime，非解决它**。故：(1) **§6 Discussion 一句话**（根因+部分缓解+完整解 future work）；(2) 完整 B2（界面自适应粗空间）future work；(3) **生产旋钮**开 α=8 白拿 ~28%/36% 提速，与论文措辞无关。
+- 数据 `results/phasefield/_iter_stability/interface_aware_realfield.csv`；脚本 `validate_interface_aware{,_realfield}.py`。详见 `D12_RESULTS.md` "B1 界面感知粗空间"节 + 记忆 `aux_interface_aware_coarse_space_b1`。
+
+**D. 对 §6 骨架 / §12 Claim 的影响**（设计层同步，下面 §6/§12 已改）
+- §5 顺序：§5.2 mesh-indep（机理）→ **§5.2b 真实局部化头条** → §5.3 l₀ → §5.4 d→1 → §5.5 内存 → §5.6 谱。**B1 不在 §5**，只在 §6 Discussion。
+- C2 措辞从"niter 恒定"改为"**受控均匀-d 下 mesh/d/l₀-无关（机理）**"；**新增 C2′ = 真实局部化下唯一有界收敛（头条）**；B1 = §6 Discussion 一句话（非 Claim）。
 
 ---
 

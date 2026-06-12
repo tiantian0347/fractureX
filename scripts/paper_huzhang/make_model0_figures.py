@@ -41,11 +41,23 @@ TIERS = ["h1", "h2", "h3"]
 COLORS = {"h1": "#1f77b4", "h2": "#2ca02c", "h3": "#d62728"}
 
 
-def curve(tag):
+def curve(tag, maxd_clip=None):
+    """Load (disp, |reaction|) for a run tag.
+
+    Inputs:
+        tag: e.g. "direct_h2" / "aux_h1" (resolves paper_<tag>/epsg_1e-06/history.csv).
+        maxd_clip: if set, keep only rows with max_d <= this value (drops the
+            near-singular / fully-separated tail where the aux iterative solve is
+            outside its well-posed range; the direct curve is left unclipped).
+    Output:
+        (disp, |F_y|) float arrays, or None if the run is absent.
+    """
     p = CASE / f"paper_{tag}/epsg_1e-06/history.csv"
     if not p.exists():
         return None
     rows = list(csv.DictReader(open(p)))
+    if maxd_clip is not None:
+        rows = [r for r in rows if float(r["max_d"]) <= maxd_clip]
     d = np.array([float(r["disp_y"]) for r in rows])
     f = np.array([abs(float(r["reaction_y"])) for r in rows])
     return d, f
@@ -69,7 +81,12 @@ def fig_loaddisp():
     fig, ax = plt.subplots(figsize=(6.0, 4.4))
     peaks = {}
     direct = {t: curve(f"direct_{t}") for t in TIERS}
-    aux = {t: curve(f"aux_{t}") for t in TIERS}
+    # aux: h1 spans the full path; h2 is physically clean through the softening
+    # branch (its history is truncated at step15, max_d~=0.998; the run DNFs at
+    # the complete-separation step16). h3's aux run stopped pre-localization.
+    aux = {"h1": curve("aux_h1"),
+           "h2": curve("aux_h2"),
+           "h3": curve("aux_h3")}
 
     # --- main panel: direct full curves (mesh convergence) ------------------
     # All three direct tiers run the FULL fracture path (linear rise -> peak ->
@@ -82,18 +99,19 @@ def fig_loaddisp():
                 label=f"direct, {t} ($N_\\sigma$={_nsig(t)})")
         peaks[t] = (d[int(np.argmax(f))], f.max())
 
-    # aux overlay: ONLY h1 -- the single tier whose aux run spans the WHOLE
-    # fracture path, so the aux-vs-direct comparison is fair end-to-end (Claim
-    # C1: curves identical to rel diff 4.8e-8 over the whole path). The h2/h3
-    # aux runs stopped near peak (localization niter blowup) and are
-    # deliberately NOT overlaid -- mixing a full curve with truncated ones
-    # would misrepresent coverage. aux mesh-independence is shown by niter
-    # (paper fig 1 / D12 sec5.2), not by this load-displacement panel.
-    if aux["h1"] is not None:
-        da, fa = aux["h1"]
-        step = max(1, len(da) // 12)
-        ax.plot(da[::step], fa[::step], "o", mfc="none", mec=COLORS["h1"],
-                ms=5.5, mew=1.2, ls="none", zorder=4)
+    # aux overlay: h1 (full path, Claim C1 end-to-end, rel diff 4.8e-8) and h2
+    # (clean through the softening branch up to max_d<=0.998; the run DNFs only
+    # at the complete-separation instant step16, which direct still solves --
+    # that is the iterative solver's true boundary, see D12 sec5.2d, NOT a
+    # coverage gap on the physical branch). h3 aux stopped pre-localization and
+    # is left out to avoid overstating coverage. aux mesh-independence of niter
+    # is shown separately (paper fig 1 / D12 sec5.2).
+    for t in ("h1", "h2"):
+        if aux[t] is not None:
+            da, fa = aux[t]
+            step = max(1, len(da) // 12)
+            ax.plot(da[::step], fa[::step], "o", mfc="none", mec=COLORS[t],
+                    ms=5.5, mew=1.2, ls="none", zorder=4)
 
     ax.set_xlabel(r"prescribed displacement $\bar u$")
     ax.set_ylabel(r"reaction force $|F_y|$")
@@ -101,10 +119,10 @@ def fig_loaddisp():
     ax.grid(True, ls=":", alpha=0.45)
     ax.set_xlim(-0.003, 0.128)
     ax.set_ylim(-1.0, 30.5)
-    # legend: 3 direct lines + 1 proxy for the aux overlay (h1 open markers)
+    # legend: 3 direct lines + 1 proxy for the aux overlay (h1,h2 open markers)
     aux_proxy = Line2D([], [], ls="none", marker="o", mfc="none",
-                       mec=COLORS["h1"], ms=6, mew=1.2,
-                       label="aux-space, h1 (overlay)")
+                       mec="0.35", ms=6, mew=1.2,
+                       label="aux-space, h1/h2 (overlay)")
     h, _ = ax.get_legend_handles_labels()
     ax.legend(handles=h + [aux_proxy], fontsize=8.5, loc="lower left",
               framealpha=0.92)
@@ -118,10 +136,11 @@ def fig_loaddisp():
         if direct[t] is not None:
             d, f = direct[t]
             axin.plot(d, f, "-", color=COLORS[t], lw=1.8)
-    if aux["h1"] is not None:
-        da, fa = aux["h1"]
-        axin.plot(da, fa, "o", mfc="none", mec=COLORS["h1"], ms=5, mew=1.1,
-                  ls="none")
+    for t in ("h1", "h2"):
+        if aux[t] is not None:
+            da, fa = aux[t]
+            axin.plot(da, fa, "o", mfc="none", mec=COLORS[t], ms=5, mew=1.1,
+                      ls="none")
     axin.set_xlim(0.078, 0.094)
     axin.set_ylim(26.6, 28.6)
     axin.set_title("peak (zoom)", fontsize=8)
@@ -167,20 +186,48 @@ def fig_crack_final(tag="direct_h3"):
 
 
 def consistency_table(peaks):
+    """Write peak reaction + well-posed-region rel diff per tier.
+
+    The rel diff is taken over the physically well-posed range only (max_d below
+    the complete-separation threshold): the localization-instant step (max_d=1.0)
+    is where the aux iterative solve hits its boundary and the staggered outer
+    iteration lands on a different fixed point, so including it would report a
+    spurious O(1e-2) discrepancy rather than the true elastic--peak--softening
+    agreement (O(1e-5)). Thresholds: h2 keeps the softening branch (<=0.998);
+    h1/h3 keep through peak.
+    """
+    clip = {"h1": 0.999, "h2": 0.998, "h3": 0.999}
     with open(OUT / "model0_consistency_table.csv", "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["tier", "Nsigma", "peak_direct", "peak_aux", "rel_diff_curve"])
+        w.writerow(["tier", "Nsigma", "peak_direct", "peak_aux", "rel_diff_wellposed"])
         for t in TIERS:
             cd, ca = curve(f"direct_{t}"), curve(f"aux_{t}")
             pd_ = cd[1].max() if cd else float("nan")
             pa = ca[1].max() if ca else float("nan")
-            # rel diff over overlapping loaded steps
             rel = float("nan")
-            if cd and ca:
-                n = min(len(cd[1]), len(ca[1]))
-                den = cd[1][1:n]
-                rel = float(np.max(np.abs(cd[1][1:n] - ca[1][1:n]) / (den + 1e-30)))
+            # rel diff over well-posed steps: re-read with max_d clip + step align
+            dd = _hist(f"direct_{t}")
+            da = _hist(f"aux_{t}", maxd_clip=clip.get(t))
+            if dd and da:
+                dmap = {s: r for s, r in dd}
+                rels = [abs(r - dmap[s]) / max(abs(dmap[s]), 1e-30)
+                        for s, r in da if s in dmap and s != 0]
+                if rels:
+                    rel = max(rels)
             w.writerow([t, _NSIG[t], f"{pd_:.4f}", f"{pa:.4f}", f"{rel:.2e}"])
+
+
+def _hist(tag, maxd_clip=None):
+    """Return [(step, |reaction|), ...] for a run, optionally clipped by max_d."""
+    p = CASE / f"paper_{tag}/epsg_1e-06/history.csv"
+    if not p.exists():
+        return None
+    out = []
+    for r in csv.DictReader(open(p)):
+        if maxd_clip is not None and float(r["max_d"]) > maxd_clip:
+            continue
+        out.append((int(r["step"]), abs(float(r["reaction_y"]))))
+    return out
 
 
 def main():

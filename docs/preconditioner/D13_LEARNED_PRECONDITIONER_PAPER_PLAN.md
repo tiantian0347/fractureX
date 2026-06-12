@@ -1,6 +1,15 @@
-# D13：学习式辅助空间粗权重——在 Hu–Zhang 相场块预条件上的可证明加速
+# D13：学习式辅助粗空间——在 Hu–Zhang 相场块预条件上突破局部化瓶颈的可证明加速
 
-> 目标：在 [D12](D12_PRECONDITIONER_PAPER_PLAN.md) 已建立的 **robust 块预条件 + 谱框架 + 参数 sweep** 之上，只把辅助空间 P1 粗算子的**扩散权重场**替换为一个**带正性约束的学习模块** \(w_\theta\)，在**同一套 sweep**上证明「迭代数 / 墙钟进一步下降，且不破坏参数无关性」。定位：计算数学 × 机器学习交叉，目标 CMAME（数值验证档）或 SISC / JCP（若跨网格泛化 + 谱界都做实）。
+> **⚠️ 实现状态横幅（2026-06-09，必读）**：本文是**论文/理论规划**，正文目标「O(100)→O(10) regime change」
+> **尚未在真实算子上兑现**。实现进度与诚实结果见 [D13_IMPL_coarse_space_enrich.md](D13_IMPL_coarse_space_enrich.md)。
+> 当前实证状态：机制层全部正确（命题 4 解不变 1.65e-10、deflation 杀合成对比度 κ、命题 0 障碍）；但真实
+> 完全局部化算子上 deflation 增广**仅 constant-factor（且唯一测量用了 buggy 发散模态，修正模态 niter 待测）**。
+> **路线决策点见 IMPL §8**（A 改 framing / B 攻乘性+大k / C 转 B2 / D 并入 D12）。本规划的 O(10) 主张是**目标**非已达成。
+
+> **方向锁定（2026-06-09，重大修订）**：本文档原稿的学习对象是辅助 P1 粗算子的**扩散权重场** \(w_\theta\)。但 D12 的 B1 实验（[D12_RESULTS §5.2b / B1](D12_RESULTS.md)）已经证明：在裂纹**完全局部化** regime，只学权重（界面感知加权 = 
+手工版 \(w_\theta\)）仅给 constant-factor 改善（niter 170→123，−28%），**O(100) 压不回 O(10)**，根因是**几何纯 P1 延拓算子 \(PI_s\) 无法表示界面两侧的跳变模态**——瓶颈在粗空间 \(V_H=\mathrm{range}(PI_s)\) 本身，不在它上面的权重。故 D13 学习对象**改为粗空间/延拓本身**：往 \(V_H\) 注入数据驱动的界面模态（\(PI_s\to[PI_s\mid\Phi_\theta]\)），权重退为次要旋钮。
+
+> 目标：在 [D12](D12_PRECONDITIONER_PAPER_PLAN.md) 已建立的 **robust 块预条件 + 谱框架 + 参数 sweep** 之上，把辅助空间粗校正的**延拓算子**用一个**带 SPD-安全约束的学习增广** \([PI_s\mid\Phi_\theta]\) 替换，在**同一套 sweep**上证明「局部化 regime 的迭代数从 O(100) 降回 O(10)（regime 改变，非常数因子），且不破坏参数无关性、不破坏正确性」。定位：计算数学 × 机器学习交叉，目标 CMAME（数值验证档），凭**障碍命题 + GenEO 式可证 \(\kappa\) 界**冲 SISC / JCP。
 
 > 关系：本工作**寄生**于 D12。D12 先发，建立 baseline 与谱工具；D13 复用其离散（§2）、Schur / aux-space 构造（§3）、sweep 基建（§5）、谱脚本，正文只新增「学习模块 + 安全性命题 + 泛化实验」。两篇互引。
 
@@ -10,7 +19,9 @@
 
 ## 0. 一句话研究问题
 
-> 辅助空间预条件中的粗算子扩散权重当前由手工退化律 \(g(d)\)（加下界 \(\varepsilon_g\)）给定。**能否用一个仅依赖无量纲局部特征的小网络 \(w_\theta\) 替换该权重，使 GMRES 迭代数 / 求解墙钟在 \(d\to 1\) 与跨网格场景下进一步下降，同时保证预条件始终对称正定、谱界仍由 inf-sup 常数与权重范围可控（即学习只在可证明的安全区间内优化常数，不改变结构性保证）？**
+> 辅助空间预条件的粗校正用几何纯 P1 延拓 \(PI_s\)；D12 证明它在裂纹局部化时无法表示界面跳变模态，致 niter O(10)→O(100)，且任意权重修正都救不回（B1 负结果）。**能否用一个仅依赖无量纲局部特征的小网络生成界面模态 \(\Phi_\theta\)，把粗空间增广为 \([PI_s\mid\Phi_\theta]\)，使局部化 regime 的 GMRES 迭代数从 O(100) 降回 O(10)（regime 改变），同时保证粗矩阵仍 SPD、预条件始终非奇异、收敛到精确解（即学习只在可证明的安全结构内优化，不改变正确性保证）？**
+
+> **理论上的对称命题（本文核心新理论）**：在**固定**几何粗空间下，**任意**正权重 \(w\) 都无法消去高对比度依赖（权重天花板/障碍命题，§4.0），这把 B1 的经验负结果升格为定理，并严格论证「必须学粗空间而非权重」。
 
 ---
 
@@ -141,7 +152,43 @@ w_\theta(\phi) \;=\; w_{\min} + (w_{\max}-w_{\min})\cdot \operatorname{sigmoid}\
 
 ## 4. 数学理论（论文 §3–§4 主体，含完整推导）
 
-本节给出三组结果：**(I) Schur 谱等价界**、**(II) 学习权重下的安全性与谱界继承**、**(III) 参数无关性陈述**。核心思想：把所有谱量化归到退化比 \(r_g\) 与权重范围比 \(\rho_w:=w_{\max}/w_{\min}\)。
+本节给出四组结果：**(0) 权重天花板/障碍命题（核心新理论）**、**(I) Schur 谱等价界**、**(II) 学习粗空间下的安全性与谱界**、**(III) 参数无关性陈述**。核心思想：把所有 SPD-构件谱量化归到退化比 \(r_g\)、对比度 \(\rho:=1/\varepsilon_g\) 与粗空间捕获率 \(\eta(V_H)\)。
+
+> **⚠️ 非正规性的措辞约束（全文统一，与 D12 §5.6 口径一致）**：全系统预条件算子 \(\mathcal P^{-1}K_h\) 作用在不定鞍点上、**非对称非正规**，其特征值/条件数**不决定 GMRES 收敛**（D12 已诚实标注 ARPACK SM 不收敛、\(\kappa\) via SM 是启发非真界）。因此本节所有**严格谱界只陈述在 SPD 构件上**（\(\widehat S\)、\(L_c\)、增广粗矩阵 \(R^\top\widehat S R\)），全系统收敛主张以 **niter 实测 + SPD 构件谱界 + field-of-values 上界**（Elman–Silvester–Wathen / Loghin–Wathen 数值域型）为准；全系统 \(\kappa(\mathcal P^{-1}K_h)\) 仅作启发性描述符，不作收敛证明的依据。
+
+### 4.0 命题 0（权重天花板 / 障碍命题，核心新理论）
+
+**背景化简**：standard 公式下 \(A_\sigma=(1/g)\,M^{(0)}\)，故 \(D^{-1}=\mathrm{diag}(A_\sigma)^{-1}\sim g(d)\,\mathrm{diag}(M^{(0)})^{-1}\)，于是对角 Schur 近似
+
+\[
+\widehat S = B\,D^{-1}B^\top \ \sim\ B\,\operatorname{diag}\!\big(g(d_h)\big)\,B^\top
+\]
+
+**本身就是一个系数从 \(1\) 跳到 \(\varepsilon_g\) 的高对比度加权散度算子**，对比度 \(\rho:=g(0)/\varepsilon_g=\mathcal O(\varepsilon_g^{-1})\)。这把问题精确归为高对比度扩散的两层预条件经典情形（Pechstein–Scheichl；Spillane–Dolean–Hauret–Nataf–Pechstein–Scheichl 2014, GenEO）。
+
+**陈述（障碍）**：固定几何 P1 粗空间 \(V_H=\mathrm{range}(PI_s)\)，记其对 \(\widehat S\) 低能跳变模态的捕获率为 \(\eta(V_H)\in[0,1]\)（精确定义：\(\eta=1-\sup\{(\widehat S v,v)/(\,\text{尺度}\,)\ :\ v\perp_{\widehat S}V_H,\ v\ \text{为界面跳变模态}\}\) 的归一化）。则对**任意**正权重场 \(w\in[w_{\min},w_{\max}]\) 加权的粗算子 \(L_c(w)\)，两层条件数有**与 \(w\) 无关的下界**
+
+\[
+\boxed{\;\inf_{w>0}\ \kappa\big(B_S(w)\,\widehat S\big)\ \ge\ c\,\rho^{\,1-\eta(V_H)}\;}
+\]
+
+当界面跳变模态 \(\notin V_H\)（局部化时 \(\eta\to0\)），下界退化为 \(c\,\rho\)：**无论权重怎么学，两层条件数都被对比度 \(\rho\sim\varepsilon_g^{-1}\) 卡死**。
+
+**证明要点**：取一个集中在界面单元、在 \(V_H\) 的 \(\widehat S\)-正交补里的试探模态 \(v_\star\)（\(d\) 从 0 跳到 1 的台阶在粗 P1 基底下不可表示）。两层预条件子的 Rayleigh 商下界由 \(v_\star\) 上的能量与其粗校正残量之比给出（标准 fictitious-space / 两层框架，Nepomnyaschikh；Toselli–Widlund Ch.2）。权重 \(w\) 只整体缩放 \(L_c\) 的能量，不改变 \(v_\star\perp_{\widehat S}V_H\) 这一**结构性**事实，故对 \(\inf_w\) 取下确界后 \(w\) 被消去，残留 \(\rho^{1-\eta}\)。∎
+
+> **意义（论文逻辑枢纽）**：(1) 把 D12 的 B1 经验负结果（−28% constant-factor）变成**可证、可引用的定理**；(2) 严格论证「**只学权重必然受限、必须学粗空间**」——直接堵住审稿人「为何不只调权重」的质疑，把它变成本文的卖点而非软肋；(3) 给出 D13 的正确目标：学习 \(\Phi_\theta\) 使 \(\eta(V_H\cup\mathrm{range}\Phi_\theta)\to1\)，从而消去 \(\rho\) 依赖（命题 6 上档的真正可证路径，对齐 GenEO 谱粗空间的 \(\kappa\) 界）。
+
+### 4.0bis 学习对象的重定义（替换原 §3 的 \(w_\theta\) 主线）
+
+把原 §3 的「学权重 \(w_\theta\)」改为「学界面增广模态 \(\Phi_\theta\)」：
+
+\[
+PI_s \ \longrightarrow\ R_\theta := [\,PI_s \mid \Phi_\theta(\phi)\,],
+\qquad
+\Phi_\theta:\ \mathbb R^{N_c}\times\mathbb R^p \to \mathbb R^{N_c\times k},
+\]
+
+其中 \(\Phi_\theta\) 由 §3.1 的无量纲局部特征 \(\phi\) 生成 \(k\)（小，如 1–4）个数据驱动的界面跳变基向量，与几何 P1 基底拼成增广粗空间。粗校正改为在增广粗矩阵 \(\widehat S_H:=R_\theta^\top\widehat S\,R_\theta\) 上做（Galerkin 投影）。**原 \(w_\theta\) 权重学习降级为次要旋钮 / 消融对照（§6）**，不再是主结果。
 
 ### 4.1 预备：加权范数与对角缩放
 
@@ -214,7 +261,12 @@ c_1\,(Nx,x)\le (Mx,x)\le c_2\,(Nx,x),\quad\forall x,
 
 **证明**：加权刚度 \((L_c(w)v,v)=\sum_K w_K\,(\nabla v)^\top G_K(\nabla v)\ge w_{\min}\sum_K(\nabla v)^\top G_K(\nabla v)\)，\(G_K\succeq0\)；Dirichlet 约束去核后严格正定。\(\mathcal P\) 块上三角、对角块 \(B_A,B_S\) 非奇异故可逆。右预条件 GMRES 求解的是同一线性系统 \(K_h x=f\)，解集不变。∎
 
-> 这是论文的**安全垫**，必须在 §3 显式陈述：审稿人无法以「黑盒不可控」拒稿，因为正确性与可逆性是**无条件**的，与 \(\theta\) 无关。
+**推广（学粗空间版，本文主线所需）**：当学习对象为增广延拓 \(R_\theta=[PI_s\mid\Phi_\theta]\) 时，安全性同样**无条件**成立——只要把粗校正定义为 \(R_\theta(R_\theta^\top\widehat S R_\theta)^{+}R_\theta^\top\)（Galerkin），其中：
+1. 增广粗矩阵 \(\widehat S_H=R_\theta^\top\widehat S R_\theta\succeq0\) 自动半正定（\(\widehat S\succ0\) 的 congruence），对线性无关列严格 SPD；若 \(\Phi_\theta\) 的列与 \(PI_s\) 数值相关，用 pseudo-inverse \((\cdot)^+\) 或 \(+\,\epsilon I\) 正则，仍 well-defined；
+2. 故粗校正是 SPD 投影，叠加 GS 光滑子后 \(B_S\) 仍 SPD，\(\mathcal P\) 非奇异；
+3. 右预条件 GMRES 解集不变，**与 \(\theta\) 和 \(\Phi_\theta\) 的具体值无关**——最坏情况只是 \(\Phi_\theta\) 无用（退回 \(\eta(V_H)\)），绝不破坏正确性。∎
+
+> 这是论文的**安全垫**，必须在 §3 显式陈述：审稿人无法以「黑盒不可控」拒稿，因为正确性与可逆性是**无条件**的，与 \(\theta\) 无关。学粗空间版的关键是用 **Galerkin 投影**保 SPD（congruence + pseudo-inverse），这把「learned coarse space but provably safe」做成与「learned weight but safe」同级的硬保证。
 
 ### 4.6 命题 5（谱界的继承：学习在可证明区间内优化常数）
 
@@ -241,8 +293,8 @@ c_1\,(Nx,x)\le (Mx,x)\le c_2\,(Nx,x),\quad\forall x,
 \]
 
 \(\delta\) 为退化截止。**证明分档**（与 D12 一致）：
-- **下档（CMAME 可接受）**：命题 1–5 给出 \(\mathcal O(\rho_w^\alpha)\) 上界 + 留出集上 \(\kappa\) 的数值平台验证；
-- **上档（SISC 需要）**：证明学习权重选择使 \(\alpha\to 0\)（即 \(r_g\) 依赖被消去）—— 这需要对 \(L_c(w_\theta)\) 与 \(\widehat S\) 的 Fortin 算子构造给出 \(w_\theta\) 相关的 inf-sup 下界，难度高，作为 stretch goal。
+- **下档（CMAME 可接受）**：命题 0–5 给出 SPD 构件上 \(\mathcal O(\rho^{1-\eta})\) 上界 + 留出集上 niter 的数值平台验证（局部化 regime O(100)→O(10)）；
+- **上档（SISC 需要，路径已对齐 GenEO）**：证明学习增广模态 \(\Phi_\theta\) 使捕获率 \(\eta(V_H\cup\mathrm{range}\,\Phi_\theta)\to 1\)，从而命题 0 的下界 \(\rho^{1-\eta}\to\rho^0=\mathcal O(1)\)，**对比度依赖被消去**。这正是 GenEO 谱粗空间的可证 \(\kappa\) 界范式：若 \(\Phi_\theta\) 张成 \(\widehat S\) 在阈值 \(\tau\) 以下的局部特征模态（数据驱动地近似），两层 \(\kappa\le C(1+1/\tau)\) 与对比度无关。难点：证明学习模态确实覆盖低能空间（需 \(\Phi_\theta\) 的逼近性引理），作为 stretch goal，但比原稿「证 \(\alpha\to0\)」方向更扎实、有现成理论靠山。
 
 ---
 
@@ -385,5 +437,51 @@ GMRES 迭代数 `KrylovInfo.niter`、是否收敛、残差曲线、预条件 set
 
 - 本文件与代码同步：当 [`linear_solvers.py`](../../fracturex/utilfuc/linear_solvers.py) 的 `coef_g` / Schur / aux-space 接口变化时更新 §2–§3 引用；
 - 待作者把 `coef_g`（[L265](../../fracturex/utilfuc/linear_solvers.py#L265)）由 `max(g(d), eps_g)` 调整为 `g(d)` 后，§2.3 与命题 3 的「权重 = \(g(d)\)」即与实现一致；
-- 学习模块代码落地时，建议新增 `fracturex/ml/learned_coarse_weight.py` 与 `fracturex/tests/precond_learned_sweep.py`，复用 `scripts/paper_precond/` 批跑框架；
 - 成稿后把 arXiv / 投稿链接补到本文件首部。
+
+### 13.1 程序设计模块 list（2026-06-09 锁定：学粗空间路线）
+
+约束：不改 fealpy；内核在 fracturex 复刻 + 接 fealpy 接口；`learn/` 算子学习线零污染（本工作走独立 `fracturex/ml/`）；schema/接缝驱动；复用 D12 sweep 零额外仿真；torch 不进 GMRES 热路径，推理只在每 staggered 步 setup 前向一次。
+
+```
+fracturex/ml/                          # 新建（与算子学习 learn/ 分开）
+├── coarse_features.py                 # φ 提取：(mesh, state.d, l0, damage) → per-coarse-dof 无量纲特征；零 solver/torch import
+├── coarse_space_enrich.py            # 【主线】Φ_θ 生成界面增广模态；R_θ=[PI_s|Φ_θ]；Galerkin 增广粗矩阵 R^T Ŝ R（命题4 SPD 安全）
+├── coarse_weight_model.py            # 【次要/消融】bounded w_θ：w_min+(w_max-w_min)·sigmoid(MLP)；anchor-to-g(d) 初始化
+├── inference_adapter.py              # 关键接缝：torch 模型 → setup 阶段前向一次 → numpy 增广算子；热路径零 torch
+├── spectral_labels.py                # 训练标签 κ(R^T Ŝ R 上的两层) + η(V_H) 捕获率；复用 _estimate_lambda_max_dinv_s_numpy + eigsh 求 λ_min
+├── train_coarse_space.py            # 目标 A1（谱代理，主结果）；可选 A2（SPSA/进化，end-to-end niter）
+└── datasets.py                       # frozen-d / 真实 checkpoint 快照 → (φ, Ŝ, B, D_inv) 样本；按 §5.3 留出协议切分
+
+fracturex/utilfuc/linear_solvers.py   # 仅加可选注入点（不改既有逻辑），与 interface_aware 旋钮平行
+└── solve_huzhang_block_gmres_{fast,auxspace}(..., learned_coarse_provider=None)
+                                      #   provider 非空 → 用 R_θ 增广粗校正替换纯 PI_s V-cycle；否则走原路径
+                                      #   缓存键含 learned 标志 + 模型版本（局部化每步 d 变 → Φ_θ 每步重算，PI_s 几何部分仍缓存）
+
+scripts/paper_precond/
+├── dump_features.py                  # D12 sweep --dump-features 旁路（零额外仿真）
+└── precond_learned_sweep.py          # aux_learned 跑同一 sweep + 真实局部化 checkpoint，产表1b/图1b 对比
+
+fracturex/tests/
+└── precond_learned_sweep.py          # 命题4 等价性（SPD/解不变，机器精度）+ niter 回归 + 跨网格/跨l0 留出
+```
+
+接缝要点：(1) **唯一侵入**是两个求解器各加一个可选 `learned_coarse_provider`，与 `interface_aware` 平行；其余块三角 sweep、Schur 近似、谱诊断全复用。(2) 局部化下 \(d\) 每步变，\(\Phi_\theta\) 须每步重算，但 \(PI_s\) 几何部分与 Schur 几何块仍走现有 `_AUXSPACE_*_CACHE`（注意：增广破坏部分缓存假设，须新增 \(\Phi_\theta\) 专用缓存键，这是与 D12 B2 同级的工程成本，已知）。(3) torch/numpy 边界严格落在 `inference_adapter`，满足 §3.3 防净时间反噬。
+
+### 13.2 投稿水准定位（专家判定）
+
+- **本路线（学粗空间 + 障碍命题）**：CMAME 稳，凭命题 0（障碍）+ 命题 4 推广（Galerkin SPD 安全）+ GenEO 式可证 \(\kappa\) 界 + 局部化 O(100)→O(10) 的 **regime 改变**（非常数因子），**有冲 SISC / JCP 的实质本钱**。三部曲叙事闭合：D12 发现界面瓶颈 → D13 学习粗空间解决 → A2 推广 monolithic。
+- **底线（任一路线都必须做实，否则确定性拒稿点）**：命题 4 SPD 安全 + SPD 构件上干净谱界 + 非正规全系统 \(\kappa\) 措辞按 §4 开头收口（不作收敛证明依据）+ 跨网格/跨 \(l_0\) 留出实验。
+- **主要工程风险**：增广粗空间破坏 \(PI_s\) 几何缓存（每步 \(\Phi_\theta\) 重算）、须改 fast/auxspace 双求解器——与 D12 对 B2 的成本判断一致（高一个量级），但这正是回报所在。
+
+### 13.3 实现进度日志
+
+**L1-a 数据管线第一阶段（2026-06-09，已跑通）**：
+- `fracturex/ml/__init__.py` + `fracturex/ml/coarse_features.py`：per-coarse-dof（=P1 顶点）无量纲特征 \(\phi=(d,\ \|\nabla d\|l_0,\ h/l_0,\ \log(g/\bar g),\ g/g_{\max})\)，5 维，纯 numpy+FEALPy 零 solver/torch import。损伤场按 FE 函数在单元角点求值再 scatter（兼容 P2 损伤，不假设 `d[:]` 是节点值）；1-ring 均值改为按单元均值 scatter 的向量化代理（可扩展到 2M dof）。
+- `scripts/paper_precond/dump_features.py`：复用 D12 checkpoint + `HuZhangDiscretization`/`PhaseFieldDamageModel` 装配几何，仅恢复冻结 \(d\) 后提特征，**零额外仿真**；按 checkpoint 导出 `.npz`（phi/node/d/g/l0/maxd/provenance）。
+- **真实数据冒烟（model0 h₂ hmin=0.025, eps_g=1e-6）**：
+  - step_010（maxd=0.31，局部化前）：`gradd_l0` max 0.155、`log_g_over_gbar` min −0.079、陡界面节点 19；
+  - step_015（maxd=0.998，**完全局部化**）：`gradd_l0` max 0.374、`log_g_over_gbar` min **−6.100**（\(g\) 跨节点环跳变 ~e⁶≈400×，正是命题 0 的高对比度签名）、陡界面节点 149（8×）；
+  - `h_l0` 两态完全一致（几何特征 d-无关）✓；合成网格细化测得 `h_l0` 随加密折半、`d`/`g_over_gmax` 稳定 ✓（无量纲/分辨率不变性的必要条件成立）。
+- **结论**：特征层把「局部化 vs 未局部化」清晰分离，`log_g_over_gbar` 为模型定位增广模态的主输入。L1 余项：`datasets.py`（按 §5.3 留出协议切样本）。下一步进入 L2：`coarse_space_enrich.py`（\(\Phi_\theta\) 生成 + Galerkin 增广，命题 4 SPD 安全）。
+- 运行：`PYTHONPATH=<repo> OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 <conda py312>/python scripts/paper_precond/dump_features.py ...`。

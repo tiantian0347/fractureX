@@ -298,6 +298,78 @@ def _make_coarse_diffusion_coef(
     return _make_weighted_g_coef(d_fun=d_fun, degradation_fun=degradation_fun)
 
 
+def _make_interface_aware_coef(base_coef, *, damage, state, alpha: float):
+    """Wrap a coarse g(d) coefficient with an interface-aware boost (B1).
+
+    Localized cracks form sharp d≈1/d≈0 interfaces where g(d)=(1-d)^2+eps jumps ~1 -> 1e-6
+    within a cell; the geometry-pure P1 coarse space cannot resolve this and GMRES niter
+    rises O(10) -> O(100). This multiplies the coarse diffusion weight by a factor that
+    grows where the degradation gradient ||grad g(d)|| = |g'(d)| ||grad d|| is large, so the
+    coarse correction puts more weight on interface cells.
+
+        coef_aware = g(d) * (1 + alpha * |grad g| / max|grad g|)
+
+    Args:
+        base_coef: callable (bcs, index=None) -> g(d), shape (NC, NQ). If None, returns None.
+        damage: damage model exposing ``degradation_grad(d)`` = g'(d).
+        state: state view providing ``d`` (a FE Function with ``grad_value(bcs)``).
+        alpha: boost strength (0 disables; typical 0.5-2.0).
+    Returns:
+        callable (bcs, index=None) -> coef array, same shape as base_coef.
+    """
+    if base_coef is None or alpha <= 0.0 or damage is None or state is None:
+        return base_coef
+
+    def coef_aware(bcs, index=None):
+        g_val = bm.asarray(base_coef(bcs, index=index))            # (NC, NQ)
+        d_val = bm.asarray(state.d(bcs, index=index))              # (NC, NQ)
+        grad_d = bm.asarray(state.d.grad_value(bcs, index=index))  # (NC, NQ, GD)
+        gp = bm.asarray(damage.degradation_grad(d_val))            # (NC, NQ) = g'(d)
+        grad_g_mag = bm.abs(gp) * bm.sqrt(bm.sum(grad_d * grad_d, axis=-1))  # (NC, NQ)
+        gmax = float(bm.max(grad_g_mag))
+        if not (gmax > 0.0):
+            return g_val
+        return g_val * (1.0 + alpha * (grad_g_mag / gmax))
+
+    return coef_aware
+
+
+def _build_coarse_enrichment(provider, S, sgdof: int, gdim: int, PI_s):
+    """Build a D13 ``EnrichmentOperator`` from a modes provider, or return None.
+
+    The provider (a zero-arg callable) yields the coarse-space enrichment modes
+    ``Phi`` of shape ``(NN, k)`` (bm/numpy) for the current frozen damage field, or
+    ``None``. Here we bind ``Phi`` to this solve's per-component Schur blocks
+    ``S[i0:i1, i0:i1]`` via a Galerkin projection. Returns ``None`` when no provider is
+    given or it yields nothing (so the coarse path is unchanged: zero regression).
+
+    Args:
+        provider: ``callable() -> Phi (NN, k) | None`` or None.
+        S: scipy CSR Schur matrix on the displacement space (nu = gdim*sgdof).
+        sgdof: per-component displacement dof count.
+        gdim: number of displacement components.
+        PI_s: scipy CSR P1 prolongation (one component).
+    Returns:
+        an ``EnrichmentOperator`` bound to ``S``'s component blocks, or ``None``.
+    """
+    if provider is None:
+        return None
+    phi_modes = provider()
+    if phi_modes is None:
+        return None
+    blocks = [S[i * sgdof:(i + 1) * sgdof, i * sgdof:(i + 1) * sgdof].tocsr()
+              for i in range(gdim)]
+
+    def schur_block_apply(v, comp):
+        return blocks[comp] @ np.asarray(v, dtype=np.float64).reshape(-1)
+
+    from fracturex.ml.coarse_space_enrich import EnrichmentOperator
+
+    return EnrichmentOperator.from_modes(
+        phi_modes, PI_s, schur_block_apply, gdim=gdim, sgdof=sgdof
+    )
+
+
 def _extract_mechanical_blocks(A_, gdof_sigma: int):
     """
     Blocks of the saddle-point system (unknown ordering ``[sigma; u]``):
@@ -1116,16 +1188,21 @@ def _fast_cached_schur(mesh, m, schur_mode, form, Mblk, B, D_inv, interval):
     return S
 
 
-def _fast_cached_coarse_ml(mesh, q, form, weighted_aux, damage, state, d_fun, degradation_fun, interval):
+def _fast_cached_coarse_ml(mesh, q, form, weighted_aux, damage, state, d_fun, degradation_fun,
+                           interval, interface_aware=False, interface_alpha=1.0):
     """P1 coarse-diffusion pyamg hierarchy, reused for ``interval`` solves.
 
     The weighted (``g(d)``) coarse operator is otherwise reassembled + re-setup on
     EVERY solve, which dominates fast-path cost. Reusing a slightly stale hierarchy is
     a valid preconditioner (affects niter only). Unweighted path stays on its own
     mesh-level cache (already d-independent).
+
+    When ``interface_aware=True`` the g(d) coarse weight is boosted near sharp damage
+    interfaces (B1; see :func:`_make_interface_aware_coef`).
     """
     interval = max(int(interval), 1)
-    key = (id(mesh), int(q), form, int(bool(weighted_aux)), "ml")
+    key = (id(mesh), int(q), form, int(bool(weighted_aux)),
+           int(bool(interface_aware)), "ml")
     c = _FAST_PRECOND_CACHE.get(key)
     if c is not None and int(c["interval"]) == interval and int(c["calls"]) < interval:
         c["calls"] = int(c["calls"]) + 1
@@ -1139,6 +1216,10 @@ def _fast_cached_coarse_ml(mesh, q, form, weighted_aux, damage, state, d_fun, de
         d_fun=d_fun,
         degradation_fun=degradation_fun,
     )
+    if interface_aware:
+        coef = _make_interface_aware_coef(
+            coef, damage=damage, state=state, alpha=float(interface_alpha)
+        )
     if coef is not None:
         ml = _assemble_p1_diffusion_pyamg(mesh, int(q), coef=coef)
     else:
@@ -1171,6 +1252,9 @@ def solve_huzhang_block_gmres_fast(
     verbose_setup: bool = False,
     elastic_formulation: str = "standard",
     weighted_aux: bool = True,
+    interface_aware: bool = False,
+    interface_alpha: float = 1.0,
+    learned_coarse_provider=None,
     damage=None,
     state=None,
     d_fun=None,
@@ -1179,6 +1263,13 @@ def solve_huzhang_block_gmres_fast(
     """
     GMRES for the Hu-Zhang saddle-point system with Schur preconditioners aligned with the
     three ``pre_of_S`` variants in ``huzhang_fast_solver.HZFEMFastSolve``.
+
+    **``learned_coarse_provider``** (D13): optional ``callable() -> EnrichmentOperator
+    | None``. When it yields an operator, an SPD-safe additive Galerkin enrichment
+    correction is applied right after the geometric P1 coarse V-cycle (see
+    ``fracturex.ml.coarse_space_enrich``). ``None`` (default) leaves the existing coarse
+    path byte-for-byte unchanged. The enrichment never alters the solution (right
+    preconditioning), only the convergence rate.
 
     Uses the same block layout and Schur approximation as
     :func:`solve_huzhang_block_gmres_auxspace` (``S(d_h) \\approx B\\,\\mathrm{diag}(A)^{-1}B^\\top``).
@@ -1274,6 +1365,7 @@ def solve_huzhang_block_gmres_fast(
     ml = _fast_cached_coarse_ml(
         mesh, int(q), form, weighted_aux, damage, state, d_fun, degradation_fun,
         precond_rebuild_interval,
+        interface_aware=interface_aware, interface_alpha=interface_alpha,
     )
 
     nu = int(S.shape[0])
@@ -1284,6 +1376,10 @@ def solve_huzhang_block_gmres_fast(
         )
 
     n_gs = max(1, int(gs_iterations))
+
+    # D13 learned coarse-space enrichment (optional). Built once per setup; the geometric
+    # per-component blocks of the Schur matrix S supply the Galerkin coarse matrix.
+    enr = _build_coarse_enrichment(learned_coarse_provider, S, sgdof, gdim, PI_s)
 
     def _coarse_add_residual(res: np.ndarray, e_out: np.ndarray) -> None:
         for i in range(gdim):
@@ -1352,6 +1448,15 @@ def solve_huzhang_block_gmres_fast(
                 lower_ratio=float(cheb_lower_ratio),
             )
             return e1
+
+    # D13: wrap the Schur solve with deflation on the learned enrichment subspace.
+    # Deflation (not additive) is what provably reduces the two-level condition number
+    # and kills the high-contrast dependence; it leaves the solution unchanged.
+    if enr is not None:
+        _pre_of_S_base = pre_of_S
+
+        def pre_of_S(r1: np.ndarray) -> np.ndarray:  # noqa: F811
+            return enr.apply_deflated_full(r1, _pre_of_S_base, sgdof)
 
     def fast_preconditioner(r: np.ndarray) -> np.ndarray:
         r = np.asarray(r, dtype=np.float64).reshape(-1)
@@ -1486,6 +1591,7 @@ def solve_huzhang_block_gmres_auxspace(
     coarse_rebuild_interval: int = 1,
     weighted_aux: bool = False,
     elastic_formulation: str = "standard",
+    learned_coarse_provider=None,
     damage=None,
     state=None,
     d_fun=None,
@@ -1673,7 +1779,32 @@ def solve_huzhang_block_gmres_auxspace(
                 "calls_since_build": 1,
             }
 
+    # D13 learned coarse-space enrichment (optional). Built once per setup from the
+    # current Schur S_hat per-component blocks; None when no provider (zero regression).
+    enr = _build_coarse_enrichment(learned_coarse_provider, S_hat, sgdof, gdim, PI_s)
+
     p_apply_count = {"n": 0}
+
+    def _schur_solve_base(rhs: np.ndarray) -> np.ndarray:
+        """Base Schur preconditioner action B_S ≈ S(d_h)^{-1}: GS + P1 coarse + GS.
+
+        Operates on a displacement-space residual ``rhs`` (nu = gdim*sgdof) and returns
+        the approximate Schur solve ``u1``. Kept as a closure so D13 deflation can wrap it.
+        """
+        rhs = np.asarray(rhs, dtype=float).reshape(-1)
+        u1 = np.zeros_like(rhs)
+        gauss_seidel(S_hat, u1, rhs, iterations=max(int(sstep), int(smoother_steps), 1), sweep="forward")
+        r2 = rhs - S_hat @ u1
+        for i in range(gdim):
+            i0 = i * sgdof
+            i1 = (i + 1) * sgdof
+            crm = PI_s_T @ r2[i0:i1]
+            delta = P_coarse @ crm
+            u1[i0:i1] += PI_s @ delta
+        gauss_seidel(S_hat, u1, rhs, iterations=max(int(sstep), int(smoother_steps), 1), sweep="backward")
+        if schur_ilu_in_precond and ilu_s is not None:
+            u1 = u1 + np.asarray(ilu_s.matvec(rhs - S_hat @ u1)).reshape(-1)
+        return u1
 
     def gmres_preconditioner(r):
         t0p = time.perf_counter()
@@ -1683,30 +1814,13 @@ def solve_huzhang_block_gmres_auxspace(
 
         # B_A(d_h) ≈ A(d_h)^{-1} on stress residual (diagonal part)
         u0 = r[:m] * D_inv
-        u1 = np.zeros_like(r1)
         r1_local = r1 - B @ u0
 
-        # B_S(d_h) ≈ S(d_h)^{-1}: GS + auxiliary coarse correction on S_hat ≈ S(d_h)
-        gauss_seidel(S_hat, u1, r1_local, iterations=max(int(sstep), int(smoother_steps), 1), sweep="forward")
-
-        # pyamg V-cycle on auxiliary P1 Laplacian (per displacement component)
-        r2 = r1_local - S_hat @ u1
-        for i in range(gdim):
-            i0 = i * sgdof
-            i1 = (i + 1) * sgdof
-            crm = PI_s_T @ r2[i0:i1]
-            # One FEALPy algebraic-MG V-cycle on the scalar coarse Laplacian (per displacement component).
-            delta = P_coarse @ crm
-            u1[i0:i1] += PI_s @ delta
-
-        # Backward Gauss-Seidel sweep
-        gauss_seidel(S_hat, u1, r1_local, iterations=max(int(sstep), int(smoother_steps), 1), sweep="backward")
-
-        # Optional Schur correction with ILU inside the preconditioner.
-        # Default OFF: it can dominate cost and may worsen spectral properties for GMRES.
-        if schur_ilu_in_precond and ilu_s is not None:
-            corr = np.asarray(ilu_s.matvec(r1_local - S_hat @ u1)).reshape(-1)
-            u1 += corr
+        # B_S(d_h) ≈ S(d_h)^{-1}; D13 deflation wraps the base solve when enrichment is on.
+        if enr is None:
+            u1 = _schur_solve_base(r1_local)
+        else:
+            u1 = enr.apply_deflated_full(r1_local, _schur_solve_base, sgdof)
 
         # Assemble preconditioned residual: [M^{-1}*r1 + M^{-1}*B^T*u1; -u1]
         out = np.concatenate([u0 + (BT @ u1) * D_inv, -u1])

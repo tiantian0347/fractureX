@@ -43,8 +43,8 @@ class Model2NotchXStretchCase(SquareTensionPreCrackCase):
     crack_tol: float = 1e-9
 
     du_x: float = 1.0e-5
-    n_load_steps: int = 2400
-    u_x_total: float = 2.4e-2
+    n_load_steps: int = 2000
+    u_x_total: float = 2.0e-2
 
     def reaction_direction(self):
         return "x"

@@ -584,3 +584,6 @@ aux_fast niter 在 maxd≤0.82 时恒 =7,局部化处**骤升到 ~95–121**(约
 - aux_h2 进程已全部 kill；h2 目录 history/checkpoint 停在 step15(物理干净)。step16-30 r60 垃圾
   checkpoint 在 /tmp/aux_h2_r60_ckpt_bak/。
 - **仍在跑**：model2 direct(PID 3671596, step126+) + 两个冲突 aux_h3(1065682/2912972, r60旧版, 用户暂缓)。
+- [2026-06-13 19:57:37] model2 direct_full 续算启动 (pardiso, nx=160, RUN_NSTEPS=200, SAVE_EVERY=1, resume@latest checkpoint)
+- [2026-06-13 19:57:38] model2 direct_full PID=76721
+- [2026-06-13 20:02:39] model2 看门狗启动 (每 600s 检查；死则从最新 checkpoint 重启，summary.json 出现即退出)

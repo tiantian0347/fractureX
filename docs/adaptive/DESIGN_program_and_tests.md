@@ -152,3 +152,4 @@ marking_strategy='equilibrated':
 | 2026-06-13 | interp 四种场转移 | ✅ PASS | H/d/u可转移(u走IM)，σ须重解；M2只转移H/d | RESULTS §interp |
 | 2026-06-13 | M2 自适应循环 + T8 | ✅ PASS | η单调降、Θ≈1；等精度省70% DOF | RESULTS §M2/T8 |
 | 2026-06-13 | M3a 冻结真实裂纹带 | ✅ PASS | η_T 标记100%集中真实带(model2几何) | RESULTS §M3a |
+| 2026-06-13 | T4 osc 衰减 | ✅ PASS | osc(f) rate≈4 高阶小量；osc(t_N) 留 M3 混合加载 | RESULTS §T4 |

@@ -82,3 +82,68 @@ def solve_primal(mesh, p: int, lam: float, mu: float,
     from fealpy.solver import spsolve
     uh[:] = spsolve(A, b, solver="scipy")
     return {"uh": uh, "space": space}
+
+
+class DegradedElasticMaterial(LinearElasticMaterial):
+    """空间变化退化材料：elastic_matrix 返回逐元 g(d_T)·C。
+
+    d 在单元重心求值 ⇒ 逐元分片常数 g（primal 标准 FEM 足够；裂纹带光滑 ⇒ κ_T=O(1)）。
+    """
+
+    def __init__(self, lam, mu, g_cell):
+        """
+        输入:
+          lam,mu : Lamé
+          g_cell : (NC,) 逐元退化值 g(d_T)
+        """
+        super().__init__(name="degraded_var", lame_lambda=lam,
+                         shear_modulus=mu, hypo="plane_strain")
+        self._g_cell = g_cell
+
+    def elastic_matrix(self, bcs=None):
+        """返回 (NC,1,3,3) 逐元退化弹性矩阵 g(d_T)·D。"""
+        D0 = self.D                                  # (3,3) 未退化
+        g = self._g_cell                             # (NC,)
+        return g[:, None, None, None] * D0[None, None, ...]
+
+
+def solve_primal_degraded(mesh, p: int, pde, *, lam: float, mu: float, k_res: float,
+                          dirichlet, q=None):
+    """解空间变化退化标准 FEM 位移 u_h（全 Dirichlet）。
+
+    输入:
+      mesh      : TriangleMesh
+      p         : 位移次数
+      pde       : 提供 damage(p)->(...,)（DegradedElasticMMS）
+      lam,mu    : Lamé；k_res: 残余刚度
+      dirichlet : @cartesian uD(pts)->(...,2)
+      q         : 求积阶（默认 p+3）
+    输出 dict: uh, space
+    数学: 刚度 = g(d_T)·C 逐元；g 在单元重心求值。
+    """
+    q = (p + 3) if q is None else q
+    scalar_space = LagrangeFESpace(mesh, p=p)
+    space = TensorFunctionSpace(scalar_space, shape=(-1, 2))
+
+    # 单元重心处 d → g_cell
+    bc_center = bm.array([[1.0 / 3, 1.0 / 3, 1.0 / 3]], dtype=bm.float64)
+    centroid = mesh.bc_to_point(bc_center)[:, 0, :]      # (NC,2)
+    d_cell = pde.damage(centroid)                        # (NC,)
+    g_cell = (1.0 - d_cell) ** 2 + k_res
+
+    material = DegradedElasticMaterial(lam, mu, g_cell)
+    bform = BilinearForm(space)
+    bform.add_integrator(LinearElasticIntegrator(material, q=q))
+    A = bform.assembly()
+
+    lform = LinearForm(space)
+    lform.add_integrator(VectorSourceIntegrator(source=pde.source, q=q))
+    b = lform.assembly()
+
+    uh = space.function()
+    bc = DirichletBC(space, gd=dirichlet)
+    A, b = bc.apply(A, b)
+
+    from fealpy.solver import spsolve
+    uh[:] = spsolve(A, b, solver="scipy")
+    return {"uh": uh, "space": space}

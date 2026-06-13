@@ -145,3 +145,9 @@ marking_strategy='equilibrated':
 | 2026-06-13 | Amor 分裂函数 | ✅ 写完 | `amor_energy/amor_stress/amor_dual_energy` | 模块就位 |
 | 2026-06-13 | T5 Amor 对偶势 | ✅ PASS | 闭式验机器精度；**订正 (14) 系数 1/2K→1/8K** | RESULTS §T5 |
 | 2026-06-13 | `primal_elastic_solve.py` | ✅ 写完+验 | MMS p=2 收敛率→3.0 最优阶 | DESIGN §1.2 |
+| 2026-06-13 | `degraded_mms.py` | ✅ 写完+验 | 退化 MMS+裂纹带 d(x)，自洽 2e-16 | T6 积木 |
+| 2026-06-13 | `degraded_huzhang_solve.py` | ✅ 写完+验 | g⁻¹ 注入柔度块出平衡 σ_h (p=3) | T6 积木 |
+| 2026-06-13 | `solve_primal_degraded` | ✅ 写完 | 逐元常数 g(d_T) 退化标准 FEM | T6 积木 |
+| 2026-06-13 | T2/T3/T6 门槛 | ✅ **GO** | Θ≈1 不随 k_res→0 发散；可靠性=1 | RESULTS §T2/T3/T6 |
+| 2026-06-13 | interp 四种场转移 | ✅ PASS | H/d/u可转移(u走IM)，σ须重解；M2只转移H/d | RESULTS §interp |
+| 2026-06-13 | M2 自适应循环 + T8 | ✅ PASS | η单调降、Θ≈1；等精度省70% DOF | RESULTS §M2/T8 |

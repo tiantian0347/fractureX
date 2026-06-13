@@ -191,8 +191,6 @@ scratch/
 *.h5
 *.xdmf
 
-# Background-job process bookkeeping (transient, never commit)
-results/logs/*.pid
-results/logs/*.status
-results/logs/*.started_at
-results/logs/*.exit
+# Run outputs and large dumps under results/ are never committed.
+# Local files are kept on disk; export manually when needed.
+results/

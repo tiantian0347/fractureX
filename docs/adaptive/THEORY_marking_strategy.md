@@ -8,6 +8,11 @@
 > 本文给出修正的两条理论支柱：**(i) 用 Hu–Zhang 精确应力构造的预测型标记量**（领先裂尖、
 > 能捕捉起裂），**(ii) 步内 predictor–corrector 反复加密直到网格分辨 $l_0$**。
 > 记号承 [THEORY_equilibrated_aposteriori.md](THEORY_equilibrated_aposteriori.md) §1。
+>
+> **定位（见 [DECISION_sigma_driven_adaptivity.md](DECISION_sigma_driven_adaptivity.md)）**：本文的 M-DF
+> ($\mathcal D(\sigma_h)$) 是 σ 驱动自适应的**主驱动**（纯 $\sigma$、预测型、捕起裂、零额外解）；
+> 保证型 $\eta_\tau$（[THEORY_equilibrated](THEORY_equilibrated_aposteriori.md)）作**认证层**，在接受态网格上报告。
+> 二者同源于平衡 $\sigma_h$、互补不互斥。
 
 ---
 

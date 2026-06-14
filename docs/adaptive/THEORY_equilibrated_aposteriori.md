@@ -8,6 +8,12 @@
 > 目的：把「Hu–Zhang 平衡应力 ⇒ 无常数、reconstruction-free 的保证型误差界」推扎实，
 > 并诚实标注退化系数 $g(d)$ 带来的技术难点。
 > 记号遵循 `paper_writing_style_compmath`：先定义量与判据，再给界。
+>
+> **定位（见 [DECISION_sigma_driven_adaptivity.md](DECISION_sigma_driven_adaptivity.md)）**：本文的 $\eta_\tau$ 是
+> σ 驱动自适应的**认证层 + 论文理论头条**（可靠性常数 $=1$、reconstruction-free），**不**做每步驱动——
+> 因需额外一次连续 FEM 解 $u_h$ 且量的是弹性误差而非 $l_0$ 分辨。**主驱动**用 M-DF
+> （[THEORY_marking_strategy](THEORY_marking_strategy.md) 的 $\mathcal D(\sigma_h)$），$\eta_\tau$ 在接受态网格上经一次
+> primal 重解给保证型误差报告。二者同源于平衡 $\sigma_h$、互补不互斥。
 
 ---
 

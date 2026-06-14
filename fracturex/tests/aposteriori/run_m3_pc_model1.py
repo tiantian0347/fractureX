@@ -10,6 +10,8 @@
 配置（环境变量）：
   FRACTUREX_NX(24) DU(2.5e-4) MAX_STEPS(80) BETA(0.6) CH(2.0) MAX_CORR(8)
   DROP_FRAC(0.4) KRES(1e-6) OUTDIR(results/adaptive_m3_pc_model1) SMOKE NO_VTU
+  FRACTUREX_ELASTIC_SOLVER 弹性块线性求解器 spsolve(默认)/pardiso/mumps/lgmres
+    （细网格用 pardiso；pardiso 缺包即 fail-fast。见 square_direct_needs_pardiso）
 运行: PYTHONPATH=$PWD python fracturex/tests/aposteriori/run_m3_pc_model1.py
 环境 py312。计算走 bm；numpy 仅文件 I/O。
 """
@@ -59,6 +61,28 @@ def _rss_peak_mb():
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
 
 
+def _make_elastic_solver(name):
+    """弹性块线性求解器回调，启动即校验 pardiso/mumps 后端可用（fail-fast）。
+
+    输入: name str，spsolve(默认)/direct/pardiso/mumps/lgmres。
+    返回: (callback (A,F)->x, 规范化名)。缺包时 ImportError 含安装提示。
+    """
+    m = (name or "spsolve").strip().lower()
+    if m == "pardiso":
+        try:
+            import pypardiso  # noqa: F401
+        except ImportError as exc:
+            raise ImportError("FRACTUREX_ELASTIC_SOLVER=pardiso 需 pypardiso："
+                              "conda install -c conda-forge pypardiso") from exc
+    elif m == "mumps":
+        try:
+            import mumps  # noqa: F401
+        except ImportError as exc:
+            raise ImportError("FRACTUREX_ELASTIC_SOLVER=mumps 需 python-mumps："
+                              "pip install python-mumps（import 名为 mumps）") from exc
+    return HuZhangPhaseFieldStaggeredDriver.linear_solver(m), m
+
+
 def main():
     bm.set_backend("numpy")
     smoke = os.environ.get("FRACTUREX_SMOKE", "0") == "1"
@@ -89,11 +113,13 @@ def main():
     damage = PhaseFieldDamageModel(density_type="AT2", degradation_type="quadratic",
                                    split="hybrid", eps_g=k_res)
     el_asm, ph_asm = make_assemblers(discr, case, damage)
+    elastic_solver, solver_name = _make_elastic_solver(
+        os.environ.get("FRACTUREX_ELASTIC_SOLVER", "spsolve"))
     driver = HuZhangPhaseFieldStaggeredDriver(
         case=case, discr=discr, damage=damage,
         elastic_assembler=el_asm, phase_assembler=ph_asm,
         tol=1e-4, maxit=200, d_relaxation=1.0,
-        elastic_solver=HuZhangPhaseFieldStaggeredDriver._default_spsolve,
+        elastic_solver=elastic_solver,
         compute_linear_residual=False, debug=False, timing=False,
         save_vtu_per_step=False, stagger_print_interval=0,
     )
@@ -102,7 +128,8 @@ def main():
     area_floor = (l0 / c_h) ** 2 / 2.0
     print(f"[cfg-PC] nx={nx} du={du:.3e} max_steps={max_steps} beta={beta} "
           f"theta_D={beta/3:.3f} c_h={c_h} (h<=l0/{c_h:.0f}) area_floor={area_floor:.2e} "
-          f"max_corr={max_corr} k_res={k_res:.1e} smoke={smoke} vtu={want_vtu}", flush=True)
+          f"max_corr={max_corr} k_res={k_res:.1e} solver={solver_name} "
+          f"smoke={smoke} vtu={want_vtu}", flush=True)
 
     fields = ["step", "load", "nc", "dof_sigma", "D_max", "max_d", "reaction",
               "iters", "converged", "n_corr", "refine_events", "n_marked_total",

@@ -587,3 +587,33 @@ aux_fast niter 在 maxd≤0.82 时恒 =7,局部化处**骤升到 ~95–121**(约
 - [2026-06-13 19:57:37] model2 direct_full 续算启动 (pardiso, nx=160, RUN_NSTEPS=200, SAVE_EVERY=1, resume@latest checkpoint)
 - [2026-06-13 19:57:38] model2 direct_full PID=76721
 - [2026-06-13 20:02:39] model2 看门狗启动 (每 600s 检查；死则从最新 checkpoint 重启，summary.json 出现即退出)
+- [2026-06-13 20:27:38] model2 direct_full 进行中 [pid 76721] rows=136 step=135 maxd=1.0000 Rx=-0.3050755681816376 dispx=0.01125 niter_e=1
+- [2026-06-13 20:57:38] model2 direct_full 进行中 [pid 76721] rows=136 step=135 maxd=1.0000 Rx=-0.3050755681816376 dispx=0.01125 niter_e=1
+- [2026-06-13 21:27:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-13 21:57:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-13 22:27:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-13 22:57:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-13 23:27:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-13 23:57:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 00:27:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 00:57:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 01:27:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 01:57:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 02:27:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 02:57:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 03:27:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 03:57:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 04:27:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 04:57:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 05:27:38] model2 direct_full 进行中 [pid 76721] rows=137 step=136 maxd=1.0000 Rx=-0.30722240710277876 dispx=0.011333333333333332 niter_e=1
+- [2026-06-14 05:57:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 06:27:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 06:57:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 07:27:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 07:57:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 08:27:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 08:57:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 09:27:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 09:57:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 10:43:49] model2 direct_full 进程已退出 [pid 76721],最终 rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
+- [2026-06-14 10:43:55] model2 reaction 曲线摘要已写 results/phasefield/model2_notch_x_stretch/paper_direct_full/epsg_1e-06/reaction_curve.csv

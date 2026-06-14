@@ -153,3 +153,8 @@ marking_strategy='equilibrated':
 | 2026-06-13 | M2 自适应循环 + T8 | ✅ PASS | η单调降、Θ≈1；等精度省70% DOF | RESULTS §M2/T8 |
 | 2026-06-13 | M3a 冻结真实裂纹带 | ✅ PASS | η_T 标记100%集中真实带(model2几何) | RESULTS §M3a |
 | 2026-06-13 | T4 osc 衰减 | ✅ PASS | osc(f) rate≈4 高阶小量；osc(t_N) 留 M3 混合加载 | RESULTS §T4 |
+| 2026-06-13 | **M3 full (model1)** | ✅ PASS | η_T 自适应加密耦合真实 staggered，跑到裂纹贯通失效(峰值反力0.734后陡降)；网格跟尖 NC 1152→1703；内存峰值 1.09 GB | RESULTS §M3 full |
+| 2026-06-13 | **正确性对账(model1)** | ⚠️ 部分 | vs 均匀 nx=120 参照：弹性刚度匹配5%，但峰值反力高估+16%(带 h/l₀≈0.70 欠分辨)；触发标记策略重设计 | RESULTS §正确性对账 |
+| 2026-06-13 | **标记策略理论(重设计)** | ✅ 推导完 | 应力驱动预测型标记+predictor-corrector；1D AT2 标定 𝒟_c=1/3/σ_c/剖面e^{-\|x\|/l₀}(sympy核验)；命题1领先性/命题2标记可靠/命题3-4终止+分辨保证 | THEORY_marking_strategy.md |
+| 2026-06-13 | **M-DF模块+单元测试** | ✅ PASS | driving_force_per_cell/mark_driving_force/refine_masked；𝒟公式机器精度+𝒟_c=1/3标定+阈值/尺寸下限掩码逐元对账 | test_marking_driving_force.py |
+| 2026-06-13 | **predictor-corrector冒烟** | ✅ PASS | run_m3_pc_model1.py；步内反复加密终止(corr 7→1)，裂尖加密到 h≤l₀/2(nc1152→1724/step1)，checkpoint-restore正确，反力对齐参照 | run_m3_pc_model1.py |

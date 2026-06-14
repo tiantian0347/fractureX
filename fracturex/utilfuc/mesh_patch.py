@@ -17,7 +17,14 @@ def augment_boundary_edges_inplace(mesh, extra_edge_mask):
         return mesh
 
     extra = bm.asarray(extra_edge_mask).reshape(-1).astype(bm.bool)
-    orig_be = mesh.boundary_edge_flag  # 原方法（可能内部有缓存）
+    # 幂等 patch：自适应重建会在同一 mesh 实例上再次 build（bisect 就地改拓扑），
+    # 若直接拿当前 boundary_edge_flag 当 orig 会把上一次的 patch 闭包（持旧 NE 尺寸的
+    # extra）叠进来 ⇒ base|extra 形状不匹配。故首次 patch 时把真正的原方法存到实例属性，
+    # 之后总以它为 orig 重新 patch。
+    orig_be = getattr(mesh, "_fx_orig_boundary_edge_flag", None)
+    if orig_be is None:
+        orig_be = mesh.boundary_edge_flag  # 真正的原方法（可能内部有缓存）
+        mesh._fx_orig_boundary_edge_flag = orig_be
 
     def _be_aug():
         base = bm.asarray(orig_be()).reshape(-1).astype(bm.bool)
@@ -27,8 +34,6 @@ def augment_boundary_edges_inplace(mesh, extra_edge_mask):
 
     # 2D 情况下，有的代码会用 boundary_face_index（face=edge）
     if hasattr(mesh, "boundary_face_index") and mesh.geo_dimension() == 2:
-        orig_bfi = mesh.boundary_face_index
-
         def _bfi_aug():
             return bm.where(_be_aug())[0]
 

@@ -1,18 +1,29 @@
 #!/usr/bin/env python3
-"""§5.2b 头条图：真实裂纹局部化下 aux_fast 的有界收敛。
+"""⚠️ OBSOLETE — DO NOT USE FOR THE PAPER. Superseded by
+``scripts/paper_precond/make_fig1b_restart_aware.py``.
 
-读真实相场 run 的 history.csv + iterations.csv（model0 aux_h2[/h3]），绘双轴图：
-  左轴  GMRES niter（per-step 中位 + 峰值带）vs load step；
-  右轴  max_d vs load step（局部化指示量）。
-标注 step13->14 的同步跃迁（maxd 0.43->0.998 与 niter 7->~95 同时发生），
-触及 maxit 上限的步用空心标记区分。
+This script plots the per-step iterations.csv of a *production* phase-field run,
+which records the **restart=60** elastic GMRES counts and (for the default
+``paper_aux_h2`` run) only reaches step 12 (pre-localization, max_d≈0.37). That
+is the restart-stall artifact, not preconditioner behaviour, and it does NOT
+match the paper's Table~\\ref{tab:localization} (restart=200: 2→18→28→25→82).
+Running it overwrites ``iter_stability_localization.{png,pdf}`` with the wrong
+curve. The canonical figure (and table) use the deterministic restart=200
+re-solve ``d12_recheck`` data; regenerate via
+``scripts/paper_precond/make_fig1b_restart_aware.py``. Kept only for the
+restart-60 appendix comparison (D13_IMPL §9.4). See memory
+``localization_figure_provenance``.
 
-用法: paper_make_iter_localization.py [run_dir ...]
-  默认 run_dir = results/phasefield/model0_circular_notch/paper_aux_h2/epsg_1e-06
+历史用法（勿用于论文）: paper_make_iter_localization.py [run_dir ...]
 输出: docs/figures/precond/iter_stability_localization.{png,pdf}
 """
 from __future__ import annotations
 import csv, sys
+raise SystemExit(
+    "OBSOLETE: use scripts/paper_precond/make_fig1b_restart_aware.py for the "
+    "paper's localization figure (restart=200, matches Table localization). "
+    "This restart=60 production-iterations plot does not match the table and "
+    "would overwrite the correct figure. See the module docstring.")
 from pathlib import Path
 from collections import defaultdict
 import numpy as np
@@ -121,7 +132,7 @@ def main():
 
     ax.set_xlabel("load step")
     ax.set_ylabel("GMRES iterations (elastic block)")
-    ax2.set_ylabel("max damage  max_d", color="#555555")
+    ax2.set_ylabel(r"max damage $\max_x d_h$", color="#555555")
     ax.set_yscale("log")
     ax.set_ylim(4, 400)
     ax2.set_ylim(0, 1.05)
@@ -130,13 +141,12 @@ def main():
 
     if transition is not None:
         ax.axvline(transition, color="#222222", ls="-.", lw=0.9, alpha=0.6, zorder=0)
-        ax.annotate("crack fully localizes\nmax_d 0.43→0.998, niter 7→~95",
+        ax.annotate("crack localizes\n" + r"($\max_x d_h:0.43\to0.998$)",
                     xy=(transition, 95), xytext=(transition - 7, 200),
                     fontsize=8, ha="left",
                     arrowprops=dict(arrowstyle="->", color="#222222", lw=0.9))
 
-    ax.set_title("Real phase-field run: bounded O(100) convergence at localization\n"
-                 "(synthetic uniform-d underestimates this — see §5.2)", fontsize=10)
+    # Title intentionally omitted; the paper supplies a full caption.
     # merge legends
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()

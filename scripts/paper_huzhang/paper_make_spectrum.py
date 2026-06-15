@@ -52,8 +52,8 @@ def main():
         ax.scatter(e.real, e.imag, s=30, color=c, alpha=0.8,
                    label=f"d={it['d']:.2f}", edgecolors="k", linewidths=0.3)
     ax.axhline(0, color="grey", lw=0.6)
-    ax.set_xlabel(r"Re $\lambda(P^{-1}K)$"); ax.set_ylabel(r"Im $\lambda$")
-    ax.set_title("Preconditioned spectrum vs damage — model0 (aux_fast)")
+    ax.set_xlabel(r"Re $\lambda(P^{-1}\mathcal{K}_h)$"); ax.set_ylabel(r"Im $\lambda$")
+    # Title intentionally omitted; the paper supplies a full caption.
     ax.legend(fontsize=8, framealpha=0.9, ncol=2); ax.grid(True, alpha=0.25)
     fig.tight_layout()
     for ext in ("png", "pdf"):
@@ -63,8 +63,8 @@ def main():
     fig2, ax2 = plt.subplots(figsize=(5.0, 3.6))
     ds = [it["d"] for it in items]; ks = [it["kappa"] for it in items]
     ax2.plot(ds, ks, "o-", color="#d62728", lw=1.6, mec="k", mew=0.4)
-    ax2.set_xlabel("uniform/peak damage $d$"); ax2.set_ylabel(r"$\kappa_{proxy}(P^{-1}K)=|\lambda|_{max}/|\lambda|_{min}$")
-    ax2.set_title("Conditioning bounded as $d\\to1$ (aux_fast) — Prop 3")
+    ax2.set_xlabel("uniform/peak damage $d$"); ax2.set_ylabel(r"$\kappa_{\mathrm{proxy}}(P^{-1}\mathcal{K}_h)=|\lambda|_{\max}/|\lambda|_{\min}$")
+    # Title intentionally omitted; the paper supplies a full caption.
     ax2.grid(True, alpha=0.3)
     ax2.set_ylim(0, max(ks) * 1.3)
     fig2.tight_layout()

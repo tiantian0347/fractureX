@@ -617,3 +617,42 @@ aux_fast niter 在 maxd≤0.82 时恒 =7,局部化处**骤升到 ~95–121**(约
 - [2026-06-14 09:57:38] model2 direct_full 进行中 [pid 76721] rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
 - [2026-06-14 10:43:49] model2 direct_full 进程已退出 [pid 76721],最终 rows=138 step=137 maxd=1.0000 Rx=-0.28950639664769057 dispx=0.011416666666666667 niter_e=1
 - [2026-06-14 10:43:55] model2 reaction 曲线摘要已写 results/phasefield/model2_notch_x_stretch/paper_direct_full/epsg_1e-06/reaction_curve.csv
+- [2026-06-14 15:09:58] model2 看门狗启动 [ANDERSON] (每 600s 检查;死则从最新 checkpoint 重启,summary.json 出现即退出)
+- [2026-06-14 15:09:58] model2 看门狗 [ANDERSON]:进程不在 + 无 summary.json (history@step137),第 1 次自动从最新 checkpoint 重启。
+- [2026-06-14 15:09:58] model2 direct_full 续算启动 [ANDERSON depth=5] (pardiso, nx=160, RUN_NSTEPS=200, SAVE_EVERY=1, resume@latest checkpoint)
+- [2026-06-14 15:09:58] model2 direct_full [ANDERSON] PID=346766
+- [2026-06-14 15:39:58] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=139 step=138 maxd=1.0000 Rx=-0.2915250853243334 dispx=0.0115
+- [2026-06-14 16:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=140 step=139 maxd=1.0000 Rx=-0.2934983215776588 dispx=0.011583333333333333
+- [2026-06-14 16:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=141 step=140 maxd=1.0000 Rx=-0.261174240791062 dispx=0.011666666666666665
+- [2026-06-14 17:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=141 step=140 maxd=1.0000 Rx=-0.261174240791062 dispx=0.011666666666666665
+- [2026-06-14 17:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=141 step=140 maxd=1.0000 Rx=-0.261174240791062 dispx=0.011666666666666665
+- [2026-06-14 18:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=143 step=142 maxd=1.0000 Rx=-0.22732311578366346 dispx=0.011833333333333333
+- [2026-06-14 18:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=146 step=145 maxd=1.0000 Rx=-0.2319054053077725 dispx=0.012083333333333333
+- [2026-06-14 19:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=147 step=146 maxd=1.0000 Rx=-0.233503648877681 dispx=0.012166666666666666
+- [2026-06-14 19:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=149 step=148 maxd=1.0000 Rx=-0.2365725758994526 dispx=0.012333333333333333
+- [2026-06-14 20:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=150 step=149 maxd=1.0000 Rx=-0.23707577757994172 dispx=0.012416666666666666
+- [2026-06-14 20:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=151 step=150 maxd=1.0000 Rx=-0.23866515586392256 dispx=0.012499999999999999
+- [2026-06-14 21:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=154 step=153 maxd=1.0000 Rx=-0.24258060893338332 dispx=0.01275
+- [2026-06-14 21:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=156 step=155 maxd=1.0000 Rx=-0.24398510117414401 dispx=0.012916666666666667
+- [2026-06-14 22:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=159 step=158 maxd=1.0000 Rx=-0.23542280366101134 dispx=0.013166666666666667
+- [2026-06-14 22:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=161 step=160 maxd=1.0000 Rx=-0.23839814013909372 dispx=0.013333333333333332
+- [2026-06-14 23:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=162 step=161 maxd=1.0000 Rx=-0.22974719340672517 dispx=0.013416666666666667
+- [2026-06-14 23:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=165 step=164 maxd=1.0000 Rx=-0.23227667392801069 dispx=0.013666666666666666
+- [2026-06-15 00:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=167 step=166 maxd=1.0000 Rx=-0.23504529465364882 dispx=0.013833333333333333
+- [2026-06-15 00:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=169 step=168 maxd=1.0000 Rx=-0.23786034369694503 dispx=0.014
+- [2026-06-15 01:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=171 step=170 maxd=1.0000 Rx=-0.23941433469758003 dispx=0.014166666666666666
+- [2026-06-15 01:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=174 step=173 maxd=1.0000 Rx=-0.22781330554042845 dispx=0.014416666666666666
+- [2026-06-15 02:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=177 step=176 maxd=1.0000 Rx=-0.23170703580551597 dispx=0.014666666666666666
+- [2026-06-15 02:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=179 step=178 maxd=1.0000 Rx=-0.2342674311675104 dispx=0.014833333333333332
+- [2026-06-15 03:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=182 step=181 maxd=1.0000 Rx=-0.2380615405982178 dispx=0.015083333333333332
+- [2026-06-15 03:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=184 step=183 maxd=1.0000 Rx=-0.23036654337341483 dispx=0.01525
+- [2026-06-15 04:09:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=187 step=186 maxd=1.0000 Rx=-0.23350307778983914 dispx=0.0155
+- [2026-06-15 04:39:59] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=189 step=188 maxd=1.0000 Rx=-0.23595020257611415 dispx=0.015666666666666666
+- [2026-06-15 05:10:00] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=191 step=190 maxd=1.0000 Rx=-0.2383919710971793 dispx=0.01583333333333333
+- [2026-06-15 05:40:00] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=191 step=190 maxd=1.0000 Rx=-0.2383919710971793 dispx=0.01583333333333333
+- [2026-06-15 06:10:00] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=194 step=193 maxd=1.0000 Rx=-0.23137269691026927 dispx=0.01608333333333333
+- [2026-06-15 06:40:00] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=195 step=194 maxd=1.0000 Rx=-0.23081710660160848 dispx=0.016166666666666666
+- [2026-06-15 07:10:00] model2 direct_full [ANDERSON] 进行中 [pid 346766] rows=198 step=197 maxd=1.0000 Rx=-0.2342839195159644 dispx=0.016416666666666666
+- [2026-06-15 07:40:00] model2 direct_full [ANDERSON] 进程已退出 [pid 346766],最终 rows=201 step=200 maxd=1.0000 Rx=-0.2373248805915773 dispx=0.016666666666666666
+- [2026-06-15 07:40:00] model2 reaction 曲线摘要已刷新 results/phasefield/model2_notch_x_stretch/paper_direct_full/epsg_1e-06/reaction_curve.csv
+- [2026-06-15 07:41:33] model2 看门狗 [ANDERSON]:检测到 summary.json (run 已完成 step200),退出。共自动重启 1 次。

@@ -76,8 +76,8 @@ def main():
         xr = np.array([x0, mf[-1]["sigma"]], float)
         ax.plot(xr, y0 * (xr / x0), "k:", lw=0.9, alpha=0.7, label="slope 1 (linear)")
     ax.set_xscale("log"); ax.set_yscale("log")
-    ax.set_xlabel(r"$\sigma$-DOF"); ax.set_ylabel("peak RSS (MB)")
-    ax.set_title("Memory scaling: matrix-free vs direct — model0")
+    ax.set_xlabel(r"stress degrees of freedom $N_\sigma$"); ax.set_ylabel("peak RSS (MB)")
+    # Title intentionally omitted; the paper supplies a full caption.
     ax.legend(fontsize=8, framealpha=0.9); ax.grid(True, which="both", alpha=0.25)
     fig.tight_layout()
     for ext in ("png", "pdf"):

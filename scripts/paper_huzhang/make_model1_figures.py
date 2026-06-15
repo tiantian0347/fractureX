@@ -45,8 +45,12 @@ ROOT = Path("/home/gongshihua/tian/fracturex")
 #   FRACTUREX_MODEL1_RUN=results/.../paper_direct_full_nx120/epsg_1e-06
 import os as _os
 _run_env = _os.environ.get("FRACTUREX_MODEL1_RUN", "").strip()
+# Default to the full-separation nx120 run: it is the one the paper text and
+# Table~\ref{tab:model1_summary} describe (peak |F_y|=0.631 at u=5.10e-3, carried
+# to full separation at u=6.10e-3). The older truncated paper_direct run peaks at
+# 0.612 and would contradict the text, so it is no longer the default.
 RUN = (Path(_run_env) if _run_env else
-       ROOT / "results/phasefield/square_tension_precrack/paper_direct/epsg_1e-06")
+       ROOT / "results/phasefield/square_tension_precrack/paper_direct_full_nx120/epsg_1e-06")
 if not RUN.is_absolute():
     RUN = ROOT / RUN
 OUT = Path("/home/gongshihua/tian/Frac_huzhang/figures")
@@ -110,21 +114,22 @@ def fig_loaddisp(hist, vtu):
     ipk = int(np.argmax(full_r))
 
     fig, ax = plt.subplots(figsize=(5.2, 4.0))
-    ax.plot(full_d * 1e3, full_r, "-", color="#1f3b73", lw=1.8, zorder=2,
+    ax.plot(full_d, full_r, "-", color="#1f3b73", lw=1.8, zorder=2,
             label="Hu--Zhang, direct solver")
     if vtu and extra.any():
-        ax.plot(vd[extra] * 1e3, vr[extra], "o", color="#c0392b", ms=5, zorder=3,
+        ax.plot(vd[extra], vr[extra], "o", color="#c0392b", ms=5, zorder=3,
                 label=r"reconstructed from $\sigma_{yy}$ (exported states)")
-    ax.plot(full_d[ipk] * 1e3, full_r[ipk], "*", color="k", ms=13, zorder=4)
+    ax.plot(full_d[ipk], full_r[ipk], "*", color="k", ms=13, zorder=4)
     ax.annotate(
-        f"peak $|F_y|$={full_r[ipk]:.3f}\nat $\\bar u$={full_d[ipk]*1e3:.2f}" + r"$\times10^{-3}$",
-        xy=(full_d[ipk] * 1e3, full_r[ipk]),
-        xytext=(full_d[ipk] * 1e3 - 3.1, full_r[ipk] - 0.13),
+        rf"peak $|F_y|={full_r[ipk]:.3f}$ at $\bar u={full_d[ipk]:.3e}$",
+        xy=(full_d[ipk], full_r[ipk]),
+        xytext=(full_d[ipk] - 3.1e-3, full_r[ipk] - 0.13),
         fontsize=9, ha="left",
         arrowprops=dict(arrowstyle="->", color="k", lw=0.8),
     )
     ax.set_ylim(top=full_r[ipk] * 1.13)
-    ax.set_xlabel(r"prescribed displacement $\bar u\;[\times10^{-3}]$")
+    ax.set_xlim(left=0.0)
+    ax.set_xlabel(r"prescribed displacement $\bar u$")
     ax.set_ylabel(r"reaction force $|F_y|$")
     ax.set_title("Single-edge-notched tension: load--displacement")
     ax.grid(True, ls=":", alpha=0.5)
@@ -159,7 +164,7 @@ def fig_crack_final(vtu):
     ax.set_aspect("equal")
     ax.set_xlabel("x")
     ax.set_ylabel("y")
-    ax.set_title(rf"SEN tension: phase field $d$ at $\bar u={load*1e3:.2f}\times10^{{-3}}$")
+    ax.set_title(rf"SEN tension: phase field $d$ at $\bar u={load:.3e}$")
     cb = fig.colorbar(tpc, ax=ax, fraction=0.046, pad=0.04)
     cb.set_label(r"$d$")
     fig.tight_layout()
@@ -179,7 +184,7 @@ def fig_crack_evolution(vtu):
         tri = _tri(m)
         tpc = ax.tripcolor(tri, d, shading="gouraud", cmap="rainbow", vmin=0, vmax=1)
         ax.set_aspect("equal")
-        ax.set_title(rf"{tag}: $\bar u={load*1e3:.2f}\times10^{{-3}}$", fontsize=10)
+        ax.set_title(rf"{tag}: $\bar u={load:.3e}$", fontsize=10)
         ax.set_xticks([0, 0.5, 1])
         ax.set_yticks([0, 0.5, 1])
     cb = fig.colorbar(tpc, ax=axes, fraction=0.025, pad=0.02)

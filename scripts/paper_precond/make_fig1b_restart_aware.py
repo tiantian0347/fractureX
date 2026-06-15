@@ -49,11 +49,11 @@ color = "#d62728"
 ax.plot(steps, niter, "-o", color=color, ms=5, lw=1.8, zorder=3,
         label=f"aux-space niter (GMRES restart={RESTART})")
 ax2.plot(steps, maxd, "--s", color="#555555", ms=3.5, lw=1.1, alpha=0.6,
-         zorder=2, label="max damage  max_d")
+         zorder=2, label=r"max damage $\max_x d_h$")
 
 ax.set_xlabel("load step")
-ax.set_ylabel("GMRES iterations (elastic block)")
-ax2.set_ylabel("max damage  max_d", color="#555555")
+ax.set_ylabel(r"GMRES iterations (elastic block)")
+ax2.set_ylabel(r"max damage $\max_x d_h$", color="#555555")
 ax.set_yscale("log")
 ax.set_ylim(1.5, 200)
 ax2.set_ylim(0, 1.05)
@@ -66,7 +66,7 @@ for i in range(1, len(steps)):
         break
 if tr is not None:
     ax.axvline(tr, color="#222222", ls="-.", lw=0.9, alpha=0.6, zorder=0)
-    ax.annotate("crack fully localizes\n(max_d 0.43 → 1.0)",
+    ax.annotate("crack localizes\n" + r"($\max_x d_h:0.43\to1.0$)",
                 xy=(tr, 18), xytext=(tr + 0.4, 60),
                 fontsize=8.5, ha="left",
                 arrowprops=dict(arrowstyle="->", color="#222222", lw=0.9))
@@ -78,8 +78,7 @@ if loc_mask.any():
     ax.text(steps[-1], 50, "O(10–50)", color=color, fontsize=8,
             ha="right", va="bottom")
 
-ax.set_title("Real phase-field run: aux-space stays bounded across full localization\n"
-             f"(deterministic re-solve, GMRES restart={RESTART})", fontsize=10)
+# Title intentionally omitted; the paper supplies a full caption.
 h1, l1 = ax.get_legend_handles_labels()
 h2, l2 = ax2.get_legend_handles_labels()
 ax.legend(h1 + h2, l1 + l2, fontsize=8, loc="upper left", framealpha=0.9)

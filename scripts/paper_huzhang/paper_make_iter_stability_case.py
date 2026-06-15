@@ -72,10 +72,9 @@ def main():
             lab, col, mk = STYLE[pc]
             _plot(ax, xs, ys, cv, lab, col, mk)
     ax.set_yscale("log")
-    ax.set_xlabel(r"uniform damage $d$  ($g=(1-d)^2+\epsilon_g$, $\epsilon_g$=1e-6)")
-    ax.set_ylabel("GMRES iterations (rtol=1e-8)")
-    ax.set_title(f"Iteration stability vs damage — {TITLE.get(case, case)} "
-                 f"($\\sigma$-dof={sig:,})")
+    ax.set_xlabel(r"uniform damage $d$  ($g=(1-d)^2+\epsilon_g$, $\epsilon_g=10^{-6}$)")
+    ax.set_ylabel(r"GMRES iterations ($r_{\mathrm{tol}}=10^{-8}$)")
+    # Title intentionally omitted; the paper supplies a full caption.
     ax.axhline(DNF, color="grey", ls=":", lw=0.8)
     ax.text(ds[0], DNF, " DNF (hit maxit)", va="bottom", ha="left", fontsize=7, color="grey")
     ax.legend(fontsize=8, framealpha=0.9); ax.grid(True, which="both", alpha=0.25)

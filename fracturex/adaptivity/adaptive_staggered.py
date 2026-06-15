@@ -33,7 +33,7 @@ from fracturex.adaptivity.equilibrated_estimator import equilibrated_indicator
 
 
 def eta_from_state(discr, *, lam: float, mu: float, k_res: float = 1e-6,
-                   q: int = 8) -> Dict[str, object]:
+                   q: int = 8, u_override=None) -> Dict[str, object]:
     """从当前离散 state 的 (σ_h, d, u) 算逐元平衡型指示子 η_T。
 
     输入:
@@ -41,6 +41,9 @@ def eta_from_state(discr, *, lam: float, mu: float, k_res: float = 1e-6,
       lam,mu: Lamé 参数
       k_res : 残余刚度 g=(1-d)^2+k_res（>0）
       q     : 求积阶（默认 8，高于 σ_h(p=3)/u(p=2) 以免欠积分污染 η）
+      u_override : 可选连续位移 FE function（如 solve_primal_real 的 u_h^cont）。
+                   给定时用其 grad_value 算残差 r=ℂ_d ε(u_override)−σ_h ⇒ **严格 Θ**
+                   （Prager–Synge 需 H¹-协调 primal；默认 None 用 DG-u = 非严格，仅趋势）。
     输出 dict:
       eta   : 标量全局 η
       eta_T : (NC,) 逐元指示子
@@ -51,7 +54,8 @@ def eta_from_state(discr, *, lam: float, mu: float, k_res: float = 1e-6,
     bcs, ws = qf.get_quadrature_points_and_weights()
     cm = mesh.entity_measure("cell")
 
-    grad_uh = discr.state.u.grad_value(bcs)            # (NC,NQ,2,2) DG 位移梯度
+    u_field = discr.state.u if u_override is None else u_override
+    grad_uh = u_field.grad_value(bcs)                  # (NC,NQ,2,2) 位移梯度
     sigmah_qp = discr.state.sigma(bcs)                 # (NC,NQ,3) σ_h（Voigt）
     d_qp = discr.state.d(bcs)                          # (NC,NQ[,1]) 相场
     if d_qp.ndim == 3:

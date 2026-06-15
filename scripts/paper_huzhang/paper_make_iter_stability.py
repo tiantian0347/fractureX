@@ -80,9 +80,9 @@ def fig_vs_d(rows, level: str):
             _plot(ax, xs, ys, cv, lab, col, mk)
     sig = sub[0]["sigma"]
     ax.set_yscale("log")
-    ax.set_xlabel(r"uniform damage $d$  ($g=(1-d)^2+\epsilon_g$, $\epsilon_g$=1e-6)")
-    ax.set_ylabel("GMRES iterations (rtol=1e-8)")
-    ax.set_title(f"Iteration stability vs damage — model0 {level} ($\\sigma$-dof={sig:,})")
+    ax.set_xlabel(r"uniform damage $d$  ($g=(1-d)^2+\epsilon_g$, $\epsilon_g=10^{-6}$)")
+    ax.set_ylabel(r"GMRES iterations ($r_{\mathrm{tol}}=10^{-8}$)")
+    # Title intentionally omitted; the paper supplies a full caption.
     ax.axhline(DNF, color="grey", ls=":", lw=0.8)
     ax.text(ds[0], DNF, " DNF (hit maxit)", va="bottom", ha="left", fontsize=7, color="grey")
     ax.legend(fontsize=8, framealpha=0.9); ax.grid(True, which="both", alpha=0.25)
@@ -130,9 +130,9 @@ def fig_vs_N(rows, d_fixed: float):
             lab, col, mk = STYLE[pc]
             _plot(ax, xs, ys, cv, lab, col, mk)
     ax.set_xscale("log"); ax.set_yscale("log")
-    ax.set_xlabel(r"$\sigma$-DOF (mesh refinement $\rightarrow$)")
-    ax.set_ylabel("GMRES iterations")
-    ax.set_title(f"Iteration count vs problem size — model0, d={d_fixed}")
+    ax.set_xlabel(r"stress degrees of freedom $N_\sigma$ (mesh refinement $\rightarrow$)")
+    ax.set_ylabel(r"GMRES iterations ($r_{\mathrm{tol}}=10^{-8}$)")
+    # Title intentionally omitted; the paper supplies a full caption.
     ax.legend(fontsize=8, framealpha=0.9); ax.grid(True, which="both", alpha=0.25)
     fig.tight_layout()
     return fig

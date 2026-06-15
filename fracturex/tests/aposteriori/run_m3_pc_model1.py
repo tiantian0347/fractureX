@@ -32,7 +32,9 @@ from fracturex.drivers.huzhang_phasefield_staggered import HuZhangPhaseFieldStag
 
 from fracturex.adaptivity.adaptive_staggered import (
     make_assemblers, refine_masked, driving_force_per_cell, mark_driving_force,
+    eta_from_state,
 )
+from fracturex.adaptivity.primal_resolve_real import solve_primal_real
 
 
 class _Mat:
@@ -85,6 +87,9 @@ def _make_elastic_solver(name):
 
 def main():
     bm.set_backend("numpy")
+    # Anderson 默认开（depth=5）：归因实测它把临界步 staggered 收敛、墙钟 6.98h→1.13h(6×)、
+    # 且峰值更贴参照（v2 无 Anderson +2.8% → -1.5%）。显式 FRACTUREX_ANDERSON_DEPTH=0 可关。
+    os.environ.setdefault("FRACTUREX_ANDERSON_DEPTH", "5")
     smoke = os.environ.get("FRACTUREX_SMOKE", "0") == "1"
     nx = _i("FRACTUREX_NX", 24)
     du = _f("FRACTUREX_DU", 1.0e-3 if smoke else 2.5e-4)
@@ -94,6 +99,14 @@ def main():
     max_corr = _i("FRACTUREX_MAX_CORR", 8)      # 每载荷步 corrector 上限
     drop_frac = _f("FRACTUREX_DROP_FRAC", 0.4)
     k_res = _f("FRACTUREX_KRES", 1e-6)
+    # (ii) corrector 内中间网格用松 tol 定位标记（解会被加密丢弃，无需解准），接受态补紧 tol 终解。
+    #   ⚠ 实测结论（2026-06-14 归因 run）：开 Anderson 后，corrector 的整解本就便宜
+    #   （step3 2320s→63s 由 Anderson 贡献，非松 tol），松 tol 反而**微扰标记**致曲线漂移 ~1.5%
+    #   且因多一次终解略慢。故**默认关**(tol_coarse=tol_fine)，仅留作可选；要开设 FRACTUREX_TOL_COARSE。
+    tol_fine = _f("FRACTUREX_TOL_FINE", 1e-4)
+    tol_coarse = _f("FRACTUREX_TOL_COARSE", tol_fine)
+    # (a) 严格 Θ 认证：每 cert_every 个接受步做一次连续 primal 重解 + η_τ（0=关，默认关，贵）。
+    cert_every = _i("FRACTUREX_CERTIFY_EVERY", 0)
     outdir = os.environ.get("FRACTUREX_OUTDIR", "results/adaptive_m3_pc_model1")
     want_vtu = os.environ.get("FRACTUREX_NO_VTU", "0") != "1"
     use_failure_stop = not smoke
@@ -118,7 +131,7 @@ def main():
     driver = HuZhangPhaseFieldStaggeredDriver(
         case=case, discr=discr, damage=damage,
         elastic_assembler=el_asm, phase_assembler=ph_asm,
-        tol=1e-4, maxit=200, d_relaxation=1.0,
+        tol=tol_fine, maxit=200, d_relaxation=1.0,
         elastic_solver=elastic_solver,
         compute_linear_residual=False, debug=False, timing=False,
         save_vtu_per_step=False, stagger_print_interval=0,
@@ -126,14 +139,16 @@ def main():
     driver.initialize()
 
     area_floor = (l0 / c_h) ** 2 / 2.0
+    a_depth = _i("FRACTUREX_ANDERSON_DEPTH", 0)   # driver 已从 env 读；此处仅回显
     print(f"[cfg-PC] nx={nx} du={du:.3e} max_steps={max_steps} beta={beta} "
           f"theta_D={beta/3:.3f} c_h={c_h} (h<=l0/{c_h:.0f}) area_floor={area_floor:.2e} "
           f"max_corr={max_corr} k_res={k_res:.1e} solver={solver_name} "
+          f"tol_coarse={tol_coarse:.1e}/tol_fine={tol_fine:.1e} anderson_depth={a_depth} "
           f"smoke={smoke} vtu={want_vtu}", flush=True)
 
     fields = ["step", "load", "nc", "dof_sigma", "D_max", "max_d", "reaction",
               "iters", "converged", "n_corr", "refine_events", "n_marked_total",
-              "t_step_s", "rss_now_mb", "rss_peak_mb"]
+              "t_step_s", "rss_now_mb", "rss_peak_mb", "eta_tau", "eta_dg"]
     fh = open(csv_path, "w", newline="")
     writer = csv.DictWriter(fh, fieldnames=fields); writer.writeheader()
 
@@ -148,22 +163,45 @@ def main():
         d_ck = bm.copy(state.d[:]); r_ck = bm.copy(state.r_hist[:])
         n_corr = 0; refine_events = 0; n_marked_total = 0
         info = None
+        # (ii) corrector loop：中间网格松 tol 定位标记；接受态（无标记/触上限）再紧 tol 终解。
         while True:
             state = discr.state
-            # 从步首损伤重解本载荷（H 由 solve 重建/累积）
+            # 从步首损伤重解本载荷（H 由 solve 重建/累积）；中间解用松 tol。
             state.d[:] = d_ck; state.r_hist[:] = r_ck
+            driver.tol = tol_coarse
             info = driver.solve_one_step(step=s, load=load)
             Dcell = driving_force_per_cell(discr, damage)
             D_max = float(bm.max(Dcell)) if len(Dcell) else 0.0
-            if s == 0 or n_corr >= max_corr:
-                break
-            marked = mark_driving_force(discr, Dcell, l0=l0, beta=beta, c_h=c_h)
-            if int(bm.sum(marked)) == 0:
+            accept = s == 0 or n_corr >= max_corr
+            if not accept:
+                marked = mark_driving_force(discr, Dcell, l0=l0, beta=beta, c_h=c_h)
+                accept = int(bm.sum(marked)) == 0
+            if accept:
+                # 接受态：在最终网格上补一次紧 tol 终解（记录物理量）。从**松解收敛态
+                # 暖启动**续到 tol_fine（同网格+同载荷的 staggered 不动点唯一，暖续即同解、更快）；
+                # 不重置 d_ck——否则丢失 once-latch 的预裂纹（precrack 只在装配器内施加一次）。
+                if tol_fine < tol_coarse:
+                    driver.tol = tol_fine
+                    info = driver.solve_one_step(step=s, load=load)
+                    Dcell = driving_force_per_cell(discr, damage)
+                    D_max = float(bm.max(Dcell)) if len(Dcell) else 0.0
                 break
             # 回到步首损伤再加密（bisect 转移 d_ck，不转移已演化的 d）
             state.d[:] = d_ck; state.r_hist[:] = r_ck
             ref = refine_masked(discr, damage, case, marked)
             if not ref["refined"]:
+                # 加密失败（已到尺寸下限）：接受态。当前 state 已被重置到 d_ck，须用松 tol
+                # 在本网格上从 d_ck 解一次拿物理（precrack 此前已 latch，d_ck 含 precrack），
+                # 再暖续到紧 tol。
+                state = discr.state
+                state.d[:] = d_ck; state.r_hist[:] = r_ck
+                driver.tol = tol_coarse
+                info = driver.solve_one_step(step=s, load=load)
+                if tol_fine < tol_coarse:
+                    driver.tol = tol_fine
+                    info = driver.solve_one_step(step=s, load=load)
+                Dcell = driving_force_per_cell(discr, damage)
+                D_max = float(bm.max(Dcell)) if len(Dcell) else 0.0
                 break
             state = discr.state                      # rebuild 后 state 是新对象
             d_ck = bm.copy(state.d[:]); r_ck = bm.copy(state.r_hist[:])
@@ -179,6 +217,20 @@ def main():
         Dcell = driving_force_per_cell(discr, damage)
         D_max = float(bm.max(Dcell)) if len(Dcell) else 0.0
 
+        # (a) 认证：接受态做连续 primal 重解 → 严格 η_τ（reconstruction-free, 常数=1）。
+        #   同记 DG-u 版作对照（v2 诚实标注#1：DG-u 与 σ_h 同源 ⇒ 循环虚低）。贵 ⇒ 仅每 k 步。
+        eta_tau = float("nan"); eta_dg = float("nan")
+        if cert_every > 0 and (s % cert_every == 0):
+            try:
+                pr = solve_primal_real(discr, case, lam=mat.lam, mu=mat.mu,
+                                       load=load, k_res=k_res)
+                eta_tau = float(eta_from_state(discr, lam=mat.lam, mu=mat.mu,
+                                               k_res=k_res, u_override=pr["uh"])["eta"])
+                eta_dg = float(eta_from_state(discr, lam=mat.lam, mu=mat.mu,
+                                              k_res=k_res)["eta"])
+            except Exception as exc:
+                print(f"[certify] step {s} failed: {exc}", flush=True)
+
         if want_vtu:
             discr.mesh.celldata["D_cell"] = bm.asarray(Dcell)
             try:
@@ -192,12 +244,14 @@ def main():
                    D_max=D_max, max_d=max_d, reaction=R, iters=int(info.iters),
                    converged=bool(info.converged), n_corr=n_corr,
                    refine_events=refine_events, n_marked_total=n_marked_total,
-                   t_step_s=t_step, rss_now_mb=_rss_now_mb(), rss_peak_mb=_rss_peak_mb())
+                   t_step_s=t_step, rss_now_mb=_rss_now_mb(), rss_peak_mb=_rss_peak_mb(),
+                   eta_tau=eta_tau, eta_dg=eta_dg)
         writer.writerow(row); fh.flush(); n_done += 1
+        cert_str = f" η_τ={eta_tau:.3e}(DG {eta_dg:.2e})" if cert_every > 0 and (s % cert_every == 0) else ""
         print(f"[PC] step={s:02d} load={load:.3e} nc={nc} dofσ={row['dof_sigma']} "
               f"𝒟max={D_max:.2f} max_d={max_d:.3f} R={R:.3e} iters={info.iters} "
               f"corr={n_corr} refev={refine_events} t={t_step:.1f}s "
-              f"rss={row['rss_now_mb']:.0f}/{row['rss_peak_mb']:.0f}MB", flush=True)
+              f"rss={row['rss_now_mb']:.0f}/{row['rss_peak_mb']:.0f}MB{cert_str}", flush=True)
 
         if use_failure_stop and peak_R > 0 and s >= 2 and R < drop_frac * peak_R and max_d > 0.95:
             print(f"[PC] 反力跌破峰值 {drop_frac:.0%}（R={R:.3e}<{drop_frac*peak_R:.3e}），停机。", flush=True)

@@ -18,6 +18,189 @@
 | M3a | 2026-06-13 | ✅ PASS | 贴合 model2 几何的冻结裂纹带：η_T 标记 100% 集中真实带 |
 | T4 | 2026-06-13 | ✅ PASS | osc(f) 随 h 以 rate≈4 (O(h^{p+2})) 衰减，高阶小量不污染 η |
 | M3 full (model1) | 2026-06-13 | ✅ PASS | η_T 自适应加密耦合进真实 staggered，跑到裂纹贯通失效；峰值反力后陡降，内存 1.09 GB |
+| M3 PC v2 (model1) | 2026-06-14 | ✅ PASS | σ 驱动 M-DF + predictor–corrector：峰值反力高估 **+16%→+2.8%**、起裂 +32%→+2.9%，v1 欠分辨缺陷修复 |
+| M3 PC v3 (model1) | 2026-06-15 | ✅ PASS | Anderson 加速：墙钟 **6.98h→1.13h(6×)**、消 v2 step22 DNF，峰值更贴参照(**+2.8%→−1.5%**)；归因证松 tol 有害已弃 |
+| primal_real (a) | 2026-06-15 | 🔧 进行中 | 非-MMS 连续 primal 重解跑通(真实分量式 BC)；严格 η_τ：DG-u=0.039(循环虚低) vs 连续=0.617 |
+
+---
+
+## primal_real (a)：非-MMS 连续 primal 重解 + 严格 η_τ（Phase 3 进行中）
+
+- **日期**：2026-06-15
+- **目的**：Phase 3 (a)。v2 的 η 用 driver 的 DG 混合位移 u（`eta_from_state` 默认通道）——
+  与 σ_h **同源**于混合解 ⇒ 残差 r=ℂ_d ε(u)−σ_h 循环虚低（v2 诚实标注 #1）。本轮新写
+  **独立连续标准 FEM primal 重解**，吃离散 d 场 + 真实算例分量式 Dirichlet，产出 H¹-协调 u_h^cont
+  喂回估计子 ⇒ 严格 η_τ（Prager–Synge 需协调 primal）。
+- **构建**：`adaptivity/primal_resolve_real.py::solve_primal_real`（退化 g(d_T) 逐元重心 +
+  `VectorDirichletBC` 分量式 BC：y=0 固定 (x,y)、y=1 仅 u_y=load、侧边自由）；
+  `eta_from_state(..., u_override=)` 新增连续 primal 通道；runner `FRACTUREX_CERTIFY_EVERY=k`
+  接受态每 k 步认证（记 `eta_tau`/`eta_dg` 列）。
+- **关键澄清（消一个伪顾虑）**：生产 **弹性退化是各向同性 g(d)·C**（`phasefield_damage` 注释
+  "elasticity degradation: isotropic g(d)"；`huzhang_elastic_assembler` σ=g(d)·σ̃）；hybrid/spectral
+  split **只作用于历史场 H（驱动力）**，不动弹性应力。⇒ 估计子 r=g·C·ε−σ_h 与生产应力**格式一致**，
+  η_τ 无 split 失配，是**真误差指示子**（非膨胀）。split 的严格界（majorant, Thm 2）是另一回事
+  （DECISION §5 future work，T5 已验 Amor 闭式）。
+- **结果**：
+  - BC 正确性：y=1 u_y=load、y=0 |u|=0（修了布局 bug：分量优先 `(GD,-1)` 非 `(-1,2)`，
+    否则分量式 BC 落错 dof）。
+  - **严格 η_τ ≫ DG-η（坐实 v2 caveat #1）**：load 5e-3 处 η_τ=**0.617** vs DG-η=0.039（~16×）；
+    load 2.5e-4 处 η_τ=0.031 vs 0.0020（~15×）。DG-u 循环虚低被定量揭穿。
+  - **η_τ 随载荷单调增** 0→0.031→…→0.617，行为正常。
+- **诚实标注（重要，影响论文）**：
+  1. **η_τ 在绝对量上偏大（~O(R)）**，因**预裂纹带 d=1 ⇒ g=k_res=1e-6 ⇒ g⁻¹=1e6** 在 η 积分里
+     放大该处欠分辨残差。即 η_τ 被**尖锐预裂纹尖端**主导。这是估计子**正确地**标出欠分辨，但意味
+     绝对界**松**——区别于 T6（光滑退化、κ=O(100)）的 Θ≈1。论文须分清：T6 的紧 Θ 是光滑退化；
+     真实 sharp-precrack 下界松、由 g⁻¹ 主导。
+  2. **真实算例无解析解 ⇒ 报 η_τ 作保证型上界（reliability 常数=1），效率 Θ=η/err 须真解**——
+     已在 T6(MMS) 验 Θ≈1；真实裂纹的 Θ 需细网格 surrogate truth，留下步。
+- **文件**：`adaptivity/primal_resolve_real.py`、`adaptive_staggered.py`(eta_from_state u_override)、
+  `run_m3_pc_model1.py`(FRACTUREX_CERTIFY_EVERY)、`tests/aposteriori/_dev_test_primal_real.py`(自测)。
+- **结论（阶段）**：严格 η_τ 通路打通、格式一致、循环虚低被揭穿。**剩**：(1) 接受态 surrogate-truth
+  效率 Θ 评估；(2) 全程认证轨迹长 run（待 Phase 2 du run 腾出机器）；(3) (iv)(v) 联合标记/起裂后
+  η-Dörfler 作 Discussion。
+
+---
+
+## M3 PC v3 (model1): Anderson 加速 —— 6× 提速 + 消 DNF + 峰值更准（含归因）
+
+- **日期**：2026-06-15
+- **目的**：Phase 1（[PLAN_m3_pc_v3_certified.md](PLAN_m3_pc_v3_certified.md)）。v2 墙钟 6.98h、
+  step22–23 触 maxit=200 DNF。本轮 (b) 开 Anderson 加速 staggered 不动点 + (ii) corrector 松 tol。
+  **关键是做了归因实验**分离两者贡献——结论推翻了松 tol。
+- **配置**：同 v2（nx=24/du=2.5e-4/β=0.6/c_h=2.0/k_res=1e-6/spsolve），加
+  `FRACTUREX_ANDERSON_DEPTH=5`（runner 已设为默认）。归因跑三组：v2(无 Anderson/无松 tol)、
+  **Anderson-only(紧 tol)**、v3-loose(Anderson+松 tol 1e-2)。
+- **结果（三组对账，参照 nx120 peak=0.6306）**：
+
+  | 配置 | 峰值反力 | vs 参照 | 墙钟 | step22 收敛 |
+  |------|---------|--------|------|------------|
+  | v2（无 Anderson）| 0.6484 | +2.8% | 6.98h | ✗ DNF(200) |
+  | **Anderson-only（规范 v3）** | **0.6214** | **−1.5%** | **1.13h** | ✓ iters=96 |
+  | v3-loose（+松 tol）| 0.6118 | −3.0% | 1.16h | ✓ |
+
+  - **★ 提速 6×**：墙钟 6.98h→1.13h。瓶颈 step3 从 **2320s→63s**——归因证明这是 **Anderson 的功劳
+    （非松 tol）**：v2 的 2320s 不是慢在紧解，而是每次 staggered 解在无 Anderson 下迭代数巨大。
+  - **★ 消 DNF**：v2 step22 触 maxit=200 未收敛（反力坐在垃圾迭代上）；Anderson 把它**收敛到 iters=96**。
+  - **★ 峰值反而更准**：Anderson-only −1.5%，优于 v2 的 +2.8%。机理：v2 的峰值 0.648@step21 部分
+    **虚高**，因 step21 坐在近-DNF 的膨胀迭代上；Anderson 真正收敛临界步 ⇒ 峰值落回 0.621@step20，
+    更贴参照。**提速同时提精度**（[[code_goal_fast_and_accurate]]）。
+  - **归因证松 tol 有害**：Anderson-only **逐位复刻 v2** 到 step20（R 全 4 位一致、网格一致），而
+    松 tol 让曲线 pre-peak 漂移 ~1.5% 且**不更快**（多一次终解）。⇒ **松 tol 默认关**
+    （`tol_coarse=tol_fine`），留作可选。
+
+  ![load-displacement v3 Anderson vs v2 vs ref](../figures/adaptive/m3pc_v3_model1_load_displacement.png)
+
+  ![speedup + convergence](../figures/adaptive/m3pc_v3_model1_speedup.png)
+
+- **诚实标注（重要）**：
+  1. **峰值是 solver-path-sensitive**：三组在 step20 前**逐位一致**，step21+（裂纹局部化）才分叉——
+     staggered 在局部化是路径依赖的，Anderson 改收敛路径 ⇒ 改 H ⇒ 改驱动力/标记 ⇒ 改收敛峰值。
+     三组峰值 0.612–0.648 全在参照 0.631 的 **±3%** 内。**论文措辞**：峰值匹配应报「±3% 路径带」
+     而非单点，且言明 v2 的 +2.8% 含近-DNF 虚高成分。
+  2. **step22 收敛但 iters=96 + 8 corrector**：Anderson 收敛了，但局部化步仍需近百次迭代 + 大量加密
+     （nc→3028），是已知局部化迭代退化（[[aux_niter_localization_degradation]]、
+     [[model2_anderson_resume_validated]] 报 model2 ~10–25 是均匀-d，真实裂纹更难）。墙钟大头仍在
+     此两步。**未根治局部化**，只是从 DNF 变为「贵但收敛」。
+  3. **内存峰值 1.77 GB**（`time -v` Maximum RSS=1812548 KB），低于 v2 的 2.04 GB（v2 多跑 2 步）。
+- **文件**：runner `run_m3_pc_model1.py`（Anderson 默认开 + 松 tol 可选关）；
+  plot `plot_m3_pc_v3_model1.py`；数据 `results/adaptive_m3_pc_model1_v3/history_anderson_canonical.csv`
+  + `run_anderson_canonical.log`（规范 Anderson 版 = 归因 Anderson-only 跑的副本）；
+  loose 版 `results/adaptive_m3_pc_model1_v3/history.csv`；v2 无-Anderson `results/adaptive_m3_pc_model1/`。
+- **结论**：**Anderson 是 Phase 1 的真正杠杆**——6× 提速、消 DNF、峰值更准（三赢）；松 tol 经归因
+  证伪并弃用。下一步：Phase 2 du=1e-4 复核（峰值路径带是否随 du 收窄）、Phase 3 严格 Θ 认证。
+
+---
+
+## M3 PC v2 (model1): σ 驱动 M-DF + predictor–corrector，修复 v1 峰值高估
+
+- **日期**：2026-06-14
+- **目的**：M3 full **v1 的重设计**。v1（η_T-Dörfler 驱动、per-step 单次加密）实测峰值反力
+  **+16% 高估、起裂 +32% 偏晚**，根因是标记滞后致裂纹带停在 h/l₀≈0.70 欠分辨
+  （见上节 §正确性对账 + [[surrogate_data_underresolved_hl0]]）。v2 按
+  [DECISION_sigma_driven_adaptivity.md](DECISION_sigma_driven_adaptivity.md) 改为
+  **主驱动 = M-DF（𝒟(σ_h) 应力驱动力标记）+ predictor–corrector**（步内反复加密到无标记），
+  验峰值高估是否被压下。
+- **配置**：model1 = `SquareTensionPreCrackCase`（y 拉伸，预裂纹）；初始网格 nx=24（1152 cell）；
+  Hu–Zhang p=3，位移 P2，damage_p=1；k_res=1e-6；**M-DF 标记**：𝒟_τ=(2l₀/G_c)·max_q H_q ≥
+  θ_D=β·𝒟_c=β/3，β=0.6（θ_D=0.20），且 h_τ>l₀/c_h（c_h=2.0 ⇒ **h≤l₀/2 分辨下限**，
+  area_floor=2.81e-5）；**predictor–corrector**：步内「解→标记→bisect 加密+转移(d,H)→回步首
+  从 checkpoint 损伤 d_ck 重解」反复至无标记，max_corr=8；AT2 hybrid，l0=0.015；
+  载荷增量 du=2.5e-4；staggered tol=1e-4、maxit=200；弹性直接解 spsolve；后端 numpy。
+- **执行**：每载荷步 predictor–corrector 收敛接受态网格后进下一步；checkpoint–restore 每个
+  corrector 从步首损伤重解本载荷（避免同载荷重复解累积损伤）。
+- **结果**（25 步，载荷 0→6e-3，墙钟 **6h59m**）：
+
+  | step | load | nc | dofσ | 𝒟max | R(反力) | iters | conv | n_corr |
+  |------|------|----|------|------|--------|-------|------|--------|
+  | 0 | 0 | 1152 | 19347 | 0 | 0 | 2 | ✓ | 0 |
+  | 2 | 5.0e-4 | 1276 | 21407 | 12.8 | 0.070 | 3 | ✓ | 8 |
+  | 3 | 7.5e-4 | 1688 | 28205 | 30.7 | 0.099 | 3 | ✓ | 8 |
+  | 12 | 3.0e-3 | 1784 | 29789 | 491 | 0.389 | 5 | ✓ | 1 |
+  | **21** | **5.25e-3** | 1898 | 31670 | 1500 | **0.648 (峰值)** | 11 | ✓ | 1 |
+  | 22 | 5.5e-3 | 2188 | 36469 | 2358 | 0.557 ↓ | **200** | **✗ DNF** | 6 |
+  | 23 | 5.75e-3 | 2782 | 46270 | 4398 | 0.318 ↓ | **200** | **✗ DNF** | 8 |
+  | 24 | 6.0e-3 | 3404 | 56575 | 5259 | 0.031 ↓ | 92 | ✓ | 7 |
+
+  - **载荷–位移曲线物理正确**：弹性段刚度 dR/du(u∈[1e-3,3e-3]) = **128.3**；反力线性升至峰值
+    **0.648（step21, u=5.25e-3）**，随后单调陡降 0.557→0.318→0.031，脆性 mode-I 失效。
+  - **前期 predictor–corrector 大力加密**：step2–3 一次性 8 个 corrector 把裂纹带打到分辨下限
+    （NC 1152→1688），起裂前网格就位（区别于 v1 的滞后逐步加密）；起裂前 step4–21 corrector
+    数回落到 0–2（带已分辨，仅微调）。
+  - **𝒟max 单调上升** 0→5259：M-DF 驱动力按定义在「将开裂处」峰起，正确探测起裂与裂尖推进。
+  - **内存**：峰值 RSS（getrusage/`time -v`）**2.04 GB**（2091512 KB），稳态工作集 ≈0.6 GB；
+    失效段网格涨到 NC 3404、dofσ 56575 时峰值出现。
+
+### 正确性对账：v2 vs v1 vs 均匀 nx=120 参照 ★头条
+
+同一均匀 nx=120 全分辨参照（`results/phasefield/square_tension_precrack/paper_direct_full_nx120/`，
+h/l₀≈0.56，已过 sanity）。
+
+![load-displacement v2 vs v1 vs ref](../figures/adaptive/m3pc_model1_load_displacement.png)
+
+> 图中 v2（红）峰值点紧贴均匀参照（灰实线）峰值，v1（灰虚线）峰值远偏右上 —— 即 +16%→+2.8% 的修复。
+
+| 指标 | **v2 (σ-driven PC)** | v1 (η-Dörfler) | 均匀 nx=120 参照 | v2 判读 |
+|------|------|------|------|------|
+| 弹性段刚度 dR/du | 128.3 | 127.9 | 134.1 | 匹配 −4.4% |
+| 峰值反力 \|R\|ₚ | **0.648** | 0.734 | 0.631 | **+2.8%**（v1 是 +16%）|
+| 峰值位移 uₚ | **5.25e-3** | 6.75e-3 | 5.10e-3 | **+2.9%**（v1 是 +32%）|
+| 失效后反力 | →0.031 | →0.063 | →~0 | 脆性陡降 |
+
+- **★ 核心结论：σ 驱动 M-DF + predictor–corrector 把 v1 的峰值高估 +16%/起裂偏晚 +32%
+  压到 +2.8%/+2.9%。** 直击 DECISION §2 (D3)：M-DF + 尺寸下限 h≤l₀/2 直接编码 Γ-收敛分辨
+  要求，predictor–corrector 在起裂**前**就把带打到分辨下限，消除 v1 标记滞后致的欠分辨。
+  与均匀全分辨参照在峰值/起裂/刚度三项均 5% 内吻合 —— **自适应解定量正确**，不再是 v1 的
+  定性正确。这是 [[surrogate_data_underresolved_hl0]] 欠分辨痛点的**定量治愈**。
+- **诚实标注**：
+  1. **本 run 是 M-DF 驱动（认证层 η_τ 未在本 run 算）**：坐实的是「σ 驱动加密 → 起裂前分辨
+     就位 → 峰值定量正确」。无常数严格可靠性界 Θ 的 primal 重解认证留 M3-strict（DECISION §3）。
+  2. **step22–23 DNF（maxit=200）**：最陡软化两步 staggered 未收敛（已知局部化极限环，
+     [[aux_niter_localization_degradation]]/[[staggered_acceleration_refs]]，与本文论点正交；
+     可由 Anderson 加速治，见 [[model2_anderson_resume_validated]]）。峰值在 step21（收敛步）、
+     陡降趋势稳健，不影响峰值/失效结论。
+  3. **墙钟 ~7h，瓶颈在失效段**：起裂前 21 步合计 ~分钟级；step22–24 三个失效步（iters 200/200/92、
+     corrector 6/8/7、网格涨到 56575 dofσ）占绝大部分墙钟（4830+9400+7865 s）。瓶颈是临界点
+     staggered 迭代 + 失效段大量加密，非装配。
+  4. **峰值仍轻微 +2.8%**：剩余高估来自带分辨仍是 h≈l₀/2 边界（非 ≪l₀），属 Γ-收敛理论残差，
+     可由 c_h 加严进一步压低；当前已达目标 ≤5%。
+### 诊断图（𝒟 / 网格 / 迭代 / 内存）
+
+![diagnostics](../figures/adaptive/m3pc_model1_diagnostics.png)
+
+四联图：(左上) 𝒟_max 驱动力随载荷单调上升（log）；(右上) NC 前期 predictor–corrector 大力加密
+（step2–3 各 8 corrector）、起裂前就位，失效段再涨；(左下) staggered iters 临界点爆炸、step22–23
+触 maxit=200 DNF；(右下) 峰值 RSS ≈1.99 GB（失效段网格涨到 56575 dofσ 时出现）。
+
+- **文件**：`fracturex/tests/aposteriori/run_m3_pc_model1.py`（runner，predictor–corrector +
+  checkpoint-restore）；`fracturex/tests/aposteriori/plot_m3_pc_model1.py`（出图，三曲线对账 +
+  诊断四联）；`fracturex/adaptivity/adaptive_staggered.py`
+  （`driving_force_per_cell`/`mark_driving_force`/`refine_masked`）；
+  数据 `results/adaptive_m3_pc_model1/`（history.csv + run.log + vtu/）；
+  图 `docs/figures/adaptive/m3pc_model1_{load_displacement,diagnostics}.png`。
+  标记单元测试 `test_marking_driving_force.py` PASS（套件 24/24 全绿）。
+- **结论**：**σ 驱动自适应（DECISION 主方案）端到端成立并定量正确**——峰值高估从 v1 的 +16%
+  降到 +2.8%，与均匀全分辨参照三项指标 5% 内吻合。下一步：(a) 接受态 primal 重解补严格 Θ 认证
+  （M3-strict）；(b) 失效段接 Anderson 加速消 DNF；(c) model2 剪切。
 
 ---
 

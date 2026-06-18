@@ -20,7 +20,68 @@
 | M3 full (model1) | 2026-06-13 | ✅ PASS | η_T 自适应加密耦合进真实 staggered，跑到裂纹贯通失效；峰值反力后陡降，内存 1.09 GB |
 | M3 PC v2 (model1) | 2026-06-14 | ✅ PASS | σ 驱动 M-DF + predictor–corrector：峰值反力高估 **+16%→+2.8%**、起裂 +32%→+2.9%，v1 欠分辨缺陷修复 |
 | M3 PC v3 (model1) | 2026-06-15 | ✅ PASS | Anderson 加速：墙钟 **6.98h→1.13h(6×)**、消 v2 step22 DNF，峰值更贴参照(**+2.8%→−1.5%**)；归因证松 tol 有害已弃 |
-| primal_real (a) | 2026-06-15 | 🔧 进行中 | 非-MMS 连续 primal 重解跑通(真实分量式 BC)；严格 η_τ：DG-u=0.039(循环虚低) vs 连续=0.617 |
+| primal_real (a) | 2026-06-15 | ✅ PASS | 非-MMS 连续 primal 重解跑通(真实分量式 BC)；严格 η_τ：DG-u=0.039(循环虚低) vs 连续=0.617 |
+| Phase 2 (du=1e-4) | 2026-06-18 | ✅ PASS（负结果） | 细化 du **不**让峰值收敛参照(−1.5%→+3.6%，跨参照两侧)⇒ 峰值本质路径依赖、报 ±4% 带；副产严格 η_τ 全程线性轨迹(slope≈124≈刚度)、η_τ/DG ~18–40× |
+
+---
+
+## Phase 2 (du=1e-4)：时间步细化检验峰值路径带 + 严格 η_τ 全程轨迹
+
+- **日期**：2026-06-18
+- **目的**：Phase 2（[PLAN_m3_pc_v3_certified.md](PLAN_m3_pc_v3_certified.md)）。检验 v3 诚实标注 #1
+  的「峰值 solver-path-sensitive、±3% 路径带」假说——若把载荷增量 du 从 2.5e-4 细化到 **1e-4**
+  （细 2.5×）峰值**收敛到**均匀参照，则 ±3% 带主要是**时间离散误差**（可控）；若峰值**不收敛**
+  而是换一条路径落到另一点，则坐实为局部化**本质路径依赖**（论文须报路径带而非单点）。
+  顺带开 `FRACTUREX_CERTIFY_EVERY=5`：每 5 个接受步做连续 primal 重解，白捡一条稀疏严格 η_τ 轨迹
+  喂 Phase 3（认证是接受态之后的纯诊断、不反馈进求解 ⇒ 不污染 du 对比的同质性）。
+- **配置**：与 v3 规范版**逐项一致**（nx=24/β=0.6/c_h=2.0/k_res=1e-6/Anderson depth=5/
+  松 tol 关 tol_coarse=tol_fine=1e-4/spsolve/numpy），**唯一变量 du：2.5e-4 → 1e-4**。NO_VTU。
+  失效停机同 v3（R<40%·peak_R 且 max_d>0.95）。
+- **结果（56 步，载荷 0→5.5e-3，墙钟 7h53m）**：
+
+  | 配置 | 峰值反力 | vs 参照(0.6306) | 峰值位移 | nsteps | 墙钟 |
+  |------|---------|--------|---------|------|------|
+  | 均匀 nx=120 参照 | 0.6306 | — | 5.10e-3 | — | — |
+  | du=2.5e-4（v3 规范） | 0.6214 | **−1.5%** | 5.00e-3 | 23 | 1.13h |
+  | **du=1e-4（本轮）** | **0.6536** | **+3.6%** | 5.30e-3 | 56 | 7.87h |
+
+  - **★ 头条（负结果，改论点）：细化 du 不让峰值收敛到参照，反而从 −1.5% 漂到 +3.6%。**
+    两个峰值**分居参照 0.6306 两侧**、都在 ±4% 带内。这**证伪了「±3% 带是时间离散误差、
+    可由细 du 压掉」的乐观假设**，坐实它是 staggered 在裂纹局部化的**本质路径依赖**
+    （du 改变载荷轨迹 ⇒ 改 H ⇒ 改驱动力/标记 ⇒ 改收敛峰值）。
+    **论文措辞结论**：峰值匹配报「**±4% 路径带**」而非单点，**不得**宣称「细化 du 收敛到参照」。
+    这是比单点匹配更诚实、也更强的陈述。
+
+  ![load-displacement du=1e-4 vs du=2.5e-4 vs ref](../figures/adaptive/m3pc_du_phase2_model1_load_displacement.png)
+
+  - **★ 副产：严格 η_τ 全程认证轨迹（每5步，11 个点）**——
+    η_τ **0.063 → 0.681 近完美线性**随载荷上升，过原点最小二乘 **slope≈124.1**，
+    几乎正是弹性段刚度（v2 dR/du=128.3、参照 134.1）——估计子量纲行为与物理刚度自洽，
+    额外健全性印证。η_τ/DG-η 比全程 **18.4–39.6×**，再次定量坐实 v2 诚实标注 #1
+    的 DG-u 循环虚低（DG-u 与 σ_h 同源 ⇒ 残差虚低）。这条轨迹可直接作 Phase 3 的
+    全程认证素材（虽稀疏）。
+
+  ![strict eta_tau trajectory](../figures/adaptive/m3pc_du_phase2_model1_eta_tau.png)
+
+  - **失效段仍是墙钟黑洞**：step54–55 两步合计 **21492s（占总 28356s 的 76%）**，
+    iters 62/48 + corrector 8/6、网格涨到 56330 dofσ。局部化迭代退化未根治
+    （[[aux_niter_localization_degradation]]），与 v3 一致，du 细化使失效段步数更多 ⇒ 总墙钟反升。
+  - **内存峰值 1974 MB**（`time -v` Maximum RSS=2021884 KB），与 v3 的 1812 MB 同量级，机器无压力。
+- **诚实标注**：
+  1. **du=1e-4 峰值 +3.6% 略大于 v3 的 −1.5% 的绝对值**——非「更差」，是路径带的另一端；
+     两者算术平均 0.637 距参照 +1.0%。关键论点是**带宽 ~±4%、不随 du 收窄**，非哪一端更优。
+  2. **η_τ 绝对量仍 ~O(R)（偏大）**：同 primal_real 标注——预裂纹带 d=1 ⇒ g=k_res=1e-6 ⇒
+     g⁻¹=1e6 放大尖端欠分辨残差，η_τ 被尖锐预裂纹尖端主导，绝对界**松**。η_τ 作保证型上界
+     （reliability 常数=1）可用；效率 Θ=η/err 仍需细网格 surrogate truth（真实算例无解析解），
+     **留下步**。
+  3. η_τ 轨迹**稀疏**（每5步），非每步认证——足够坐实单调线性 + 比值，全程逐步认证太贵。
+- **文件**：数据 `results/adaptive_m3_pc_model1_du1e4/`（history.csv + run.log）；
+  runner 同 `run_m3_pc_model1.py`（env FRACTUREX_DU=1e-4 / CERTIFY_EVERY=5 / NO_VTU=1）；
+  出图 `tests/aposteriori/plot_du_phase2_model1.py`；
+  图 `docs/figures/adaptive/m3pc_du_phase2_model1_{load_displacement,eta_tau}.png`。
+- **结论**：Phase 2 钉死一个论点——**峰值匹配是 ±4% 路径带、非可收敛的时间离散误差**，论文据此
+  改措辞。严格 η_τ 全程轨迹（线性、slope≈刚度、~20–40× 揭穿 DG-u）打通 Phase 3 认证素材。
+  **剩**：效率 Θ 仍需细网格 surrogate-truth 参照真解（真实裂纹无解析解）——Phase 3 最后一块。
 
 ---
 
@@ -56,8 +117,8 @@
 - **文件**：`adaptivity/primal_resolve_real.py`、`adaptive_staggered.py`(eta_from_state u_override)、
   `run_m3_pc_model1.py`(FRACTUREX_CERTIFY_EVERY)、`tests/aposteriori/_dev_test_primal_real.py`(自测)。
 - **结论（阶段）**：严格 η_τ 通路打通、格式一致、循环虚低被揭穿。**剩**：(1) 接受态 surrogate-truth
-  效率 Θ 评估；(2) 全程认证轨迹长 run（待 Phase 2 du run 腾出机器）；(3) (iv)(v) 联合标记/起裂后
-  η-Dörfler 作 Discussion。
+  效率 Θ 评估；(2) 全程认证轨迹长 run（**已由 2026-06-18 Phase 2 du=1e-4 run 补上稀疏每5步
+  η_τ 轨迹**，见上节）；(3) (iv)(v) 联合标记/起裂后 η-Dörfler 作 Discussion。
 
 ---
 

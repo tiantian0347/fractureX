@@ -1,9 +1,21 @@
+"""Hu-Zhang 混合元的边界条件工具与施加器。
+
+包含：
+  - 边界实体选择解析 ``boundary_entity_mask`` / ``build_isNedge_from_isD``；
+  - ``HuzhangBoundaryCondition``：把位移 Dirichlet 边界（应力试函数的自然边界项）装配进
+    σ 方程右端；
+  - ``HuzhangStressBoundaryCondition``：把 ΓN 上给定的 traction/应力投影到 σ 空间边界
+    自由度，作为本质边界条件强加到系统。
+"""
+from scipy.sparse import spdiags
+
 from fealpy.backend import backend_manager as bm
 from fealpy.typing import TensorLike, CoefLike, Threshold
 
 
 
 def _as_1d(arr):
+    """把数组展平为一维（已是一维则原样返回）。"""
     arr = bm.asarray(arr)
     if arr.ndim > 1:
         arr = arr.reshape(-1)
@@ -134,7 +146,13 @@ def build_isNedge_from_isD(mesh, isD_bd, tol=1e-9):
 
 # displacement Boundary condition for Huzhang model
 class HuzhangBoundaryCondition:
+    """位移 Dirichlet 边界条件施加器：装配 σ 方程右端的位移自然边界项 ``∫_Γ (φ·n)·g``。"""
+
     def __init__(self, space, q=None):
+        """Args:
+            space: Hu-Zhang 应力有限元空间。
+            q: 面积分阶；自动取至少 ``p+4``。
+        """
         self.space = space
         self.mesh = space.mesh
         self.p = space.p
@@ -143,11 +161,13 @@ class HuzhangBoundaryCondition:
 
 
     def apply(self, u):
+        """把边界值直接写到边界节点（便捷接口）。输入/返回解向量 ``u``。"""
         # Apply boundary condition to the boundary nodes
         u[self.mesh.boundary_nodes] = self.value
         return u
 
     def __call__(self, u):
+        """使实例可调用，等价于 :meth:`apply`。"""
         return self.apply(u)
     
     def displacement_boundary_condition(self, value=0.0, threshold=None, direction=None, piecewise=None, coef=None):
@@ -176,6 +196,16 @@ class HuzhangBoundaryCondition:
         return r
     
     def _displacement_bc_one_piece(self, value, threshold, direction, coef=None):
+        """装配单段位移边界对 σ 方程右端的贡献。
+
+        Args:
+            value: 边界位移值（常数或 ``value(points)`` 函数）。
+            threshold: 边界面选择（callable/mask/index）。
+            direction: 施加方向 ``'x'``/``'y'``/``'z'`` 或 None（全分量）。
+            coef: 可选边界权重（如 effective-stress 的 ``g(d)``）。
+        Returns:
+            该段的载荷向量 ``(gdof_sigma,)``。
+        """
         mesh, space = self.mesh, self.space
         q = self.q
 
@@ -371,6 +401,11 @@ class HuzhangStressBoundaryCondition:
     """
 
     def __init__(self, space, q=None, debug=False):
+        """Args:
+            space: Hu-Zhang 应力有限元空间。
+            q: 面积分阶；自动取至少 ``p+4``。
+            debug: 是否打印边界/角点一致性诊断。
+        """
         self.space = space
         self.mesh = space.mesh
         self.p = space.p
@@ -413,7 +448,7 @@ class HuzhangStressBoundaryCondition:
         # 2) 扩展到全系统
         total_dof = A.shape[0]
         uh_global = bm.zeros((total_dof,), dtype=F.dtype if hasattr(F, "dtype") else bm.float64)
-        isbddof_global = bm.zeros((total_dof,), dtype=bm.bool_)
+        isbddof_global = bm.zeros((total_dof,), dtype=bm.bool)
 
         s0 = int(sigma_offset)
         s1 = int(sigma_offset + sigma_gdof)
@@ -479,6 +514,18 @@ class HuzhangStressBoundaryCondition:
         return uh, isBdDof
 
     def _apply_one_piece(self, uh, isBdDof, gd, threshold, coord, comp=None):
+        """把单段 ΓN 上的 traction/应力投影到 σ 边界自由度（累加/覆盖到 ``uh``、``isBdDof``）。
+
+        Args:
+            uh: σ 全局自由度上的边界值数组（就地更新）。
+            isBdDof: σ 边界自由度布尔掩码（就地更新）。
+            gd: 边界数据，``(...,3)`` 视为 Voigt 应力、``(...,2)`` 视为向量。
+            threshold: ΓN 边选择（callable/mask/index）。
+            coord: ``'auto'``/``'xy'``/``'nt'``，向量数据的坐标约定。
+            comp: 施加分量 ``None``（全部）/``'n'``/``'t'``。
+        Returns:
+            更新后的 ``(uh, isBdDof)``。
+        """
         space = self.space
         mesh = self.mesh
 

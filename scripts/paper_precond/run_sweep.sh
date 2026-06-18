@@ -2,7 +2,7 @@
 # Parameter sweep for the D12 preconditioner paper.
 #
 # Drives ``python -m fracturex.tests.precond_sweep`` over the matrix described
-# in docs/D12_PRECONDITIONER_PAPER_PLAN.md §4. Reuses the env-bootstrap from
+# in docs/preconditioner/D12_PRECONDITIONER_PAPER_PLAN.md §4. Reuses the env-bootstrap from
 # scripts/paper_huzhang/env.sh so no virtualenv activation is needed.
 #
 # Usage from repo root:

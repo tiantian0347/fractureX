@@ -1,3 +1,12 @@
+"""Hu-Zhang 混合元 + 局部节点损伤的自含交错求解器（2D）。
+
+提供 ``DamageModelBase`` 损伤模型接口、其局部节点实现 ``LocalNodeDamage``（Rankine/von
+Mises/主应变准则 + 指数型不可逆损伤律），以及通用断裂求解器 ``HuZhangFractureSolver2D``
+（装配应力-位移鞍点系统、施加位移/应力边界、交错迭代到收敛）。
+
+注：本模块内的 ``DamageModelBase``/``LocalNodeDamage`` 是该自含求解器的独立版本，与
+``fracturex.damage`` 包内的同名实现并行存在、互不依赖。
+"""
 import numpy as np
 from dataclasses import dataclass
 
@@ -24,7 +33,10 @@ from fealpy.functionspace.huzhang_fe_space_2d import HuZhangFESpace2d
 # ---------------------------
 
 class DamageModelBase:
+    """损伤模型接口基类：约定离散建立、退化系数、损伤更新等钩子。"""
+
     def setup(self, mesh, p, *, device=None):
+        """在给定网格/次数上建立损伤场与历史变量（子类实现）。"""
         raise NotImplementedError
 
     def coef_bary(self, bcs, index=None):
@@ -41,15 +53,27 @@ class DamageModelBase:
         raise NotImplementedError
 
     def residual(self, sigmah, uh):
+        """（monolithic Newton 预留）返回损伤方程残差，子类实现。"""
         raise NotImplementedError
 
     def jacobian(self, sigmah, uh):
+        """（monolithic Newton 预留）返回损伤方程 Jacobian，子类实现。"""
         raise NotImplementedError
 
 
 class LocalNodeDamage(DamageModelBase):
+    """局部节点损伤模型：按等效应力准则演化不可逆损伤 ``d``。"""
+
     def __init__(self, *, ft, Hd, eps=1e-12, gtype="inv",
                  criterion="rankine", lam=None, mu=None):
+        """Args:
+            ft: 抗拉强度阈值。
+            Hd: 软化/调和参数。
+            eps: 退化下限，防刚度为零。
+            gtype: 退化函数类型标记。
+            criterion: 等效应力准则 ``'rankine'`` | ``'vmises'`` | ``'pstrain'``。
+            lam, mu: Lamé 参数（``pstrain`` 准则反算应变时需要）。
+        """
         self.ft = float(ft)
         self.Hd = float(Hd)
         self.eps = float(eps)
@@ -65,12 +89,14 @@ class LocalNodeDamage(DamageModelBase):
 
     # ---------- 等效量：2D ----------
     def _vmises_2d(self, sig):
+        """2D von Mises 等效应力。输入 Voigt 应力 ``(..., 3)``，返回标量场。"""
         sxx = sig[..., 0]
         sxy = sig[..., 1]
         syy = sig[..., 2]
         return bm.sqrt(sxx**2 - sxx*syy + syy**2 + 3.0*sxy**2)
 
     def _principal_stress_max_2d(self, sig):
+        """2D 最大主应力（Rankine，取拉主应力）。输入 Voigt 应力 ``(..., 3)``。"""
         sxx = sig[..., 0]
         sxy = sig[..., 1]
         syy = sig[..., 2]
@@ -116,6 +142,13 @@ class LocalNodeDamage(DamageModelBase):
         return bm.maximum(e1, e2)
 
     def equiv_measure(self, sig):
+        """按 ``self.criterion`` 分派计算等效应力/应变度量。
+
+        Args:
+            sig: Voigt 应力 ``(..., 3)``。
+        Returns:
+            等效标量场（Rankine 主应力 / von Mises / 主应变）。
+        """
         c = self.criterion
         if c in ("rankine", "max_principal_stress", "s1"):
             return self._principal_stress_max_2d(sig)
@@ -128,6 +161,14 @@ class LocalNodeDamage(DamageModelBase):
 
     # ---------- damage update ----------
     def update_after_elastic(self, sigmah, uh):
+        """弹性解后更新节点损伤：等效应力 → 不可逆历史 → 指数损伤律，``d`` 单调不减。
+
+        Args:
+            sigmah: 应力有限元函数（可在节点处求值，返回 Voigt ``(NN, 3)``）。
+            uh: 位移有限元函数（当前实现未直接使用）。
+        Returns:
+            更新后的损伤场 ``self.dh``。
+        """
         mesh = self.spaced.mesh
         node = mesh.entity("node")      # (NN,2)
 
@@ -160,7 +201,16 @@ class LocalNodeDamage(DamageModelBase):
 # ---------------------------
 
 class HuZhangFractureSolver2D:
+    """2D Hu-Zhang 混合元断裂求解器：装配鞍点系统并与损伤模型交错求解。"""
+
     def __init__(self, case, *, p=4, q=None, use_relaxation=True, debug=False):
+        """Args:
+            case: 算例对象（提供网格、材料参数、边界与载荷步）。
+            p: 应力空间多项式次数（位移用 ``p-1``）。
+            q: 积分阶，缺省 ``p+3``。
+            use_relaxation: 是否使用角点松弛变换。
+            debug: 是否打印收敛诊断。
+        """
         self.case = case
         self.p = int(p)
         self.q = int(q) if q is not None else self.p + 3
@@ -177,6 +227,14 @@ class HuZhangFractureSolver2D:
         self.damage = None  # DamageModelBase 实例
 
     def setup(self, N, damage_model: DamageModelBase):
+        """建立网格、应力/位移空间与损伤模型。
+
+        Args:
+            N: 网格规模参数（传给 ``case.make_mesh``）。
+            damage_model: 损伤模型实例。
+        Returns:
+            构建好的网格对象。
+        """
         mesh = self.case.make_mesh(N)
         self.mesh = mesh
 
@@ -199,6 +257,14 @@ class HuZhangFractureSolver2D:
         return mesh
 
     def solve_elastic_once(self, load_value):
+        """在固定损伤下求解一次弹性鞍点系统，更新 ``self.sigmah``、``self.uh``。
+
+        装配 ``M(d)``、混合块 ``B``、（可选）角点松弛变换，施加位移 Dirichlet 与
+        应力本质边界后直接求解。
+
+        Args:
+            load_value: 当前载荷值（用于生成位移边界）。
+        """
         mesh = self.mesh
         gdof0 = self.space0.number_of_global_dofs()
         gdof1 = self.space1.number_of_global_dofs()
@@ -271,6 +337,16 @@ class HuZhangFractureSolver2D:
         self.uh[:] = bm.tensor(uval)
 
     def run_staggered(self, N, damage_model, *, max_inner=30, tol=1e-6):
+        """对所有载荷步运行交错求解（弹性 ↔ 损伤）。
+
+        Args:
+            N: 网格规模参数。
+            damage_model: 损伤模型实例。
+            max_inner: 每个载荷步内最大交错迭代数。
+            tol: 相对增量收敛容差。
+        Returns:
+            ``(sigmah, uh, dh)``：最终应力、位移、损伤场。
+        """
         self.setup(N, damage_model)
 
         loads = self.case.load_steps()

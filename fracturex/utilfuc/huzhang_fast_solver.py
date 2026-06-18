@@ -1,3 +1,17 @@
+"""Hu-Zhang 混合元快速求解器原型（实验脚本）。
+
+本文件是基于正交 Hu-Zhang / H1 / L2 空间（``orthogonal_*`` 包外模块）搭建的快速求解器
+原型：用块预处理 GMRES 求解鞍点系统 ``[[M, B], [B^T, 0]]``，Schur 补 ``S=B^T M^{-1} B``
+通过 Gauss-Seidel / Chebyshev 磨光 + P1 粗空间（pyamg）校正来近似求逆，并实现了顶点/边
+patch 预处理子供对比。
+
+注意：
+  - 顶部依赖 ``orthogonal_hzfe_space`` / ``orthogonal_L2fe_space`` / ``orthogonal_fe_space``
+    / ``smoother`` 等**不在 fracturex 包内**的模块，无法直接 import，仅作研究草稿留存。
+  - 文件含大量被注释掉的探索性代码与若干重复定义（如两处 ``pre_of_S``，后者覆盖前者）。
+    本次仅补文档说明输入/输出，未改动任何逻辑。
+  - 生产环境的 Hu-Zhang 块/辅助空间求解器见 ``fracturex/utilfuc/linear_solvers.py``。
+"""
 from typing import Optional, TypeVar, Union, Generic, Callable
 from fealpy.typing import TensorLike, Index, _S, Threshold
 
@@ -31,6 +45,14 @@ import matplotlib.tri as mtri
 iter_count = 0
 
 def mumps_solve(A, b):
+    """用 MUMPS 直接法求解 ``A x = b``。
+
+    Args:
+        A: 稀疏系数矩阵（中心化稀疏格式，``(n, n)``）。
+        b: 右端向量 ``(n,)``。
+    Returns:
+        解向量 ``x``，``(n,)``。
+    """
     from mumps import DMumpsContext
     from scipy.sparse import coo_matrix
     x = b.copy()
@@ -236,6 +258,13 @@ def optimal_decomposition(S_diag, v):
 
 
 def plot_optimal_decomposition(space, S, v):
+    """对向量 ``v`` 做顶点 patch 的最优分解并逐顶点绘制局部分量（调试可视化）。
+
+    Args:
+        space: 有限元空间（提供网格与 ``function()``）。
+        S: 顶点预处理所用的算子矩阵。
+        v: 待分解的全局向量。
+    """
     import matplotlib.pyplot as plt
 
     S_diag = vertex_preconditioner(space, S)
@@ -273,7 +302,12 @@ def plot_on_tri_lattice(x, y, z, axes):
     axes.set_zlabel('z')
 
 def plot_function(uh, com):
+    """把有限元函数 ``uh`` 逐单元采样并以三角面片 3D 曲面绘制。
 
+    Args:
+        uh: 有限元函数（带 ``.space``）。
+        com: 分量索引（当前实现按标量值绘制）。
+    """
     fig1 = plt.figure(figsize=(8,6))
     axes = fig1.add_subplot(111, projection='3d')
 
@@ -291,6 +325,15 @@ def plot_function(uh, com):
         plot_on_tri_lattice(ptsc[:,0], ptsc[:,1], valsc, axes)
 
 def vertex_dof_collocation(space, alldof = True):
+    """构造"顶点 → 相关自由度"的关联矩阵（顶点 patch 预处理的索引基础）。
+
+    Args:
+        space: 有限元空间。
+        alldof: True 时每个顶点收集单元内全部局部自由度；False 时按 node/edge/cell
+            的内部自由度划分，只保留归属该顶点的部分。
+    Returns:
+        ``vertex_dof``：``(NN, gdof)`` CSR 0/1 矩阵，第 i 行非零列即与顶点 i 关联的自由度。
+    """
     p  = space.p
     NN = space.mesh.number_of_nodes()
     NC = space.mesh.number_of_cells()
@@ -568,8 +611,30 @@ def project_space_to_huzhang(uspace0, uspace):
     return M.tocsr()
 
 class HZFEMFastSolve():
+    """Hu-Zhang 混合元鞍点系统的块预处理 GMRES 快速求解器（原型）。
+
+    组装质量矩阵 ``M``（应力块，柔度本构）、混合矩阵 ``B``（散度耦合）及右端，
+    构造 Schur 补 ``S=B^T M^{-1} B`` 的多层/顶点预处理子，最终用预处理 GMRES 求解
+    ``[[M, B], [B^T, 0]] [σ; u] = [a; -b]``。
+
+    主要属性：
+        M, D: 应力质量矩阵及其（对角）元素，``D_inv`` 为对角逆，用于近似 ``M^{-1}``。
+        B, BT: 散度混合矩阵及其转置。
+        S: Schur 补 ``B^T M^{-1} B``（间断元刚度阵）。
+        PI, PIT: 位移空间到 P1 粗空间的投影及其转置。
+        F: 右端向量，前 ``sgdof`` 为应力边界项，后段为 ``-source``。
+        pre_of_S: Schur 补预处理子闭包（Chebyshev/GS 磨光 + 粗空间校正）。
+    """
 
     def __init__(self, pde, mesh, p, smooth_num=20):
+        """构造求解器并预组装所有矩阵、预处理子。
+
+        Args:
+            pde: 提供 ``lambda0``/``lambda1`` 本构参数与 ``source``/``displacement`` 的 PDE 对象。
+            mesh: 三角形网格。
+            p: Hu-Zhang 应力空间多项式次数（位移空间用 ``p-1``）。
+            smooth_num: 磨光迭代次数（保存为 ``self.smooth_num``）。
+        """
         self.p   = p
         self.pde = pde
         self.mesh = mesh
@@ -810,6 +875,7 @@ class HZFEMFastSolve():
         #exit()
 
     def get_fast_solver_of_coarse_schur(self):
+        """组装 P1 粗空间 Laplacian（带零 Dirichlet）并建立 pyamg 层次，存入 ``self.S_``/``self.ml``。"""
         space = self.uspace0
 
         bform = BilinearForm(space)
@@ -826,6 +892,13 @@ class HZFEMFastSolve():
         #self.ml = MumpsSolver(S_) 
 
     def linear_operator(self, b):
+        """鞍点系统的 matvec：``[M b0 + B b1; B^T b0]``。
+
+        Args:
+            b: 输入向量 ``(gdof,)``，前 ``sgdof`` 为应力分量，其余为位移分量。
+        Returns:
+            ``A @ b``，``(gdof,)``。
+        """
         t0 = time.time()
         m = self.sgdof
         r = bm.zeros_like(b)
@@ -836,14 +909,26 @@ class HZFEMFastSolve():
         return r
 
     def preconditioner_of_S(self, r1):
+        """Schur 补预处理子 ``B_S r1 ≈ S^{-1} r1``（调用 ``self.pre_of_S``）。"""
         e2 = self.pre_of_S(r1)
         return e2
 
     def preconditioner_of_S0(self, r1):
+        """Schur 补的精确求逆（MUMPS 直接法），用作对照基准。"""
         e1 = mumps_solve(self.S, r1)
         return e1
 
     def precondieitoner(self,r):
+        """GMRES 的块下三角预处理子（注意：方法名沿用原拼写）。
+
+        实现 ``[e0; -e1] = [D^{-1} r0 + D^{-1} B B_S r1'; -B_S r1']``，
+        其中 ``r1' = r1 - B^T D^{-1} r0``。
+
+        Args:
+            r: 残差 ``(gdof,)``（应力段 + 位移段）。
+        Returns:
+            预处理后的向量 ``(gdof,)``。
+        """
         t0 = time.time()
         r = r.astype(bm.float64)
         sgdof = self.sgdof
@@ -863,6 +948,13 @@ class HZFEMFastSolve():
         return bm.concatenate([e0, -e1])
 
     def preconditioner_minres(self,r):
+        """MINRES 的对称块对角预处理子 ``[D^{-1} r0; B_S r1]``。
+
+        Args:
+            r: 残差 ``(gdof,)``。
+        Returns:
+            预处理后的向量 ``(gdof,)``。
+        """
         t0 = time.time()
         r = r.astype(bm.float64)
         sgdof = self.sgdof
@@ -878,9 +970,15 @@ class HZFEMFastSolve():
         return bm.concatenate([e0, e1])
         
     def solve(self):
+        """用预处理 GMRES 求解鞍点系统并拆分出各场。
+
+        Returns:
+            ``(sigmah, uhx, uhy)``：Hu-Zhang 应力有限元函数，以及位移的 x/y 两个分量
+            （分别为 ``uspace`` 上的有限元函数）。
+        """
         sgdof = self.sgdof
         ugdof = self.ugdof
-        gdof  = self.gdof 
+        gdof  = self.gdof
         print("总自由度：", gdof)
         print("非零元个数：", (self.M!=0).sum() + (self.B!=0).sum() + (self.BT!=0).sum())
         F = self.F
@@ -911,12 +1009,19 @@ class HZFEMFastSolve():
         return sigmah, uhx, uhy
 
     def count_iter(self, x):
+        """GMRES 回调：累加全局迭代计数并打印当前残差信息。"""
         global iter_count
         iter_count += 1
         print(f'iter count = {iter_count}, residual = {bm.max(bm.abs(x))}')
         print("---------------------------------------------------------------------------------------")
 
     def mass_matrix(self):
+        """组装 Hu-Zhang 应力质量矩阵（柔度本构 ``A=C^{-1}``）。
+
+        Returns:
+            ``(A, D)``：``A`` 为 ``(sgdof, sgdof)`` 稀疏质量矩阵，``D`` 为 ``(sgdof,)``
+            的对角元素向量（供构造对角近似 ``M^{-1}`` 用）。
+        """
         lambda0 = self.pde.lambda0
         lambda1 = self.pde.lambda1
         space = self.sspace
@@ -951,6 +1056,11 @@ class HZFEMFastSolve():
         return A, D
 
     def mix_matrix(self):
+        """组装散度混合矩阵 ``B``，耦合应力散度与（向量）位移。
+
+        Returns:
+            ``B``：``(sgdof, ugdof*2)`` 稀疏矩阵，两个位移分量按列拼接。
+        """
         space0 = self.sspace
         space1 = self.uspace
 
@@ -981,6 +1091,14 @@ class HZFEMFastSolve():
         return B.tocsr()
 
     def source_vector(self, space : LagrangeFESpace, f : callable):
+        """组装向量体力载荷向量 ``∫ f·v``。
+
+        Args:
+            space: 位移有限元空间（标量基，向量分量按 ``gdof`` 偏移拼接）。
+            f: 体力函数，输入物理坐标 ``(..., 2)``，返回 ``(..., 2)``。
+        Returns:
+            载荷向量 ``r``，``(gdof*2,)``。
+        """
         p = space.p
         mesh = space.mesh
         gdof = space.number_of_global_dofs()
@@ -1002,6 +1120,16 @@ class HZFEMFastSolve():
         return r
 
     def displacement_boundary_condition(self, space, g : callable):
+        """组装应力空间上的位移 Dirichlet 边界项 ``∫_Γ (φ·n)·g``。
+
+        在 Hu-Zhang 混合格式中，位移边界条件是应力试函数的自然边界项。
+
+        Args:
+            space: Hu-Zhang 应力有限元空间。
+            g: 给定边界位移函数，输入物理坐标 ``(..., 2)``，返回 ``(..., 2)``。
+        Returns:
+            边界载荷向量 ``r``，``(sgdof,)``。
+        """
         p = space.p
         mesh = space.mesh
         TD = mesh.top_dimension()

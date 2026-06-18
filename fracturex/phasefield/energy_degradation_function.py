@@ -1,4 +1,13 @@
+"""能量退化函数 ``g(d)`` 及其一/二阶导（quadratic、thrice、用户自定义）。
+
+退化函数把损伤 ``d∈[0,1]`` 映射到刚度折减系数 ``g(d)``（``d=0`` 完好 → ``g≈1``，
+``d=1`` 完全破坏 → ``g≈0``），各实现加了 ``eps`` 下限防止刚度退化为零。
+"""
+
+
 class EnergyDegradationFunction:
+    """能量退化函数族的统一接口，按 ``degradation_type`` 分派到对应实现。"""
+
     def __init__(self, degradation_type='quadratic', **kwargs):
         """
         Initialize the energy degradation function module.
@@ -31,14 +40,16 @@ class EnergyDegradationFunction:
             raise ValueError(f"Unknown degradation type: {self.degradation_type}")
 
     def grad_degradation_function(self, d):
+        """退化函数一阶导 ``g'(d)``。输入相场值 ``d``，返回 ``g'(d)``。"""
         if self.degradation_type == 'quadratic':
             return self._quadratic_grad_degradation(d)
         elif self.degradation_type == 'user_defined':
             return self._user_defined_grad_degradation(d)
         else:
             raise ValueError(f"Unknown degradation type: {self.degradation_type}")
-        
+
     def grad_grad_degradation_function(self, d):
+        """退化函数二阶导 ``g''(d)``。输入相场值 ``d``，返回 ``g''(d)``。"""
         if self.degradation_type == 'quadratic':
             return self._quadratice_grad_grad_degradation(d)
         elif self.degradation_type == 'user_defined':

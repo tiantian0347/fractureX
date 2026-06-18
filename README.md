@@ -140,8 +140,8 @@ python -m fracturex.tests.phasefield_model0_huzhang
 
 ## Documentation
 
-- **FractureX overall introduction (Chinese)**: [docs/huzhang_phasefield_architecture.md](docs/huzhang_phasefield_architecture.md). This now covers repository architecture, technical routes, core abstractions, and keeps Hu–Zhang + phase-field as a key section.
-- **Hu–Zhang mixed element + phase-field focused version (English)**: [docs/huzhang_phasefield_architecture.en.md](docs/huzhang_phasefield_architecture.en.md).
+- **FractureX overall introduction (Chinese)**: [docs/architecture/huzhang_phasefield_architecture.md](docs/architecture/huzhang_phasefield_architecture.md). This now covers repository architecture, technical routes, core abstractions, and keeps Hu–Zhang + phase-field as a key section.
+- **Hu–Zhang mixed element + phase-field focused version (English)**: [docs/architecture/huzhang_phasefield_architecture.en.md](docs/architecture/huzhang_phasefield_architecture.en.md).
 - After refactors, run `python3 scripts/verify_huzhang_docs.py` to ensure listed paths still exist.
 
 ## Contact

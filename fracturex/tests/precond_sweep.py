@@ -4,7 +4,7 @@ Runs a single elastic block-system solve at a frozen damage field and reports
 metrics to stdout (one CSV line) or appends to a CSV file. Intended to be driven
 from a shell script (see ``scripts/paper_precond/run_sweep.sh``) that loops over
 the full parameter matrix described in
-``docs/D12_PRECONDITIONER_PAPER_PLAN.md`` §4.
+``docs/preconditioner/D12_PRECONDITIONER_PAPER_PLAN.md`` §4.
 
 Usage (single run):
     python -m fracturex.tests.precond_sweep \\
@@ -152,6 +152,24 @@ def _solve_aux(weighted: bool, formulation: str) -> Callable:
     return _impl
 
 
+def _solve_aux_fast(formulation: str) -> Callable:
+    """论文主 aux 列：fast 对称两层 V-cycle 辅助空间预条件子（见 D12 §3.2）。"""
+    def _impl(A, b, *, discr, damage, **_):
+        x, info = solve_huzhang_block_gmres_fast(
+            A, b,
+            gdof_sigma=discr.gdof_sigma,
+            vspace=discr.space_u,
+            atol=1e-12, rtol=1e-8, restart=60, maxit=400, q=3,
+            precond_rebuild_interval=1,       # 单解扫描：每解重建，干净
+            schur_precond="auto",
+            weighted_aux=True,
+            elastic_formulation=formulation,
+            damage=damage, state=discr.state,
+        )
+        return x, int(info.niter), bool(info.converged), float(info.residual_norm)
+    return _impl
+
+
 def _solve_block_gmres(A, b, *, discr, **_) -> Tuple[np.ndarray, int, bool, float]:
     x, info = solve_huzhang_block_gmres(
         A, b, gdof_sigma=discr.gdof_sigma, rtol=1e-8, atol=0.0, maxit=400
@@ -229,6 +247,7 @@ def run_once(args: argparse.Namespace) -> SweepRecord:
         "block_gmres": _solve_block_gmres,
         "aux_unweighted": _solve_aux(weighted=False, formulation=args.formulation),
         "aux_weighted": _solve_aux(weighted=True, formulation=args.formulation),
+        "aux_fast": _solve_aux_fast(formulation=args.formulation),
     }
     if args.algorithm not in algo_map:
         raise SystemExit(f"unknown --algorithm={args.algorithm}; choices={list(algo_map)}")
@@ -272,8 +291,8 @@ def main(argv: Optional[list] = None) -> int:
     p.add_argument("--case", default="model0", choices=list(CASE_BUILDERS))
     p.add_argument(
         "--algorithm",
-        default="aux_weighted",
-        choices=["direct", "ilu_gmres", "block_gmres", "aux_unweighted", "aux_weighted"],
+        default="aux_fast",  # 默认用最优算法：fast 对称两层 V-cycle 辅助空间预条件子
+        choices=["direct", "ilu_gmres", "block_gmres", "aux_unweighted", "aux_weighted", "aux_fast"],
     )
     p.add_argument("--formulation", default="standard", choices=["standard", "effective_stress"])
     p.add_argument("--hmin", type=float, default=0.02)

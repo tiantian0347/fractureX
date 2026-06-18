@@ -1,7 +1,7 @@
 # fracturex/utilfuc/recover_strain.py
 """Recover strain from Hu-Zhang stress: ε^h = A(d) σ.
 
-See docs/plan_operator_learning.md §3.3' (history field discretization).
+See docs/operator_learning/plan_operator_learning.md §3.3' (history field discretization).
 """
 from __future__ import annotations
 from typing import Optional
@@ -80,6 +80,7 @@ def recover_strain_from_sigma(
 
 
 def _macaulay(x: np.ndarray):
+    """Macaulay 括号：返回 ``(⟨x⟩₊, ⟨x⟩₋)`` 即正部与负部。输入标量或数组 ``x``。"""
     ax = np.abs(x)
     return 0.5 * (x + ax), 0.5 * (x - ax)
 

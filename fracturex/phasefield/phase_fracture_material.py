@@ -1,3 +1,14 @@
+"""相场断裂本构模型（基于位移的相场框架）。
+
+定义损伤耦合的弹性本构家族：有效应力、退化应力/切线刚度、正负能量分裂与不可逆历史场。
+各向同性（Isotropic）、谱分解（Spectral）、混合（Hybrid）模型已实现；各向异性
+（Anisotropic）、偏量（Deviatoric）为占位 stub。``PhaseFractureMaterialFactory`` 按名字
+创建对应模型。
+
+约定：``bc`` 为重心坐标；应变/应力张量形状一般为 ``(NC, NQ, GD, GD)``，能量密度为
+``(NC, NQ)``。注意本模块属基于位移的相场实现，与 Hu-Zhang 混合元侧的
+``fracturex.damage.phasefield_damage`` 各自独立。
+"""
 from typing import Optional
 
 from fealpy.typing import TensorLike
@@ -9,11 +20,19 @@ from fealpy.decorator import barycentric
 from fracturex.utilfuc.utils import flatten_symmetric_matrices
 
 class BasedPhaseFractureMaterial(LinearElasticMaterial):
+    """相场断裂本构基类：持有材料参数、退化函数及当前位移/损伤/历史场状态。
+
+    子类需实现 ``stress_value``、``elastic_matrix`` 等给出具体的退化应力与切线刚度。
+    """
+
     def __init__(self, material, energy_degradation_fun):
         """
         Parameters
         ----------
-        material : 材料参数
+        material : dict
+            材料参数，需含 ``{'lam','mu'}`` 或 ``{'E','nu'}``。
+        energy_degradation_fun :
+            能量退化函数对象 ``g(d)``（提供 ``degradation_function`` 等）。
         """
         self._gd = energy_degradation_fun # 能量退化函数
         if 'lam' in material and 'mu' in material:
@@ -35,12 +54,15 @@ class BasedPhaseFractureMaterial(LinearElasticMaterial):
         self.H = None # 谱分解模型下的最大历史场
 
     def update_disp(self, uh):
+        """更新当前位移场 ``self.uh``（输入有限元位移函数 ``uh``）。"""
         self.uh = uh
 
     def update_phase(self, d):
+        """更新当前损伤场 ``self.d``（输入损伤有限元函数 ``d``）。"""
         self.d = d
 
     def update_historical_field(self, H):
+        """更新最大历史场 ``self.H``（输入历史场张量 ``H``）。"""
         self.H = H
 
     @ barycentric
@@ -109,6 +131,8 @@ class BasedPhaseFractureMaterial(LinearElasticMaterial):
 
 
 class IsotropicModel(BasedPhaseFractureMaterial):
+    """各向同性退化模型：应力与切线刚度整体乘以退化因子 ``g(d)``，不做拉压分裂。"""
+
     @ barycentric
     def stress_value(self, bc=None) -> TensorLike:
         """
@@ -171,11 +195,15 @@ class IsotropicModel(BasedPhaseFractureMaterial):
         return flat_stress
     
 class AnisotropicModel(BasedPhaseFractureMaterial):
+    """各向异性退化模型（占位，未实现）。"""
+
     def stress_value(self, bc) -> TensorLike:
+        """各向异性模型应力（未实现）。输入重心坐标 ``bc``。"""
         # 计算各向异性模型下的应力
         pass
 
-    def elastic_matrix(self, bc) -> TensorLike: 
+    def elastic_matrix(self, bc) -> TensorLike:
+        """各向异性模型切线刚度（未实现）。输入重心坐标 ``bc``。"""
         # 计算各向异性模型下的切线刚度矩阵
         pass
 
@@ -206,11 +234,15 @@ class AnisotropicModel(BasedPhaseFractureMaterial):
         pass
 
 class DeviatoricModel(BasedPhaseFractureMaterial):
+    """偏量/体积分裂退化模型（占位，未实现）。"""
+
     def stress_value(self, bc) -> TensorLike:
+        """偏量模型应力（未实现）。输入重心坐标 ``bc``。"""
         # 计算偏应力模型下的应力
         pass
 
-    def elastic_matrix(self, bc) -> TensorLike: 
+    def elastic_matrix(self, bc) -> TensorLike:
+        """偏量模型切线刚度（未实现）。输入重心坐标 ``bc``。"""
         # 计算偏应力模型下的切线刚度矩阵
         pass
 
@@ -242,11 +274,19 @@ class DeviatoricModel(BasedPhaseFractureMaterial):
         
 
 class SpectralModel(BasedPhaseFractureMaterial):
+    """谱分解（Miehe）模型：基于应变正负部分裂计算 ``ψ⁺/ψ⁻`` 与不可逆历史场。
+
+    ``stress_value`` / ``elastic_matrix`` 暂未实现；本模型主要供 Hybrid 提供历史场驱动力
+    （:meth:`maximum_historical_field`）。
+    """
+
     def stress_value(self, bc) -> TensorLike:
+        """谱分解模型应力（未实现）。输入重心坐标 ``bc``。"""
         # 计算谱分解模型下的应力
         pass
 
-    def elastic_matrix(self, bc) -> TensorLike: 
+    def elastic_matrix(self, bc) -> TensorLike:
+        """谱分解模型切线刚度（未实现）。输入重心坐标 ``bc``。"""
         # 计算谱分解模型下的切线刚度矩阵
         pass
 
@@ -392,13 +432,22 @@ class SpectralModel(BasedPhaseFractureMaterial):
         pass     
 
 class HybridModel(BasedPhaseFractureMaterial):
+    """混合模型：应力/刚度用各向同性退化，历史场驱动力用谱分解 ``ψ⁺``。
+
+    内部组合 ``IsotropicModel``（应力/刚度）与 ``SpectralModel``（历史场），兼顾计算效率与
+    拉压不对称的不可逆性。
+    """
+
     def __init__(self, material, energy_degradation_fun):
         """
         Parameters
         ----------
-        material : 材料参数
+        material : dict
+            材料参数（``{'lam','mu'}`` 或 ``{'E','nu'}``）。
+        energy_degradation_fun :
+            能量退化函数对象。
         """
-        
+
         self._isotropic_model = IsotropicModel(material, energy_degradation_fun)
         self._spectral_model = SpectralModel(material, energy_degradation_fun)
         super().__init__(material, energy_degradation_fun)
@@ -413,7 +462,8 @@ class HybridModel(BasedPhaseFractureMaterial):
         return self._isotropic_model.stress_value(bc=bc)
 
     @ barycentric
-    def elastic_matrix(self, bc) -> TensorLike: 
+    def elastic_matrix(self, bc) -> TensorLike:
+        """退化切线刚度矩阵，委托各向同性模型计算。输入重心坐标 ``bc``，返回 ``D``。"""
         self._isotropic_model.uh = self.uh
         self._isotropic_model.d = self.d
         return self._isotropic_model.elastic_matrix(bc=bc)

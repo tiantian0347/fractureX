@@ -4,13 +4,13 @@
 > D-B 1–5 项。
 > 状态：D-B 1–5 闭环（h2 重跑后台跑中、h3 命令就绪未起）；36 测试通过；
 > §4.2 表 + h_interp_compare.png + h_interp_error.csv + summary.json 入库；
-> [m0_interpolation_error.md](../../m0_interpolation_error.md) v0.2 → v0.3，DoD 勾到 6/8。
+> [m0_interpolation_error.md](../../operator_learning/m0_interpolation_error.md) v0.2 → v0.3，DoD 勾到 6/8。
 
 ## 0. 起点 / 范围
 
 [m0_session_report_2026-05-29.md (D-A)](m0_session_report_2026-05-29.md) 把 σ 段
 完整闭环了（𝓘₁/𝓘₂ 实装、解析阶数锁定、真实 paper_aux σ 数据量化），但
-[m0_interpolation_error.md](../../m0_interpolation_error.md) v0.2 §4.2（𝓗 段）和
+[m0_interpolation_error.md](../../operator_learning/m0_interpolation_error.md) v0.2 §4.2（𝓗 段）和
 §5.2（𝓗 默认选择）仍然空，理由是 `RunRecorder.save_quadrature_fields` 是占位
 开关，未接落盘管线（[kickoff §6 已知缺口 4](m0_kickoff_report_2026-05-28.md#6-已知缺口--下一刀)）。
 本会话（D-B）按 D-A §6 列的 5 项推进：
@@ -97,7 +97,7 @@ $$
 
 用户说后台还有别的程序在跑、h3 排队。NC≈11k 的 GMRES auxspace 单步在本机
 30-60 分钟，全 31 步 15-30 小时；起 h3 会拖慢用户的现役任务。命令落到
-[m0_interpolation_error.md §7.1](../../m0_interpolation_error.md#71-h3-重跑命令待-h2-完成--用户后台空档)，
+[m0_interpolation_error.md §7.1](../../operator_learning/m0_interpolation_error.md#71-h3-重跑命令待-h2-完成--用户后台空档)，
 等用户后台空闲手动起。
 
 ## 2. 落地代码
@@ -243,7 +243,7 @@ NC=640、NQ=15 与 paper_aux_h1 mesh + damage_p=2 严格匹配，落盘管线
 
 ### 3.3 paper_aux_h2 重跑（D-B 后台启动）
 
-**目标：** 把 [m0_interpolation_error.md §4.1(a)](../../m0_interpolation_error.md)
+**目标：** 把 [m0_interpolation_error.md §4.1(a)](../../operator_learning/m0_interpolation_error.md)
 跨 h 时间扫描的 h2 列从 short-run 推到完整 t_a/t_b/t_c，关掉 D-A §3.2 的
 "h3 反弹"注¹。
 
@@ -281,7 +281,7 @@ PYTHONPATH=$PWD $FEALPY_PYTHON scripts/datasets/measure_interpolation_error.py
 
 ### 3.4 h3 不起动 / 命令就绪
 
-[m0_interpolation_error.md §7.1](../../m0_interpolation_error.md#71-h3-重跑命令待-h2-完成--用户后台空档)
+[m0_interpolation_error.md §7.1](../../operator_learning/m0_interpolation_error.md#71-h3-重跑命令待-h2-完成--用户后台空档)
 已落定命令，hmin=0.012，预计 NC ≈ 11–12k、单步 30-60 分钟、全程 15-30
 小时。等用户后台空闲手动起即可。
 
@@ -346,11 +346,11 @@ print('ok')
   得到的结论与 v0.2 草案**相反**（𝓘₁ 守峰胜 𝓘₂）。
 - **D-B 4（h2 重跑）**：`paper_aux_h2_dB` 后台启动（PID 395250），后续
   measure 脚本自动接入，无需再动代码；h3 命令就绪、不发起。
-- **D-B 5（§5.2 + schema 注释回写）**：[m0_interpolation_error.md](../../m0_interpolation_error.md)
-  v0.3 / [SURROGATE_DATA_SCHEMA.md](../../SURROGATE_DATA_SCHEMA.md) §3.5 同步更新；
+- **D-B 5（§5.2 + schema 注释回写）**：[m0_interpolation_error.md](../../operator_learning/m0_interpolation_error.md)
+  v0.3 / [SURROGATE_DATA_SCHEMA.md](../../operator_learning/SURROGATE_DATA_SCHEMA.md) §3.5 同步更新；
   𝓗 通道默认 `I1_nearest_quad`。
 
-[m0_interpolation_error.md](../../m0_interpolation_error.md) DoD 勾掉 6/8，剩两条
+[m0_interpolation_error.md](../../operator_learning/m0_interpolation_error.md) DoD 勾掉 6/8，剩两条
 是数据生成（h2_dB 后台跑中、h3 排队），不需要再写代码或文档。
 
 现有 P1/P2 论文实验**未受影响**：`save_checkpoint` / `RunRecorder.__init__`
@@ -363,7 +363,7 @@ print('ok')
 
 1. **等 h2_dB 跑完**（~3-4 小时）→ 跑 [measure_interpolation_error.py](../../../scripts/datasets/measure_interpolation_error.py)
    → §4.1(a) 跨 h 时间扫描自动填齐 h2 行；新 csv / convergence.png 落地。
-2. **起 h3_dB**（[m0_interpolation_error.md §7.1](../../m0_interpolation_error.md#71-h3-重跑命令待-h2-完成--用户后台空档)）
+2. **起 h3_dB**（[m0_interpolation_error.md §7.1](../../operator_learning/m0_interpolation_error.md#71-h3-重跑命令待-h2-完成--用户后台空档)）
    → 同样 measure 脚本自动接入 → §4.1 全档完整 → DoD 8/8。
 
 更长尾的缺口（沿用 [D-A §6](m0_session_report_2026-05-29.md#6-已知缺口--下一刀)）：
@@ -388,8 +388,8 @@ print('ok')
 | [scripts/datasets/run_h_qp_patch.py](../../../scripts/datasets/run_h_qp_patch.py) | 新增 | 短补丁 run 入口，paper_aux_h1 配置 + save_quadrature_fields=True。 |
 | [scripts/datasets/measure_h_interp_error.py](../../../scripts/datasets/measure_h_interp_error.py) | 新增 | §4.2 𝓗 测量入口；roundtrip + max-preservation + const baseline。 |
 | [scripts/datasets/measure_interpolation_error.py](../../../scripts/datasets/measure_interpolation_error.py) | 修改 | `_default_cases` 优先 `paper_aux_<h>_dB`，h2_dB 落地自动接入。 |
-| [docs/m0_interpolation_error.md](../../m0_interpolation_error.md) | 修改 v0.2 → v0.3 | §4.2 表 + 关键观察 + const baseline 解读；§5.2 𝓗 默认 𝓘₁；§7 DoD 6/8 勾上 + h3 命令落定。 |
-| [docs/SURROGATE_DATA_SCHEMA.md](../../SURROGATE_DATA_SCHEMA.md) | 修改 | §3.5 加 `metadata.interpolation` 通道适用范围注释（σ 走直接求值；𝓗 默认 𝓘₁）。 |
+| [docs/m0_interpolation_error.md](../../operator_learning/m0_interpolation_error.md) | 修改 v0.2 → v0.3 | §4.2 表 + 关键观察 + const baseline 解读；§5.2 𝓗 默认 𝓘₁；§7 DoD 6/8 勾上 + h3 命令落定。 |
+| [docs/SURROGATE_DATA_SCHEMA.md](../../operator_learning/SURROGATE_DATA_SCHEMA.md) | 修改 | §3.5 加 `metadata.interpolation` 通道适用范围注释（σ 走直接求值；𝓗 默认 𝓘₁）。 |
 | [docs/figures/m0/interp_error/h_interp_error.csv](../../figures/m0/interp_error/h_interp_error.csv) | 新增 | 9 行长格式（3 步 × 3 方案）。 |
 | [docs/figures/m0/interp_error/h_interp_summary.json](../../figures/m0/interp_error/h_interp_summary.json) | 新增 | by_step 嵌套，含 const baseline。 |
 | [docs/figures/m0/interp_error/h_interp_compare.png](../../figures/m0/interp_error/h_interp_compare.png) | 新增 | **Fig 1 𝓘₁ vs 𝓘₂ on grid，t_a/t_b/t_c × 2 列；max_ratio 在 title 上。** |
@@ -401,6 +401,45 @@ print('ok')
 未动：
 - 任何 assembler / damage / 求解器代码；
 - `phasefield_model0_huzhang.py` 论文实验入口（kickoff §6 已知缺口 7）；
-- D-A 已交付的 σ 段（[m0_interpolation_error.md](../../m0_interpolation_error.md)
+- D-A 已交付的 σ 段（[m0_interpolation_error.md](../../operator_learning/m0_interpolation_error.md)
   §4.1 / §4.3 / §5.1 / 配套 csv+图）；
 - `fracturex/learn/` 所有训练侧 stub。
+
+## 8. 后续修订（2026-05-30 早上：D-B 报告写成后的清理）
+
+D-B 写报告时只看到 PID 2475* 长跑、未深入查它们的 env，给了错误前提
+"覆盖会破坏 §4.1(b) 数据 → 用新后缀 `_dB`"。第二天复盘磁盘 +
+`/proc/<pid>/environ` 后发现：
+
+- **PID 2475007** (`FRACTUREX_RUN_LABEL_SUFFIX=h2`, `FRACTUREX_HMIN=0.025`,
+  elapsed 2 d 11 h) 正在写 `paper_aux_h2/` —— 覆盖原 short-run 数据已经
+  发生且不可逆。
+- **PID 2475223** (`FRACTUREX_RUN_LABEL_SUFFIX=h3`, `FRACTUREX_HMIN=0.013`,
+  elapsed 2 d 11 h) 同理写 `paper_aux_h3/`。
+- 所以 D-B §1.6 的"用 `_dB` 避免覆盖"不再有事实基础；canonical
+  `paper_aux_h2/h3` 就是用户论文实验进程的输出，本就是要用的。
+
+修复动作（本节修订一次性闭合）：
+
+1. **kill PID 395250 (`paper_aux_h2_dB`)** —— 与 PID 2475007 跑同一件事，
+   冗余浪费 16 h 的 nice-19 CPU；落盘的 step_000/010 数据保留作 hmin=0.024
+   配置的副本，但不进 §4.1 表。
+2. **measure_interpolation_error.py `_default_cases` 反转** —— 现在
+   "先 `paper_aux_<h>` 再 `_dB` fallback"，自动接 PID 2475* 的输出。
+3. **m0_interpolation_error.md §7 重写** —— DoD "paper_aux_h{2,3} 重跑"
+   改成"用户论文实验 PID 2475007/2475223 已在跑，不另起后台 run"；§7.1
+   改名为"历史：D-B 起的 paper_aux_h2_dB 已 kill"。
+
+`model2_runner.py`（plan §M0 起步规模列出的 Model-2 notch shear 对照）
+**新增完成**：[model2_runner.py](../../../fracturex/tests/case_runners/model2_runner.py)，
+镜像 model0_runner 结构，5 步 nx=8 smoke 跑通（mesh.npz / history.csv /
+checkpoints/ + step_XXX_qp.npz 全齐）。kickoff §6 已知缺口"model2_runner
+给 notch shear 数据集对照"勾掉。
+
+新增/修改文件：
+
+| 文件 | 状态 | 说明 |
+| --- | --- | --- |
+| [fracturex/tests/case_runners/model2_runner.py](../../../fracturex/tests/case_runners/model2_runner.py) | 新增 | Model2RunArgs + run_model2_one；签名与 model0_runner 对齐；smoke 通过。 |
+| [scripts/datasets/measure_interpolation_error.py](../../../scripts/datasets/measure_interpolation_error.py) | 修改 | `_default_cases` candidates 顺序反转：paper_aux_<h> 优先，_dB fallback。 |
+| [docs/m0_interpolation_error.md](../../operator_learning/m0_interpolation_error.md) | 修改 | §7 / §7.1 据 PID 2475* 现实重写；7/8 DoD 仍未勾（数据待落地）。 |

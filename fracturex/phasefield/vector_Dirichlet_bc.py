@@ -1,16 +1,36 @@
+"""向量场（位移）的 Dirichlet 边界条件，支持按方向（x/y/z）施加。
+
+适配 FEALPy 的 ``TensorFunctionSpace`` 与 COO/CSR 稀疏张量：定位边界自由度、写入规定值，
+并对系统矩阵做对称消元（置 1 对角、清零相关行列）。
+"""
 from scipy.sparse import spdiags
 
 from fealpy.backend import backend_manager as bm
 from fealpy.sparse import SparseTensor, COOTensor, CSRTensor
 
 class VectorDirichletBC:
+    """向量位移空间上的 Dirichlet 边界条件施加器。"""
+
     def __init__(self, space, gd, threshold, direction = None):
+        """Args:
+            space: 向量（张量）有限元空间。
+            gd: 规定的边界值（标量或数组）。
+            threshold: 边界检测函数，输入插值点坐标返回布尔掩码。
+            direction: 施加方向 ``'x'``/``'y'``/``'z'``；``None`` 表示所有方向。
+        """
         self.space = space
         self.gd = gd
         self.threshold = threshold
         self.direction = direction
 
     def set_boundary_dof(self):
+        """计算边界自由度布尔掩码。
+
+        按 ``threshold`` 选出边界插值点，再按 ``direction`` 限定到指定分量。
+
+        Returns:
+            一维布尔数组 ``(GD*npoints,)``，True 表示该自由度被约束。
+        """
         threshold = self.threshold  # Boundary detection function
         direction = self.direction   # Direction for applying boundary condition
         space = self.space
@@ -42,9 +62,16 @@ class VectorDirichletBC:
         return index.ravel()
 
     def apply_value(self, u):
+        """把规定边界值写入解向量 ``u`` 的边界自由度。
+
+        Args:
+            u: 解向量（就地修改）。
+        Returns:
+            ``(u, index)``：写入后的解向量与边界自由度布尔掩码。
+        """
         index = self.set_boundary_dof()
-        bm.set_at(u, index, self.gd) 
-        return u, index   
+        bm.set_at(u, index, self.gd)
+        return u, index
 
     def apply(self, A, f, u=None):
         """

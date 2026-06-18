@@ -1,4 +1,20 @@
 # fracturex/assemblers/huzhang_elastic_assembler.py
+"""Hu-Zhang 混合线弹性系统的块装配器。
+
+装配鞍点系统 ``[[M(d), B], [B^T, 0]]``（应力 σ + 位移 u），并统一处理角点松弛
+（corner relaxation）变换 ``M2=TM^T M TM``、``B2=TM^T B`` 与位移 Dirichlet / 应力本质
+边界条件。
+
+两种损伤本构放置（``formulation``）：
+  - ``standard``：退化 ``g(d)`` 作用在应力质量块 ``M`` 上（积分器系数取 ``1/g``）；
+    ``B`` 与 ``d`` 无关，可缓存复用。
+  - ``effective_stress``：``g(d)`` 作用在耦合块 ``B`` 上（``div(gΨ)=g divΨ+Ψ∇g``，
+    需补 ``∇g`` 链式项），``M`` 与 ``d`` 无关。
+
+模块内的 ``_assemble_*`` / ``_*_chunk`` 自由函数为线程并行装配的 per-cell-slice 内核
+（受环境变量 ``FRACTUREX_ASSEMBLY_PARALLEL`` / ``FRACTUREX_ASSEMBLY_NPROC`` 控制），
+``_build_square_csr_scatter`` 等用于缓存 d-无关几何内核以加速重复装配。
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,6 +33,9 @@ from fealpy.fem import BilinearForm, LinearForm
 from fealpy.fem.huzhang_stress_integrator import HuZhangStressIntegrator
 from fealpy.fem.huzhang_mix_integrator import HuZhangMixIntegrator
 from fealpy.fem import VectorSourceIntegrator
+from fealpy.utils import process_coef_func
+from fealpy.functionspace.functional import symmetry_index
+from fealpy.typing import _S
 
 from fracturex.cases.base import CaseBase
 from fracturex.discretization.huzhang_discretization import HuZhangDiscretization
@@ -29,6 +48,15 @@ from fracturex.boundarycondition.huzhang_boundary_condition import (
 
 @dataclass
 class ElasticSystem:
+    """一次弹性子问题的装配结果。
+
+    Attributes:
+        A: 系统矩阵（CSR 鞍点矩阵 ``[[M2, B2], [B2^T, 0]]``）。
+        F: 右端向量 ``(gdof_sigma + gdof_u,)``。
+        decode: 把解向量 ``X`` 映射为 ``(sigma_tilde, u, sigma_physical_or_none)`` 的回调。
+        meta: 元信息 dict（``gdof_sigma``、``gdof_u``、``formulation``）。
+    """
+
     A: Any
     F: Any
     decode: Callable[[Any], Tuple[Any, Any]]  # X -> (sigma_fun, u_fun)
@@ -39,11 +67,24 @@ class _ScaledSigmaView:
     """Callable sigma view: sigma = g(d) * sigma_tilde."""
 
     def __init__(self, sigma_tilde_fun, damage, state):
+        """Args:
+            sigma_tilde_fun: 有效（变换）应力的可调用场 ``sigma_tilde(bcs, index)``。
+            damage: 损伤模型，提供 ``coef_bary`` 计算退化 ``g(d)``。
+            state: 当前状态视图（``d``、``sigma`` 等）。
+        """
         self.sigma_tilde_fun = sigma_tilde_fun
         self.damage = damage
         self.state = state
 
     def __call__(self, bcs, index=None):
+        """在重心坐标 ``bcs`` 处求物理应力 ``σ = g(d) · sigma_tilde``。
+
+        Args:
+            bcs: 重心坐标。
+            index: 可选 cell 索引；部分后端会忽略它，此处显式广播以防越界。
+        Returns:
+            物理应力数组，最后一维为 Voigt 分量。
+        """
         sig_tilde = self.sigma_tilde_fun(bcs, index=index)
         view = DamageStateView(
             d=self.state.d,
@@ -70,6 +111,7 @@ class _ScaledSigmaView:
 
 
 def _env_flag(name: str, default: bool) -> bool:
+    """读取布尔型环境变量 ``name``（``1/true/yes/on`` 为真），缺省返回 ``default``。"""
     raw = os.getenv(name)
     if raw is None:
         return bool(default)
@@ -77,6 +119,7 @@ def _env_flag(name: str, default: bool) -> bool:
 
 
 def _env_int(name: str, default: int) -> int:
+    """读取正整数环境变量 ``name``（下限 1），缺省或非法时返回 ``default``。"""
     raw = os.getenv(name)
     if raw is None:
         return int(default)
@@ -132,6 +175,13 @@ def _fill_huzhang_mix_cell_matrix(mix_int, space_u, space_sigma, cellmeasure, in
 
 
 def _assemble_huzhang_mix_coupled_chunk(args):
+    """装配 effective-stress 耦合混合块 ``B`` 在一段 cell 切片上的 COO 贡献。
+
+    Args:
+        args: 元组 ``(mix_int, space_u, space_sigma, i0, i1)``，``[i0, i1)`` 为 cell 区间。
+    Returns:
+        ``(I, J, V)`` 三个 1D numpy 数组（行索引、列索引、值），用于汇总成全局稀疏阵。
+    """
     mix_int, space_u, space_sigma, i0, i1 = args
     sl = slice(int(i0), int(i1))
     nc = int(i1) - int(i0)
@@ -152,9 +202,19 @@ def _assemble_huzhang_mix_coupled_chunk(args):
     return I, J, V
 
 
-def _parallel_TMt_M_TM(TM: Any, M: Any, *, max_workers: int, min_dim_parallel: int = 192) -> Any:
+def _parallel_TMt_M_TM(
+    TM: Any,
+    M: Any,
+    *,
+    max_workers: int,
+    min_dim_parallel: int = 192,
+    tm_csc: Any = None,
+    tmt: Any = None,
+) -> Any:
     """Compute ``M2 = TM.T @ M @ TM`` with column-block parallel matmul (two stages).
 
+    ``tm_csc``/``tmt`` are the cached CSC / transposed-CSR views of the constant
+    ``TM`` (S3); when provided the per-call format conversions are skipped.
     Falls back to a single-thread triple product on small systems or on failure.
     """
     TM_ss = TM.tocsr() if hasattr(TM, "tocsr") else TM
@@ -163,7 +223,7 @@ def _parallel_TMt_M_TM(TM: Any, M: Any, *, max_workers: int, min_dim_parallel: i
     if max_workers <= 1 or n < min_dim_parallel:
         return TM_ss.T @ M_ss @ TM_ss
     try:
-        TM_csc = TM_ss.tocsc()
+        TM_csc = tm_csc if tm_csc is not None else TM_ss.tocsc()
         nproc = min(int(max_workers), max(2, n // 48))
         edges = np.linspace(0, n, nproc + 1, dtype=int)
         tasks_m = []
@@ -181,7 +241,7 @@ def _parallel_TMt_M_TM(TM: Any, M: Any, *, max_workers: int, min_dim_parallel: i
             blocks = list(pool.map(_mul_m_tm, tasks_m))
         P = sp_hstack(blocks).tocsr()
 
-        TMt = TM_ss.transpose().tocsr()
+        TMt = tmt if tmt is not None else TM_ss.transpose().tocsr()
         tasks_t = []
         for k in range(nproc):
             k0, k1 = int(edges[k]), int(edges[k + 1])
@@ -202,6 +262,15 @@ def _parallel_TMt_M_TM(TM: Any, M: Any, *, max_workers: int, min_dim_parallel: i
 
 
 def _b2_gradg_K_chunk(args):
+    """装配 ``∇g`` 链式修正项 ``∫ φ_u·(Ψ ∇g)`` 在一段 cell 切片上的 COO 贡献。
+
+    Args:
+        args: 元组 ``(ws, cm_chunk, phi_u_chunk, wvec_chunk, cell2dof_s_chunk,
+            cell2dof_u_chunk)``——积分权重、cell 测度、位移基、含 ∇g 的应力加权向量及两套
+            cell-to-dof 映射（均已按 cell 切片）。
+    Returns:
+        ``(I, J, V)`` 三个 1D numpy 数组（应力行、位移列、值）。
+    """
     ws, cm_chunk, phi_u_chunk, wvec_chunk, cell2dof_s_chunk, cell2dof_u_chunk = args
     ws = bm.asarray(ws)
     cm_chunk = bm.asarray(cm_chunk)
@@ -221,6 +290,33 @@ def _b2_gradg_K_chunk(args):
         bm.to_numpy(J).astype(np.int64, copy=False),
         bm.to_numpy(V).astype(np.float64, copy=False),
     )
+
+
+def _build_square_csr_scatter(cell2dof_np: np.ndarray, gdof: int):
+    """Precompute CSR structure + scatter index for element matrices with a single
+    dof map (square local blocks).
+
+    Returns ``(indptr, indices, inv, nnz)``. ``inv[e]`` is the position in
+    ``csr.data`` for the e-th flattened local entry, ordered as
+    ``(cell, local_row, local_col)``. Per assembly:
+    ``data = bincount(inv, weights=K.reshape(-1), minlength=nnz)``.
+    """
+    nc, ldof = int(cell2dof_np.shape[0]), int(cell2dof_np.shape[1])
+    c2d = cell2dof_np.astype(np.int64, copy=False)
+    I = np.broadcast_to(c2d[:, :, None], (nc, ldof, ldof)).reshape(-1)
+    J = np.broadcast_to(c2d[:, None, :], (nc, ldof, ldof)).reshape(-1)
+    coo = coo_matrix((np.zeros(I.shape[0], dtype=np.float64), (I, J)), shape=(gdof, gdof))
+    csr = coo.tocsr()
+    csr.sum_duplicates()
+    csr.sort_indices()
+    indptr = csr.indptr.astype(np.int64, copy=False)
+    indices = csr.indices.astype(np.int64, copy=False)
+    nnz = int(csr.nnz)
+    rows = np.repeat(np.arange(gdof, dtype=np.int64), np.diff(indptr))
+    csr_keys = rows * np.int64(gdof) + indices            # strictly ascending
+    keys = I * np.int64(gdof) + J
+    inv = np.searchsorted(csr_keys, keys)
+    return indptr.astype(np.int32, copy=False), indices.astype(np.int32, copy=False), inv, nnz
 
 
 class HuZhangElasticAssembler:
@@ -269,6 +365,20 @@ class HuZhangElasticAssembler:
         )
         self._const_cache = None
         self._const_cache_key = None
+        # Value-only M(d) kernel cache (A1+A2): constant geometric kernel Phi[c,q,l,m],
+        # weights W[c,q]=cm*ws, and CSR pattern/scatter; only coef=1/g(d) varies.
+        self._m_kernel = None
+        self._m_kernel_key = None
+        self._m_kernel_cache_enabled = _env_flag("FRACTUREX_M_KERNEL_CACHE", True)
+        # Matrix-free stress block: return a MatrixFreeElasticOperator instead of an
+        # assembled M2/bmat (standard form only). Saves the dominant p=3 stress-block
+        # memory; only the iterative (fast/aux) solver paths consume it.
+        self._matfree = _env_flag("FRACTUREX_ELASTIC_MATFREE", False)
+        # Recompute (chunked) mode: do not cache basis phi; re-evaluate per cell-chunk
+        # inside each matvec so peak memory is bounded well below M2 (real memory win;
+        # CPU-slower). Default cache mode keeps phi (still avoids M2 + the (ldof,ldof) Phi).
+        self._matfree_recompute = _env_flag("FRACTUREX_ELASTIC_MATFREE_RECOMPUTE", False)
+        self._matfree_chunk = _env_int("FRACTUREX_MATFREE_CHUNK", 8192)
         # Per load-step cache (staggered inner iters share the same `load`):
         self._load_step_value: Optional[float] = None
         self._load_step_piecewise: Optional[List[Tuple[Any, Any, Any]]] = None
@@ -357,26 +467,45 @@ class HuZhangElasticAssembler:
                     rel = float(np.linalg.norm(diff.data) / max(np.linalg.norm(const["B2_const"].data), 1e-30))
                     print(f"[HuZhangElasticAssembler] effective_stress: ||B(d)-B0||/||B0||={rel:.3e}, dmax={dmax:.3e}")
         else:
-            # ---- 1) M(d) ----
-            M = self._assemble_M_block(space0, state, c0, c1)
-            if self.assembly_parallel:
-                try:
-                    M2 = _parallel_TMt_M_TM(TM, M, max_workers=int(self.assembly_nproc))
-                except Exception as exc:
-                    print(f"[HuZhangElasticAssembler] parallel TM.T@M@TM raised, fallback serial: {exc}")
-                    M2 = TM.T @ M @ TM
-            else:
-                M2 = TM.T @ M @ TM
             B2 = const["B2_const"]
+            if self._matfree:
+                # Matrix-free: never form M2/bmat (the dominant p=3 memory). Build a
+                # LinearOperator applying [[TM' M(d) TM, B2],[B2', 0]] element-wise.
+                from fracturex.utilfuc.matfree_elastic import MatrixFreeElasticOperator
 
-        A = bmat([[M2, B2],
-                  [B2.T, None]], format="csr")
+                kernel = self._build_matfree_kernel(space0, c0, c1, state)
+                A = MatrixFreeElasticOperator(
+                    gdof_sigma=gdof0, gdof_u=gdof1,
+                    TM=TM, TMT=const["TMt"], B2=B2, kernel=kernel,
+                    recompute=self._matfree_recompute, chunk=self._matfree_chunk,
+                )
+            else:
+                # ---- 1) M(d) ----
+                M = self._assemble_M_block(space0, state, c0, c1)
+                if self.assembly_parallel:
+                    try:
+                        M2 = _parallel_TMt_M_TM(
+                            TM, M, max_workers=int(self.assembly_nproc),
+                            tm_csc=const.get("TM_csc"), tmt=const.get("TMt"),
+                        )
+                    except Exception as exc:
+                        print(f"[HuZhangElasticAssembler] parallel TM.T@M@TM raised, fallback serial: {exc}")
+                        M2 = TM.T @ M @ TM
+                else:
+                    M2 = TM.T @ M @ TM
+                A = bmat([[M2, B2],
+                          [B2.T, None]], format="csr")
+
+        if self.formulation == "effective_stress":
+            A = bmat([[M2, B2],
+                      [B2.T, None]], format="csr")
 
         # ---- 4) RHS: body force on u eqn ----
         b = b_vec
 
         # ---- 5) RHS: Dirichlet displacement contributes to sigma equation ----
-        HBC = HuzhangBoundaryCondition(space=space0, q=self.q)
+        # Build HuzhangBoundaryCondition lazily: on the cached standard path below
+        # (`_r_dir_standard` reuse) it is never used, so don't construct it there.
         if self._load_step_value is not None and float(load) == float(self._load_step_value) and self._load_step_piecewise is not None:
             piecewise = self._load_step_piecewise
         else:
@@ -389,11 +518,13 @@ class HuZhangElasticAssembler:
                 view = DamageStateView(d=state.d, sigma=state.sigma, u=state.u, r_hist=state.r_hist, H=state.H)
                 return damage.coef_bary(view, bcs, index=index)
 
+            HBC = HuzhangBoundaryCondition(space=space0, q=self.q)
             r_dir = HBC.displacement_boundary_condition(piecewise=piecewise, coef=coef_g_face)
         else:
             if self._r_dir_standard is not None and self._load_step_value is not None and float(load) == float(self._load_step_value):
                 r_dir = self._r_dir_standard
             else:
+                HBC = HuzhangBoundaryCondition(space=space0, q=self.q)
                 r_dir = HBC.displacement_boundary_condition(piecewise=piecewise)
 
         F = np.zeros(A.shape[0], dtype=float)
@@ -417,7 +548,19 @@ class HuZhangElasticAssembler:
                     thr, gd, coord = nd
                     uh_sig, isBd = HSBC.set_essential_bc(gd, threshold=thr, coord=coord)
 
-            A, F = self.apply_sigma_essential_to_system(A, F, uh_sig, isBd, gdof0)
+            if self._matfree:
+                # MF-aware essential elimination: emulate F = F - A@uh; F[isbd]=uh[isbd]
+                # and A <- T A T + Tbd via the operator's mask (no explicit T@A@T).
+                total = A.shape[0]
+                uh_global = np.zeros(total, dtype=float)
+                isbd_global = np.zeros(total, dtype=bool)
+                uh_global[:gdof0] = np.asarray(uh_sig).reshape(-1)
+                isbd_global[:gdof0] = np.asarray(isBd).reshape(-1).astype(bool)
+                F = F - A.apply_unmasked(uh_global)   # unmasked A, matches assembled path
+                F[isbd_global] = uh_global[isbd_global]
+                A = A.set_essential_mask(isbd_global)
+            else:
+                A, F = self.apply_sigma_essential_to_system(A, F, uh_sig, isBd, gdof0)
 
 
         # decode: map solution X -> (sigma,u) functions
@@ -449,6 +592,22 @@ class HuZhangElasticAssembler:
         return ElasticSystem(A=A, F=F, decode=decode, meta=meta)
 
     def _assemble_M_block(self, space0, state, c0: float, c1: float):
+        """装配损伤加权应力质量块 ``M(d)``（standard 形式），按可用性择优分派。
+
+        依次尝试：缓存几何内核 → 线程并行 → 串行，前者失败时回退后者。
+
+        Args:
+            space0: Hu-Zhang 应力空间。
+            state: 当前状态（提供 ``d`` 等用于 ``coef=1/g(d)``）。
+            c0, c1: 柔度本构系数 ``c0=1/(2μ)``、``c1=λ/(2μ(2μ+nλ))``。
+        Returns:
+            ``(gdof_sigma, gdof_sigma)`` 的 scipy CSR 矩阵。
+        """
+        if self._m_kernel_cache_enabled:
+            try:
+                return self._assemble_M_block_cached(space0, state, c0, c1)
+            except Exception as exc:
+                print(f"[HuZhangElasticAssembler] cached M(d) kernel failed, fallback: {exc}")
         if self.assembly_parallel:
             try:
                 return self._assemble_M_block_parallel(space0, state, c0, c1)
@@ -456,7 +615,145 @@ class HuZhangElasticAssembler:
                 print(f"[HuZhangElasticAssembler] parallel M(d) assembly failed, fallback to serial: {exc}")
         return self._assemble_M_block_serial(space0, state, c0, c1)
 
+    def _build_m_kernel(self, space0, c0: float, c1: float):
+        """Cache the d-independent material for the M(d) block (A1+A2).
+
+        Replicates ``HuZhangStressIntegrator``'s element contraction with the coef
+        factored out: ``Phi[c,q,l,m] = c0 Σ_d φ_lд φ_mд num_d - c1 trφ_l trφ_m``,
+        so that ``M_e = Σ_q W[c,q] coef[c,q] Phi[c,q,l,m]`` with ``W=cm⊗ws``.
+        Also caches the CSR pattern + scatter map. Keyed by (mesh, gdof, q, c0, c1).
+        """
+        mesh = self.discr.mesh
+        assert mesh is not None
+        p = int(space0.p)
+        q = int(self.q) if self.q is not None else p + 3
+        gdof = int(space0.number_of_global_dofs())
+        key = (id(mesh), gdof, q, float(c0), float(c1))
+        if self._m_kernel is not None and self._m_kernel_key == key:
+            return self._m_kernel
+
+        TD = int(mesh.top_dimension())
+        cm = bm.asarray(mesh.entity_measure("cell"))
+        qf = mesh.quadrature_formula(q, "cell")
+        bcs, ws = qf.get_quadrature_points_and_weights()
+        ws = bm.asarray(ws)
+        phi = bm.asarray(space0.basis(bcs))             # (NC, NQ, ldof, nsym)
+        if TD == 2:
+            trphi = phi[..., 0] + phi[..., -1]
+        else:
+            trphi = phi[..., 0] + phi[..., 3] + phi[..., -1]
+        _, num = symmetry_index(d=TD, r=2)
+        num = bm.asarray(num)
+
+        # Coef-free element kernel (same contraction the integrator performs).
+        Phi = c0 * bm.einsum("cqld, cqmd, d -> cqlm", phi, phi, num)
+        Phi = Phi - c1 * bm.einsum("cql, cqm -> cqlm", trphi, trphi)
+        W = bm.einsum("c, q -> cq", cm, ws)             # (NC, NQ)
+
+        cell2dof = np.asarray(bm.to_numpy(space0.cell_to_dof()), dtype=np.int64)
+        indptr, indices, inv, nnz = _build_square_csr_scatter(cell2dof, gdof)
+
+        self._m_kernel_key = key
+        self._m_kernel = {
+            "bcs": bcs,
+            "W": W,
+            "Phi": Phi,
+            "indptr": indptr,
+            "indices": indices,
+            "inv": inv,
+            "nnz": nnz,
+            "gdof": gdof,
+        }
+        return self._m_kernel
+
+    def _build_matfree_kernel(self, space0, c0: float, c1: float, state) -> dict:
+        """Element pieces for the matrix-free M(d) action — NO ``(ldof,ldof)`` Phi.
+
+        Returns numpy arrays for :class:`MatrixFreeElasticOperator`:
+            phi   (NC, NQ, ldof, nsym),  trphi (NC, NQ, ldof),  W (NC, NQ),
+            num   (nsym,),  cell2dof (NC, ldof) int64,
+            coef  (NC, NQ)  frozen 1/g(d) at quad points,  c0, c1.
+        Unlike ``_build_m_kernel`` this keeps only ``phi``/``trphi`` (≈10x smaller
+        than Phi) so the operator never materializes the dominant stress block.
+        """
+        mesh = self.discr.mesh
+        assert mesh is not None
+        p = int(space0.p)
+        q = int(self.q) if self.q is not None else p + 3
+        TD = int(mesh.top_dimension())
+
+        cm = bm.asarray(mesh.entity_measure("cell"))
+        qf = mesh.quadrature_formula(q, "cell")
+        bcs, ws = qf.get_quadrature_points_and_weights()
+        ws = bm.asarray(ws)
+        _, num = symmetry_index(d=TD, r=2)
+        W = bm.einsum("c, q -> cq", cm, ws)                  # (NC, NQ)
+        cell2dof = np.asarray(bm.to_numpy(space0.cell_to_dof()), dtype=np.int64)
+        # Recompute mode never stores phi/trphi -> also skip computing the full
+        # (NC,...) basis here, so the builder's transient peak stays bounded.
+        if not self._matfree_recompute:
+            phi = bm.asarray(space0.basis(bcs))             # (NC, NQ, ldof, nsym)
+            if TD == 2:
+                trphi = phi[..., 0] + phi[..., -1]
+            else:
+                trphi = phi[..., 0] + phi[..., 3] + phi[..., -1]
+
+        # Freeze coef = 1/g(d) at quad points (constant within one staggered solve),
+        # evaluated exactly as the integrator/assembled path does.
+        @barycentric
+        def coef_d(bcs_, index=None):
+            view = DamageStateView(d=state.d, sigma=state.sigma, u=state.u,
+                                   r_hist=state.r_hist, H=state.H)
+            return 1.0 / self.damage.coef_bary(view, bcs_, index=index)
+
+        coef = process_coef_func(coef_d, bcs=bcs, mesh=mesh, etype="cell", index=_S)
+
+        kernel = {
+            "W": np.asarray(bm.to_numpy(W), dtype=np.float64),
+            "num": np.asarray(bm.to_numpy(num), dtype=np.float64),
+            "coef": np.asarray(bm.to_numpy(coef), dtype=np.float64),
+            "cell2dof": cell2dof,
+            "c0": float(c0),
+            "c1": float(c1),
+        }
+        if self._matfree_recompute:
+            # chunked recompute: hand the space + quad points; do NOT keep phi/trphi.
+            kernel["space0"] = space0
+            kernel["bcs"] = bcs
+        else:
+            kernel["phi"] = np.asarray(bm.to_numpy(phi), dtype=np.float64)
+            kernel["trphi"] = np.asarray(bm.to_numpy(trphi), dtype=np.float64)
+        return kernel
+
+    def _assemble_M_block_cached(self, space0, state, c0: float, c1: float):
+        """用缓存的 d-无关几何内核装配 ``M(d)``：只重算系数 ``1/g(d)`` 并 bincount 散射。
+
+        Args/Returns 同 :meth:`_assemble_M_block`；要求 ``_build_m_kernel`` 的缓存命中（否则重建）。
+        """
+        from scipy.sparse import csr_matrix
+
+        K = self._build_m_kernel(space0, c0, c1)
+        mesh = self.discr.mesh
+
+        @barycentric
+        def coef_d(bcs, index=None):
+            view = DamageStateView(d=state.d, sigma=state.sigma, u=state.u, r_hist=state.r_hist, H=state.H)
+            return 1.0 / self.damage.coef_bary(view, bcs, index=index)
+
+        # Evaluate coef exactly as the integrator does (process_coef_func + full index).
+        val = process_coef_func(coef_d, bcs=K["bcs"], mesh=mesh, etype="cell", index=_S)
+        val = bm.asarray(val)                            # (NC, NQ)
+
+        Ke = bm.einsum("cq, cq, cqlm -> clm", K["W"], val, K["Phi"])
+        Ke = np.asarray(bm.to_numpy(Ke), dtype=np.float64)
+        data = np.bincount(K["inv"], weights=Ke.reshape(-1), minlength=K["nnz"])
+        return csr_matrix((data, K["indices"], K["indptr"]), shape=(K["gdof"], K["gdof"]))
+
     def _assemble_M_block_serial(self, space0, state, c0: float, c1: float):
+        """串行装配 ``M(d)``：直接走 FEALPy ``BilinearForm`` + ``HuZhangStressIntegrator``。
+
+        Args/Returns 同 :meth:`_assemble_M_block`。
+        """
         @barycentric
         def coef_d(bcs, index=None):
             view = DamageStateView(d=state.d, sigma=state.sigma, u=state.u, r_hist=state.r_hist, H=state.H)
@@ -467,6 +764,11 @@ class HuZhangElasticAssembler:
         return bformM.assembly().to_scipy().tocsr()
 
     def _assemble_M_block_parallel(self, space0, state, c0: float, c1: float):
+        """线程并行装配 ``M(d)``：按 cell 切片分块调用 FEALPy 内核再汇总成 COO/CSR。
+
+        分块数为 ``min(assembly_nproc, NC)``；退化为单块时回退串行。
+        Args/Returns 同 :meth:`_assemble_M_block`。
+        """
         mesh = self.discr.mesh
         assert mesh is not None
 
@@ -527,14 +829,20 @@ class HuZhangElasticAssembler:
         TM = space0.TM.to_scipy().tocsr()
         B2 = TM.T @ B
 
-        lam, mu = self._lame(case.model())
-        n = mesh.geo_dimension()
-        c0 = 1.0/(2.0*mu)
-        c1 = lam/(2.0*mu*(2.0*mu + n*lam))
-        bformM_const = BilinearForm(space0)
-        bformM_const.add_integrator(HuZhangStressIntegrator(coef=1.0, lambda0=c0, lambda1=c1))
-        M_const = bformM_const.assembly().to_scipy().tocsr()
-        M2_const = TM.T @ M_const @ TM
+        # M2_const is consumed ONLY by the effective_stress branch of assemble(); for the
+        # standard formulation it is dead weight (and its assembly + triple product is a
+        # large transient memory peak). Build it lazily only when needed.
+        if self.formulation == "effective_stress":
+            lam, mu = self._lame(case.model())
+            n = mesh.geo_dimension()
+            c0 = 1.0/(2.0*mu)
+            c1 = lam/(2.0*mu*(2.0*mu + n*lam))
+            bformM_const = BilinearForm(space0)
+            bformM_const.add_integrator(HuZhangStressIntegrator(coef=1.0, lambda0=c0, lambda1=c1))
+            M_const = bformM_const.assembly().to_scipy().tocsr()
+            M2_const = TM.T @ M_const @ TM
+        else:
+            M2_const = None
 
         lform = LinearForm(space1)
 
@@ -549,6 +857,10 @@ class HuZhangElasticAssembler:
         self._const_cache_key = key
         self._const_cache = {
             "TM": TM,
+            # Cached format views of the constant corner-relaxation transform (S3):
+            # the parallel triple product reuses these instead of re-converting TM.
+            "TM_csc": TM.tocsc(),
+            "TMt": TM.transpose().tocsr(),
             "B2_const": B2,
             "M2_const": M2_const,
             "b_vec": b_vec,

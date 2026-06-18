@@ -1,3 +1,9 @@
+"""相场断裂准静态交错（staggered）主求解驱动。
+
+``MainSolve`` 按载荷步推进规定位移边界，每步用 Newton-Raphson 交错求解位移块与相场块，
+直至残差指标收敛；支持自适应加密、自动微分装配、多种稀疏线性求解后端与 VTK 输出。
+类级 docstring 详述历史场不可逆性、载荷步进与线性代数选项。
+"""
 from typing import Callable, Optional, Dict
 import os
 import numpy as np
@@ -860,6 +866,14 @@ class MainSolve:
         return R + load
 
     def _assemble_scalar_neumann_load(self, bcdata: Dict) -> TensorLike:
+        """装配相场标量 Neumann（自然边界）载荷向量。
+
+        Args:
+            bcdata: 边界条件 dict；若含 ``gN`` 则按面积分装配，否则按 ``bcdof``/``value``
+                做集中节点载荷。
+        Returns:
+            ``(scalar_gdof,)`` 的载荷向量。
+        """
         if bcdata.get('gN') is not None:
             qn = bcdata.get('neumann_q')
             if qn is None:
@@ -879,6 +893,14 @@ class MainSolve:
         return F
 
     def _assemble_vector_neumann_load(self, bcdata: Dict) -> TensorLike:
+        """装配位移向量 Neumann（面力/自然边界）载荷向量。
+
+        Args:
+            bcdata: 边界条件 dict；若含 ``gN`` 则按面积分装配面力，否则按 ``bcdof``/``value``
+                做集中节点载荷。
+        Returns:
+            ``(tensor_gdof,)`` 的载荷向量。
+        """
         GD = int(self.mesh.geo_dimension())
         gdof = int(self.tspace.number_of_global_dofs())
         if bcdata.get('gN') is not None:
@@ -977,6 +999,7 @@ class MainSolve:
         return self._Rforce
     
     def output_timer(self):
+        """开启计时输出（置 ``self._timer=True``），后续迭代打印各阶段耗时。"""
         self._timer = True
 
 
@@ -1085,6 +1108,13 @@ class MainSolve:
             self._lin_use_ilu = bool(use_ilu_preconditioner)
 
     def _scipy_try_ilu(self, A_sp):
+        """尝试为 SciPy 稀疏矩阵构造 ILU 预条件子。
+
+        Args:
+            A_sp: SciPy 稀疏系统矩阵。
+        Returns:
+            ``LinearOperator`` 形式的 ILU 预条件子；构造失败则返回 ``None``。
+        """
         try:
             from scipy.sparse.linalg import LinearOperator, spilu
 

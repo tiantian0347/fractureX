@@ -1,3 +1,8 @@
+"""Hu-Zhang 快速求解器的线弹性收敛性验证脚本（2D/3D 制造解，命令行运行）。
+
+注：依赖 ``smoother``、``huzhang_fast_solver`` 等包外模块，作为手动验证脚本留存，
+非 fracturex 包的可导入模块。
+"""
 
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh import TriangleMesh, TetrahedronMesh
@@ -12,6 +17,7 @@ from sympy import symbols, sin, cos, exp
 import sys
 
 def test_2d():
+    """2D 制造解收敛测试：命令行参数 ``n p lam``，打印位移/应力的 L2 误差。"""
     n = int(sys.argv[1])
     p = int(sys.argv[2])
     nu = 0.48
@@ -68,6 +74,7 @@ def test_2d():
 
 
 def test_3d():
+    """3D 制造解收敛测试：命令行参数 ``n``，打印位移/应力的 L2 误差。"""
     n = int(sys.argv[1])
 
     lambda0, lambda1 = 1.0, 1.0/4.0

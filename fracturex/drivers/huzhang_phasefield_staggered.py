@@ -1,4 +1,12 @@
 # fracturex/drivers/huzhang_phasefield_staggered.py
+"""Hu-Zhang 混合元 + 相场损伤的交错（staggered）准静态求解驱动。
+
+按载荷步推进，每步在弹性子问题（Hu-Zhang 应力/位移）与相场子问题之间交错迭代至收敛，
+负责：装配器/线性求解器调度、收敛判据、损伤不可逆与欠松弛、反力后处理、记录器与多档
+VTK 输出（普通/高阶重采样/原生 Lagrange）。
+
+线性求解器通过 ``linear_solver(method)`` 选择（spsolve/pardiso/mumps/lgmres）。
+"""
 
 from __future__ import annotations
 
@@ -20,6 +28,7 @@ from fealpy.utils import timer
 from fracturex.cases.base import CaseBase
 from fracturex.discretization.huzhang_discretization import HuZhangDiscretization
 from fracturex.damage.base import DamageStateView, DamageModelBase
+from fracturex.drivers.anderson_acceleration import AndersonAccelerator
 from fracturex.assemblers.huzhang_elastic_assembler import HuZhangElasticAssembler
 from fracturex.assemblers.phasefield_assembler import PhaseFieldAssembler
 from fracturex.postprocess.reaction import reaction_from_sigma
@@ -33,6 +42,18 @@ from fracturex.utilfuc.vtk_lagrange_writer import (
 
 @dataclass
 class StepInfo:
+    """单个载荷步的求解结果摘要。
+
+    Attributes:
+        step: 载荷步序号。
+        load: 该步规定载荷/位移值。
+        iters: 交错迭代次数。
+        converged: 是否收敛。
+        err_u, err_d: 位移、损伤的相对收敛误差。
+        max_d: 该步结束时的最大损伤值。
+        meta: 详细元信息（反力、各阶段耗时、线性求解诊断等）。
+    """
+
     step: int
     load: float
     iters: int
@@ -44,6 +65,11 @@ class StepInfo:
 
 
 class HuZhangPhaseFieldStaggeredDriver:
+    """Hu-Zhang 混合元 + 相场损伤的交错求解驱动器。
+
+    组合弹性装配器、相场装配器与损伤模型，按载荷序列逐步交错求解并输出 :class:`StepInfo`。
+    """
+
     def __init__(
         self,
         *,
@@ -114,6 +140,17 @@ class HuZhangPhaseFieldStaggeredDriver:
         )
 
         self.tol = float(tol)
+        # Separate (looser) tolerance for the displacement increment err_u.
+        # In the fully-localized regime (max_d=1) the elastic stiffness is near
+        # singular, so the direct/iterative solve leaves a numerical floor on
+        # ||du|| (~5e-5) that the damage residual err_d does not have (it cleanly
+        # reaches ~1e-6). Requiring err_u<tol there makes the staggered loop spin
+        # forever on machine noise even though the *physical* state (d) has
+        # converged. FRACTUREX_TOL_U relaxes only err_u; err_d still uses tol.
+        # Defaults to tol -> identical behavior unless explicitly set.
+        import os as _os
+        _tol_u = _os.environ.get("FRACTUREX_TOL_U", "").strip()
+        self.tol_u = float(_tol_u) if _tol_u else float(tol)
         self.maxit = int(maxit)
         self.debug = bool(debug)
         self.timing = bool(timing)
@@ -127,6 +164,39 @@ class HuZhangPhaseFieldStaggeredDriver:
         self.adapt_hook = adapt_hook
         self._stagger_print_interval = self._resolve_stagger_print_interval(stagger_print_interval)
         self._d_relaxation = self._resolve_d_relaxation(d_relaxation)
+        # Optional Storvik-style Anderson acceleration of the staggered
+        # fixed point (FRACTUREX_ANDERSON_DEPTH>0 enables; 0 = legacy path).
+        try:
+            self._anderson_depth = int(os.environ.get("FRACTUREX_ANDERSON_DEPTH", "0"))
+        except (TypeError, ValueError):
+            self._anderson_depth = 0
+        try:
+            self._anderson_beta = float(os.environ.get("FRACTUREX_ANDERSON_BETA", "1.0"))
+        except (TypeError, ValueError):
+            self._anderson_beta = 1.0
+        try:
+            self._anderson_omega = float(os.environ.get("FRACTUREX_ANDERSON_OMEGA", "1.0"))
+        except (TypeError, ValueError):
+            self._anderson_omega = 1.0
+        # Safeguard 调参旋钮(默认即 AndersonAccelerator 的默认值):信赖域系数、
+        # blowup restart 倍数、停滞 restart 步数。仅 DEPTH>0 时才用到。
+        try:
+            self._anderson_tr_factor = float(os.environ.get("FRACTUREX_ANDERSON_TR_FACTOR", "20.0"))
+        except (TypeError, ValueError):
+            self._anderson_tr_factor = 20.0
+        try:
+            self._anderson_blowup = float(os.environ.get("FRACTUREX_ANDERSON_BLOWUP", "2.0"))
+        except (TypeError, ValueError):
+            self._anderson_blowup = 2.0
+        try:
+            self._anderson_patience = int(os.environ.get("FRACTUREX_ANDERSON_PATIENCE", "3"))
+        except (TypeError, ValueError):
+            self._anderson_patience = 3
+        try:
+            self._anderson_restart_omega = float(os.environ.get("FRACTUREX_ANDERSON_RESTART_OMEGA", "1.6"))
+        except (TypeError, ValueError):
+            self._anderson_restart_omega = 1.6
+        self._anderson = None
         self._initialized = False
         self._sigma_physical_eval = None
         self._tmr = timer() if self.timing else None
@@ -135,6 +205,7 @@ class HuZhangPhaseFieldStaggeredDriver:
 
     @staticmethod
     def _resolve_stagger_print_interval(explicit: Optional[int]) -> int:
+        """解析交错进度打印间隔：显式值优先，否则读环境变量，缺省 1。返回整数。"""
         if explicit is not None:
             return int(explicit)
         raw = os.environ.get("FRACTUREX_STAGGER_PRINT_INTERVAL", "1")
@@ -145,6 +216,7 @@ class HuZhangPhaseFieldStaggeredDriver:
 
     @staticmethod
     def _resolve_d_relaxation(explicit: Optional[float]) -> float:
+        """解析损伤欠松弛因子 ω∈(0,1]：显式优先，否则读环境变量，缺省 1.0。返回浮点。"""
         if explicit is not None:
             omega = float(explicit)
         else:
@@ -158,6 +230,7 @@ class HuZhangPhaseFieldStaggeredDriver:
         return min(omega, 1.0)
 
     def _timer_mark(self, tag: Optional[str]):
+        """向计时器发送阶段标记 ``tag``（计时关闭或失败时安全跳过）。"""
         if self._tmr is None:
             return
         try:
@@ -167,6 +240,7 @@ class HuZhangPhaseFieldStaggeredDriver:
 
     @staticmethod
     def _relative_residual(A, x, b) -> float:
+        """计算相对残差 ``||Ax-b|| / ||b||``；异常时返回 ``nan``。"""
         try:
             Ax = A @ np.asarray(x).reshape(-1)
             b_ = np.asarray(b).reshape(-1)
@@ -178,6 +252,7 @@ class HuZhangPhaseFieldStaggeredDriver:
 
     @staticmethod
     def _solver_name(solver: Any) -> str:
+        """返回线性求解器可调用对象的名字（``__name__`` 或类名），用于日志/记录。"""
         name = getattr(solver, "__name__", None)
         if name:
             return str(name)
@@ -324,6 +399,20 @@ class HuZhangPhaseFieldStaggeredDriver:
         if state is None:
             raise RuntimeError("Discretization must be built before solving.")
 
+        # Reset Anderson window per load step (history is intra-step only).
+        if self._anderson_depth > 0:
+            self._anderson = AndersonAccelerator(
+                depth=self._anderson_depth,
+                beta=self._anderson_beta,
+                omega=self._anderson_omega,
+                restart_patience=self._anderson_patience,
+                blowup_factor=self._anderson_blowup,
+                tr_factor=self._anderson_tr_factor,
+                restart_omega=self._anderson_restart_omega,
+            )
+        else:
+            self._anderson = None
+
         converged = False
         err_u = bm.inf
         err_d = bm.inf
@@ -441,14 +530,26 @@ class HuZhangPhaseFieldStaggeredDriver:
 
             d_trial = bm.asarray(sys_d.decode(dd))
 
-            # Irreversibility + optional under-relaxation: max(d_old, ω·d_trial + (1-ω)·d_old).
+            # Plain (un-accelerated) fixed-point image G(d_old): irreversibility
+            # + optional under-relaxation, then clip. This is what the staggered
+            # convergence residual is measured against (see d_plain below), so an
+            # Anderson step can never produce *false* convergence.
             omega = self._d_relaxation
             if omega >= 1.0 - 1e-15:
-                d_blend = d_trial
+                d_blend_plain = d_trial
             else:
-                d_blend = omega * d_trial + (1.0 - omega) * d_old_buf
-            state.d[:] = bm.maximum(d_old_buf, d_blend)
-            state.d[:] = bm.clip(state.d[:], 0.0, 1.0)
+                d_blend_plain = omega * d_trial + (1.0 - omega) * d_old_buf
+            d_plain = bm.clip(bm.maximum(d_old_buf, d_blend_plain), 0.0, 1.0)
+
+            if self._anderson is not None:
+                # Anderson accelerates the iterate (x=d_old -> G(x)=d_trial); the
+                # projection (irreversibility + clip) is reapplied to the
+                # accelerated combination and carried forward as the next iterate.
+                d_acc = self._anderson.step(np.asarray(d_old_buf), np.asarray(d_trial))
+                d_acc = bm.asarray(d_acc).reshape(bm.asarray(d_trial).shape)
+                state.d[:] = bm.clip(bm.maximum(d_old_buf, d_acc), 0.0, 1.0)
+            else:
+                state.d[:] = d_plain
 
             # ----------------------------------------------------------
             # (3) staggered convergence check by iterate increments
@@ -456,7 +557,10 @@ class HuZhangPhaseFieldStaggeredDriver:
             u_curr = bm.asarray(state.u[:])
             d_curr = bm.asarray(state.d[:])
             du_abs = float(bm.linalg.norm(u_curr - u_old_buf))
-            dd_abs = float(bm.linalg.norm(d_curr - d_old_buf))
+            # True staggered fixed-point residual on d uses the UN-accelerated
+            # projected image d_plain, so convergence reflects ||G(d)-d|| rather
+            # than the (possibly small) accelerated increment.
+            dd_abs = float(bm.linalg.norm(d_plain - d_old_buf))
 
             # Follow phasefield/main_solve convergence style:
             # normalize by the first iteration increment in each load step.
@@ -511,7 +615,10 @@ class HuZhangPhaseFieldStaggeredDriver:
 
             iter_num = k + 1
             last_iter = k == self.maxit - 1
-            converged_now = error < self.tol
+            # Dual-tolerance convergence: damage err_d must hit the strict tol;
+            # displacement err_u only needs the (possibly looser) tol_u. With
+            # tol_u==tol this reduces to the original error<tol test.
+            converged_now = (err_d < self.tol) and (err_u < self.tol_u)
             if self.debug:
                 should_print_progress = True
             elif self._stagger_print_interval <= 0:
@@ -528,7 +635,7 @@ class HuZhangPhaseFieldStaggeredDriver:
                     f"max_d={max_d_iter:.3e}"
                 )
 
-            if error < self.tol:
+            if converged_now:
                 converged = True
                 iters = k + 1
                 break
@@ -1042,6 +1149,7 @@ class HuZhangPhaseFieldStaggeredDriver:
 
     @staticmethod
     def _vtk_highorder_parallel_enabled() -> bool:
+        """是否启用高阶 VTK 重采样的并行（环境变量 ``FRACTUREX_VTK_HIGHORDER_PARALLEL``）。"""
         return str(os.getenv("FRACTUREX_VTK_HIGHORDER_PARALLEL", "1")).strip().lower() not in (
             "0",
             "false",

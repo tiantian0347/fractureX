@@ -1,3 +1,22 @@
+"""Krylov solvers and block/auxiliary-space preconditioners for the Hu-Zhang mixed system.
+
+This module provides two layers:
+
+1. Generic preconditioned Krylov wrappers (``solve_gmres_ilu``, ``solve_lgmres_amg``,
+   ``solve_minres_diag``, ...) returning ``(x, KrylovInfo)``.
+2. Saddle-point solvers for the Hu-Zhang stress/displacement system
+   ``K_h = [[A(d_h), B^T], [B, 0]]`` with block-triangular preconditioners whose Schur
+   complement ``S(d_h) = B A(d_h)^{-1} B^T`` is approximated by ``B diag(A)^{-1} B^T`` and
+   accelerated by Gauss-Seidel / Chebyshev smoothing plus a P1 auxiliary-space coarse
+   correction (``solve_huzhang_block_gmres_fast`` / ``..._auxspace``).
+
+Optional backends FEALPy (``FEALPY_AVAILABLE``) and pyamg (``PYAMG_AVAILABLE``) are detected
+at import; the block solvers degrade or raise with an explicit message when they are absent.
+
+Module-level ``_*_CACHE`` dicts memoize geometry-only operators (P1 prolongation ``PI_s``,
+divergence block ``B``, pyamg hierarchies) keyed by ``id(mesh)`` so they survive across
+staggered iterations where only the damaged coefficients in ``A`` change.
+"""
 from __future__ import annotations
 
 import os
@@ -31,9 +50,18 @@ except ImportError:
 
 _AUXSPACE_STATIC_CACHE: Dict[Tuple[int, int], Dict[str, Any]] = {}
 _AUXSPACE_SCHUR_CACHE: Dict[Tuple[int, int], Dict[str, Any]] = {}
+# Divergence block B_div = A_[m:, :m] and its transpose. Geometric constant for the
+# `standard` formulation (B2 = TM^T B is d-independent); keyed by (mesh_id, gdof_sigma).
+_AUXSPACE_B_CACHE: Dict[Tuple[int, int], Tuple[Any, Any]] = {}
 _AUXSPACE_COARSE_CACHE: Dict[Tuple[int, int, int], Dict[str, Any]] = {}
 # P1 isotropic Laplacian -> pyamg hierarchy (mesh_id, q); independent of elastic A updates.
 _FAST_PYAMG_P1_ISO_CACHE: Dict[Tuple[int, int], Any] = {}
+# fast-path setup amortization: reuse the EXPENSIVE per-solve objects (Schur S triple
+# product; weighted P1-coarse diffusion + pyamg hierarchy) across up to
+# `precond_rebuild_interval` consecutive solves. The preconditioner is approximate, so a
+# slightly stale S/ml only affects GMRES iteration count, NEVER the solution (GMRES is run
+# on the fresh A_,b_). Keyed per (mesh_id, ..., kind); each entry tracks calls_since_build.
+_FAST_PRECOND_CACHE: Dict[Tuple, Dict[str, Any]] = {}
 
 
 def _auxspace_log(msg: str) -> None:
@@ -270,6 +298,78 @@ def _make_coarse_diffusion_coef(
     return _make_weighted_g_coef(d_fun=d_fun, degradation_fun=degradation_fun)
 
 
+def _make_interface_aware_coef(base_coef, *, damage, state, alpha: float):
+    """Wrap a coarse g(d) coefficient with an interface-aware boost (B1).
+
+    Localized cracks form sharp d≈1/d≈0 interfaces where g(d)=(1-d)^2+eps jumps ~1 -> 1e-6
+    within a cell; the geometry-pure P1 coarse space cannot resolve this and GMRES niter
+    rises O(10) -> O(100). This multiplies the coarse diffusion weight by a factor that
+    grows where the degradation gradient ||grad g(d)|| = |g'(d)| ||grad d|| is large, so the
+    coarse correction puts more weight on interface cells.
+
+        coef_aware = g(d) * (1 + alpha * |grad g| / max|grad g|)
+
+    Args:
+        base_coef: callable (bcs, index=None) -> g(d), shape (NC, NQ). If None, returns None.
+        damage: damage model exposing ``degradation_grad(d)`` = g'(d).
+        state: state view providing ``d`` (a FE Function with ``grad_value(bcs)``).
+        alpha: boost strength (0 disables; typical 0.5-2.0).
+    Returns:
+        callable (bcs, index=None) -> coef array, same shape as base_coef.
+    """
+    if base_coef is None or alpha <= 0.0 or damage is None or state is None:
+        return base_coef
+
+    def coef_aware(bcs, index=None):
+        g_val = bm.asarray(base_coef(bcs, index=index))            # (NC, NQ)
+        d_val = bm.asarray(state.d(bcs, index=index))              # (NC, NQ)
+        grad_d = bm.asarray(state.d.grad_value(bcs, index=index))  # (NC, NQ, GD)
+        gp = bm.asarray(damage.degradation_grad(d_val))            # (NC, NQ) = g'(d)
+        grad_g_mag = bm.abs(gp) * bm.sqrt(bm.sum(grad_d * grad_d, axis=-1))  # (NC, NQ)
+        gmax = float(bm.max(grad_g_mag))
+        if not (gmax > 0.0):
+            return g_val
+        return g_val * (1.0 + alpha * (grad_g_mag / gmax))
+
+    return coef_aware
+
+
+def _build_coarse_enrichment(provider, S, sgdof: int, gdim: int, PI_s):
+    """Build a D13 ``EnrichmentOperator`` from a modes provider, or return None.
+
+    The provider (a zero-arg callable) yields the coarse-space enrichment modes
+    ``Phi`` of shape ``(NN, k)`` (bm/numpy) for the current frozen damage field, or
+    ``None``. Here we bind ``Phi`` to this solve's per-component Schur blocks
+    ``S[i0:i1, i0:i1]`` via a Galerkin projection. Returns ``None`` when no provider is
+    given or it yields nothing (so the coarse path is unchanged: zero regression).
+
+    Args:
+        provider: ``callable() -> Phi (NN, k) | None`` or None.
+        S: scipy CSR Schur matrix on the displacement space (nu = gdim*sgdof).
+        sgdof: per-component displacement dof count.
+        gdim: number of displacement components.
+        PI_s: scipy CSR P1 prolongation (one component).
+    Returns:
+        an ``EnrichmentOperator`` bound to ``S``'s component blocks, or ``None``.
+    """
+    if provider is None:
+        return None
+    phi_modes = provider()
+    if phi_modes is None:
+        return None
+    blocks = [S[i * sgdof:(i + 1) * sgdof, i * sgdof:(i + 1) * sgdof].tocsr()
+              for i in range(gdim)]
+
+    def schur_block_apply(v, comp):
+        return blocks[comp] @ np.asarray(v, dtype=np.float64).reshape(-1)
+
+    from fracturex.ml.coarse_space_enrich import EnrichmentOperator
+
+    return EnrichmentOperator.from_modes(
+        phi_modes, PI_s, schur_block_apply, gdim=gdim, sgdof=sgdof
+    )
+
+
 def _extract_mechanical_blocks(A_, gdof_sigma: int):
     """
     Blocks of the saddle-point system (unknown ordering ``[sigma; u]``):
@@ -304,12 +404,53 @@ def _approximate_schur_spd(A_sigma, B_div, D_inv: np.ndarray):
     This matches the sign convention where the minus in ``-B A^{-1} B^\top`` is
     absorbed so that ``S`` is positive definite under the discrete inf-sup condition.
     """
-    m = int(A_sigma.shape[0])
+    # ``A_sigma`` is used only for its size; allow None (matrix-free path) and
+    # derive m from D_inv instead.
+    m = int(A_sigma.shape[0]) if A_sigma is not None else int(len(D_inv))
     return (B_div @ spdiags(D_inv, 0, m, m) @ B_div.T).tocsr()
+
+
+def _schur_div_blocks(A_, m: int, mesh_id: int, form: str):
+    """Return ``(B_div, B_div^T)`` for the Schur approximation.
+
+    For the ``standard`` formulation ``B_div = A_[m:, :m]`` is d-independent
+    (``B2 = TM^T B`` is geometric), so cache it per mesh and reuse across staggered
+    iterations. For ``effective_stress`` it carries ``g(d)`` and is re-sliced each call.
+    """
+    if form == "standard":
+        cached = _AUXSPACE_B_CACHE.get((mesh_id, m))
+        if cached is not None:
+            return cached
+    B = A_[m:, :m].tocsr()
+    BT = B.T.tocsr()
+    if form == "standard":
+        _AUXSPACE_B_CACHE[(mesh_id, m)] = (B, BT)
+    return B, BT
+
+
+def _schur_spd_from_blocks(B_div, BT, D_inv: np.ndarray):
+    """``S = B diag(D_inv) B^T`` with the ``B @ diag`` step done as an O(nnz) column
+    scaling (bit-identical to ``B @ spdiags(D_inv)``), leaving a single sparse product.
+    """
+    BD = B_div.copy()
+    BD.data = BD.data * D_inv[BD.indices]
+    return (BD @ BT).tocsr()
 
 
 @dataclass
 class KrylovInfo:
+    """Convergence summary returned alongside the solution by every ``solve_*`` entry point.
+
+    Attributes:
+        solver: Tag identifying the method/preconditioner, e.g. ``"gmres-auxspace"``.
+        niter: Number of Krylov iterations actually performed.
+        converged: Whether the requested tolerance was met (``True`` for a zero RHS).
+        residual_norm: Final residual norm (preconditioned ``||r||/||b||`` for GMRES paths,
+            true ``||b - A x||`` for MINRES; ``nan`` when unavailable).
+        atol: Absolute tolerance passed to the Krylov solver.
+        rtol: Relative tolerance passed to the Krylov solver.
+    """
+
     solver: str
     niter: int
     converged: bool
@@ -319,6 +460,19 @@ class KrylovInfo:
 
 
 def as_scipy_csr(A):
+    """Coerce a FEALPy/SciPy sparse matrix to ``scipy.sparse.csr_matrix``.
+
+    Args:
+        A: A matrix exposing ``to_scipy()`` (FEALPy) or ``tocsr()`` (SciPy), or an object
+            already usable as-is.
+
+    Returns:
+        The matrix in CSR form (or ``A`` unchanged if it has neither hook).
+    """
+    from fracturex.utilfuc.matfree_elastic import MatrixFreeElasticOperator
+
+    if isinstance(A, MatrixFreeElasticOperator):
+        return A  # matrix-free: never materialize; GMRES/preconditioner use matvec only
     if hasattr(A, "to_scipy"):
         return A.to_scipy().tocsr()
     if hasattr(A, "tocsr"):
@@ -327,6 +481,17 @@ def as_scipy_csr(A):
 
 
 def make_ilu_preconditioner(A, *, drop_tol: float = 1e-4, fill_factor: float = 10.0):
+    """Build an incomplete-LU preconditioner as a ``LinearOperator``.
+
+    Args:
+        A: System matrix (FEALPy or SciPy sparse); internally converted to CSC for ``spilu``.
+        drop_tol: ILU drop tolerance (smaller -> denser, stronger factor).
+        fill_factor: Upper bound on fill relative to ``A``.
+
+    Returns:
+        A ``scipy.sparse.linalg.LinearOperator`` applying ``(LU)^{-1}``, or ``None`` if the
+        factorization fails (e.g. singular block).
+    """
     A_ = as_scipy_csr(A)
     try:
         # spilu internally prefers CSC; convert explicitly to avoid warning/copy.
@@ -361,6 +526,11 @@ def make_amg_preconditioner(A):
 
 
 def _extract_niter_from_info(info) -> int:
+    """Best-effort iteration count from a solver's heterogeneous ``info`` return.
+
+    Handles dict (``niter``/``iter``/...), attribute-bearing objects, and SciPy's integer
+    convergence flag (positive == iteration count). Returns 0 when nothing usable is found.
+    """
     try:
         if isinstance(info, dict):
             for k in ("niter", "iter", "iterations", "num_iter"):
@@ -380,6 +550,16 @@ def _extract_niter_from_info(info) -> int:
 
 
 def _extract_converged_from_info(info, *, rtol: float = 1e-8, bnorm: float = 1.0) -> bool:
+    """Best-effort convergence flag from a solver's heterogeneous ``info`` return.
+
+    Args:
+        info: dict, integer SciPy flag (0 == converged), or object with a residual.
+        rtol: Relative tolerance used when only a raw residual is available.
+        bnorm: ``||b||`` for turning ``rtol`` into an absolute residual threshold.
+
+    Returns:
+        ``True`` if the solver is judged to have converged, else ``False``.
+    """
     try:
         if isinstance(info, dict):
             for k in ("converged", "success"):
@@ -398,6 +578,19 @@ def _extract_converged_from_info(info, *, rtol: float = 1e-8, bnorm: float = 1.0
 
 
 def _krylov_stats(callback_residuals, solver: str, info, atol, rtol, *, bnorm: float = 1.0, cb_count_hint: int = 0) -> KrylovInfo:
+    """Assemble a :class:`KrylovInfo` from callback residuals plus the solver ``info``.
+
+    Args:
+        callback_residuals: Per-iteration residual norms collected by the callback (may be empty).
+        solver: Solver/preconditioner tag stored in the result.
+        info: Raw convergence info from the Krylov routine.
+        atol, rtol: Tolerances echoed into the result.
+        bnorm: ``||b||`` used for convergence/residual interpretation.
+        cb_count_hint: Fallback iteration count when neither residuals nor ``info`` give one.
+
+    Returns:
+        A populated :class:`KrylovInfo`.
+    """
     niter = len(callback_residuals)
     if niter == 0:
         niter = _extract_niter_from_info(info)
@@ -422,6 +615,7 @@ def _krylov_stats(callback_residuals, solver: str, info, atol, rtol, *, bnorm: f
 
 
 def _zero_rhs_stats(solver: str, atol: float, rtol: float) -> KrylovInfo:
+    """Trivial :class:`KrylovInfo` for a zero right-hand side (solution is exactly 0)."""
     return KrylovInfo(
         solver=solver,
         niter=0,
@@ -433,6 +627,7 @@ def _zero_rhs_stats(solver: str, atol: float, rtol: float) -> KrylovInfo:
 
 
 def _is_zero_rhs(b, *, atol: float = 0.0) -> bool:
+    """Return ``True`` when ``||b|| <= max(atol, 1e-30)`` so the solve can be short-circuited."""
     b_ = np.asarray(b, dtype=float).reshape(-1)
     tol = max(float(atol), 1e-30)
     return float(np.linalg.norm(b_)) <= tol
@@ -553,30 +748,58 @@ def _call_fealpy_gmres(fgmres, A, b, *, M, restart: int, maxit: int, atol: float
 
 
 def solve_lgmres_ilu(A, b, *, rtol: float = 1e-8, atol: float = 0.0, maxit: int = 200, drop_tol: float = 1e-4, fill_factor: float = 10.0):
+    """Solve ``A x = b`` with LGMRES preconditioned by ILU.
+
+    Args:
+        A: System matrix (FEALPy or SciPy sparse, ``(n, n)``).
+        b: Right-hand side, shape ``(n,)`` (flattened internally).
+        rtol, atol: Relative/absolute convergence tolerances.
+        maxit: Maximum iterations.
+        drop_tol, fill_factor: ILU parameters forwarded to :func:`make_ilu_preconditioner`.
+
+    Returns:
+        ``(x, info)`` where ``x`` is the solution ``(n,)`` and ``info`` is a :class:`KrylovInfo`.
+    """
     A_ = as_scipy_csr(A)
     b_ = np.asarray(b, dtype=float).reshape(-1)
     if _is_zero_rhs(b_, atol=atol):
         return np.zeros_like(b_), _zero_rhs_stats("lgmres", atol, rtol)
     M = make_ilu_preconditioner(A_, drop_tol=drop_tol, fill_factor=fill_factor)
-    residuals = []
+    # scipy ``lgmres`` does NOT accept ``callback_type`` and its callback receives the
+    # current solution vector (not the residual). Count outer iterations and compute the
+    # final relative residual from x.
+    n_calls = {"k": 0}
 
-    def callback(rk):
-        residuals.append(float(rk))
+    def callback(_xk):
+        n_calls["k"] += 1
 
-    x, info = lgmres(
-        A_,
-        b_,
-        M=M,
+    x, info = lgmres(A_, b_, M=M, atol=atol, rtol=rtol, maxiter=maxit, callback=callback)
+    bnorm = max(float(np.linalg.norm(b_)), 1e-30)
+    rrel = float(np.linalg.norm(A_ @ x - b_) / bnorm)
+    return x, KrylovInfo(
+        solver="lgmres-ilu",
+        niter=max(int(n_calls["k"]), 1),
+        converged=bool(info == 0 and rrel <= max(rtol * 10.0, 1e-6)),
+        residual_norm=rrel,
         atol=atol,
         rtol=rtol,
-        maxiter=maxit,
-        callback=callback,
-        callback_type="pr_norm",
     )
-    return x, _krylov_stats(residuals, "lgmres", info, atol, rtol)
 
 
 def solve_gmres_ilu(A, b, *, rtol: float = 1e-8, atol: float = 0.0, restart: int = 50, maxit: int = 200, drop_tol: float = 1e-4, fill_factor: float = 10.0):
+    """Solve ``A x = b`` with restarted GMRES preconditioned by ILU.
+
+    Args:
+        A: System matrix ``(n, n)``.
+        b: Right-hand side ``(n,)``.
+        rtol, atol: Convergence tolerances.
+        restart: GMRES restart length.
+        maxit: Maximum (outer) iterations.
+        drop_tol, fill_factor: ILU parameters.
+
+    Returns:
+        ``(x, info)`` with solution ``(n,)`` and :class:`KrylovInfo`.
+    """
     A_ = as_scipy_csr(A)
     b_ = np.asarray(b, dtype=float).reshape(-1)
     if _is_zero_rhs(b_, atol=atol):
@@ -602,6 +825,20 @@ def solve_gmres_ilu(A, b, *, rtol: float = 1e-8, atol: float = 0.0, restart: int
 
 
 def solve_gmres_amg(A, b, *, rtol: float = 1e-8, atol: float = 0.0, restart: int = 50, maxit: int = 200):
+    """Solve ``A x = b`` with restarted GMRES preconditioned by smoothed-aggregation AMG (pyamg).
+
+    Falls back to no preconditioner if pyamg is unavailable.
+
+    Args:
+        A: System matrix ``(n, n)``.
+        b: Right-hand side ``(n,)``.
+        rtol, atol: Convergence tolerances.
+        restart: GMRES restart length.
+        maxit: Maximum (outer) iterations.
+
+    Returns:
+        ``(x, info)`` with solution ``(n,)`` and :class:`KrylovInfo`.
+    """
     A_ = as_scipy_csr(A)
     b_ = np.asarray(b, dtype=float).reshape(-1)
     if _is_zero_rhs(b_, atol=atol):
@@ -627,6 +864,19 @@ def solve_gmres_amg(A, b, *, rtol: float = 1e-8, atol: float = 0.0, restart: int
 
 
 def solve_lgmres_amg(A, b, *, rtol: float = 1e-8, atol: float = 0.0, maxit: int = 200):
+    """Solve ``A x = b`` with LGMRES preconditioned by smoothed-aggregation AMG (pyamg).
+
+    Falls back to no preconditioner if pyamg is unavailable.
+
+    Args:
+        A: System matrix ``(n, n)``.
+        b: Right-hand side ``(n,)``.
+        rtol, atol: Convergence tolerances.
+        maxit: Maximum iterations.
+
+    Returns:
+        ``(x, info)`` with solution ``(n,)`` and :class:`KrylovInfo`.
+    """
     A_ = as_scipy_csr(A)
     b_ = np.asarray(b, dtype=float).reshape(-1)
     if _is_zero_rhs(b_, atol=atol):
@@ -651,6 +901,20 @@ def solve_lgmres_amg(A, b, *, rtol: float = 1e-8, atol: float = 0.0, maxit: int 
 
 
 def solve_minres_diag(A, b, *, rtol: float = 1e-8, atol: float = 0.0, maxit: int = 200):
+    """Solve a symmetric system ``A x = b`` with unpreconditioned MINRES.
+
+    The callback recomputes the true residual ``||b - A x_k||`` each iteration for an
+    accurate convergence history.
+
+    Args:
+        A: Symmetric system matrix ``(n, n)``.
+        b: Right-hand side ``(n,)``.
+        rtol, atol: Convergence tolerances.
+        maxit: Maximum iterations.
+
+    Returns:
+        ``(x, info)`` with solution ``(n,)`` and :class:`KrylovInfo`.
+    """
     A_ = as_scipy_csr(A)
     b_ = np.asarray(b, dtype=float).reshape(-1)
     residuals = []
@@ -902,17 +1166,81 @@ def _resolve_fast_schur_precond(schur_precond: str, order_p: int) -> str:
     return aliases[s]
 
 
+def _fast_cached_schur(mesh, m, schur_mode, form, Mblk, B, D_inv, interval):
+    """Schur approximation S ≈ B diag(A)^-1 B^T, reused for ``interval`` solves.
+
+    Inputs:
+        mesh, m, schur_mode, form: cache key parts (per mesh / block size / mode).
+        Mblk, B, D_inv: blocks of the CURRENT A (used only when (re)building).
+        interval: rebuild every ``interval`` calls (1 = rebuild every call).
+    Output:
+        scipy CSR Schur matrix (possibly from an earlier, slightly stale d).
+    """
+    interval = max(int(interval), 1)
+    key = (id(mesh), int(m), schur_mode, form, "S")
+    c = _FAST_PRECOND_CACHE.get(key)
+    if c is not None and int(c["interval"]) == interval and int(c["calls"]) < interval:
+        c["calls"] = int(c["calls"]) + 1
+        _auxspace_log(f"fast Schur reuse {c['calls']}/{interval}")
+        return c["S"]
+    S = _approximate_schur_spd(Mblk, B, D_inv)
+    _FAST_PRECOND_CACHE[key] = {"S": S, "interval": interval, "calls": 1}
+    return S
+
+
+def _fast_cached_coarse_ml(mesh, q, form, weighted_aux, damage, state, d_fun, degradation_fun,
+                           interval, interface_aware=False, interface_alpha=1.0):
+    """P1 coarse-diffusion pyamg hierarchy, reused for ``interval`` solves.
+
+    The weighted (``g(d)``) coarse operator is otherwise reassembled + re-setup on
+    EVERY solve, which dominates fast-path cost. Reusing a slightly stale hierarchy is
+    a valid preconditioner (affects niter only). Unweighted path stays on its own
+    mesh-level cache (already d-independent).
+
+    When ``interface_aware=True`` the g(d) coarse weight is boosted near sharp damage
+    interfaces (B1; see :func:`_make_interface_aware_coef`).
+    """
+    interval = max(int(interval), 1)
+    key = (id(mesh), int(q), form, int(bool(weighted_aux)),
+           int(bool(interface_aware)), "ml")
+    c = _FAST_PRECOND_CACHE.get(key)
+    if c is not None and int(c["interval"]) == interval and int(c["calls"]) < interval:
+        c["calls"] = int(c["calls"]) + 1
+        _auxspace_log(f"fast coarse-ml reuse {c['calls']}/{interval}")
+        return c["ml"]
+    coef = _make_coarse_diffusion_coef(
+        formulation=form,
+        weighted_aux=weighted_aux,
+        damage=damage,
+        state=state,
+        d_fun=d_fun,
+        degradation_fun=degradation_fun,
+    )
+    if interface_aware:
+        coef = _make_interface_aware_coef(
+            coef, damage=damage, state=state, alpha=float(interface_alpha)
+        )
+    if coef is not None:
+        ml = _assemble_p1_diffusion_pyamg(mesh, int(q), coef=coef)
+    else:
+        ml = _get_or_build_p1_isotropic_pyamg(mesh, int(q))
+    _FAST_PRECOND_CACHE[key] = {"ml": ml, "interval": interval, "calls": 1}
+    return ml
+
+
 def solve_huzhang_block_gmres_fast(
     A,
     b,
     *,
     gdof_sigma: int,
     vspace,
+    return_preconditioner: bool = False,
     rtol: float = 1e-8,
     atol: float = 0.0,
     restart: int = 20,
     maxit: int = 200,
     q: int = 3,
+    precond_rebuild_interval: int = 1,
     schur_precond: str = "auto",
     order_p: Optional[int] = None,
     gs_iterations: int = 2,
@@ -924,6 +1252,9 @@ def solve_huzhang_block_gmres_fast(
     verbose_setup: bool = False,
     elastic_formulation: str = "standard",
     weighted_aux: bool = True,
+    interface_aware: bool = False,
+    interface_alpha: float = 1.0,
+    learned_coarse_provider=None,
     damage=None,
     state=None,
     d_fun=None,
@@ -932,6 +1263,13 @@ def solve_huzhang_block_gmres_fast(
     """
     GMRES for the Hu-Zhang saddle-point system with Schur preconditioners aligned with the
     three ``pre_of_S`` variants in ``huzhang_fast_solver.HZFEMFastSolve``.
+
+    **``learned_coarse_provider``** (D13): optional ``callable() -> EnrichmentOperator
+    | None``. When it yields an operator, an SPD-safe additive Galerkin enrichment
+    correction is applied right after the geometric P1 coarse V-cycle (see
+    ``fracturex.ml.coarse_space_enrich``). ``None`` (default) leaves the existing coarse
+    path byte-for-byte unchanged. The enrichment never alters the solution (right
+    preconditioning), only the convergence rate.
 
     Uses the same block layout and Schur approximation as
     :func:`solve_huzhang_block_gmres_auxspace` (``S(d_h) \\approx B\\,\\mathrm{diag}(A)^{-1}B^\\top``).
@@ -982,10 +1320,24 @@ def solve_huzhang_block_gmres_fast(
         tag = f"gmres-fast-{schur_mode}"
         return np.zeros_like(b_), _zero_rhs_stats(tag, atol, rtol)
 
-    m, Mblk, B = _extract_mechanical_blocks(A_, gdof_sigma)
-    BT = B.T.tocsr()
-    D_inv = _diag_inv_stress_block(Mblk)
-    S = _approximate_schur_spd(Mblk, B, D_inv)
+    from fracturex.utilfuc.matfree_elastic import MatrixFreeElasticOperator
+
+    if isinstance(A_, MatrixFreeElasticOperator):
+        # Matrix-free: pull divergence block + (approx) stress diagonal from the
+        # operator instead of slicing/.diagonal() an assembled matrix. Mblk stays
+        # None — the Schur builder only needs its size (derived from D_inv).
+        m = A_.gdof_sigma
+        B = A_.B_div
+        BT = A_.B_div_T
+        D_inv = A_.diag_inv_sigma()
+        Mblk = None
+    else:
+        m, Mblk, B = _extract_mechanical_blocks(A_, gdof_sigma)
+        BT = B.T.tocsr()
+        D_inv = _diag_inv_stress_block(Mblk)
+    S = _fast_cached_schur(
+        vspace.mesh, gdof_sigma, schur_mode, form, Mblk, B, D_inv, precond_rebuild_interval
+    )
 
     S_lmax: Optional[float] = None
     S_dinv: Optional[np.ndarray] = None
@@ -1010,18 +1362,11 @@ def solve_huzhang_block_gmres_fast(
     PI_s = cached_pi["PI_s"]
     PI_s_T = cached_pi["PI_s_T"]
 
-    coef_coarse = _make_coarse_diffusion_coef(
-        formulation=form,
-        weighted_aux=weighted_aux,
-        damage=damage,
-        state=state,
-        d_fun=d_fun,
-        degradation_fun=degradation_fun,
+    ml = _fast_cached_coarse_ml(
+        mesh, int(q), form, weighted_aux, damage, state, d_fun, degradation_fun,
+        precond_rebuild_interval,
+        interface_aware=interface_aware, interface_alpha=interface_alpha,
     )
-    if coef_coarse is not None:
-        ml = _assemble_p1_diffusion_pyamg(mesh, int(q), coef=coef_coarse)
-    else:
-        ml = _get_or_build_p1_isotropic_pyamg(mesh, int(q))
 
     nu = int(S.shape[0])
     if nu != gdim * sgdof:
@@ -1031,6 +1376,10 @@ def solve_huzhang_block_gmres_fast(
         )
 
     n_gs = max(1, int(gs_iterations))
+
+    # D13 learned coarse-space enrichment (optional). Built once per setup; the geometric
+    # per-component blocks of the Schur matrix S supply the Galerkin coarse matrix.
+    enr = _build_coarse_enrichment(learned_coarse_provider, S, sgdof, gdim, PI_s)
 
     def _coarse_add_residual(res: np.ndarray, e_out: np.ndarray) -> None:
         for i in range(gdim):
@@ -1100,6 +1449,15 @@ def solve_huzhang_block_gmres_fast(
             )
             return e1
 
+    # D13: wrap the Schur solve with deflation on the learned enrichment subspace.
+    # Deflation (not additive) is what provably reduces the two-level condition number
+    # and kills the high-contrast dependence; it leaves the solution unchanged.
+    if enr is not None:
+        _pre_of_S_base = pre_of_S
+
+        def pre_of_S(r1: np.ndarray) -> np.ndarray:  # noqa: F811
+            return enr.apply_deflated_full(r1, _pre_of_S_base, sgdof)
+
     def fast_preconditioner(r: np.ndarray) -> np.ndarray:
         r = np.asarray(r, dtype=np.float64).reshape(-1)
         r0 = r[:m]
@@ -1111,6 +1469,10 @@ def solve_huzhang_block_gmres_fast(
         return np.concatenate([e0, -e1])
 
     P = LinearOperator(A_.shape, matvec=fast_preconditioner, dtype=A_.dtype)
+    if return_preconditioner:
+        # Expose the (right) block preconditioner operator P^{-1} itself (no GMRES run),
+        # e.g. for spectral analysis of P^{-1}K (precond_spectrum.py). Returns (P, None).
+        return P, None
     residuals: list = []
     cb_count = {"n": 0}
     bnorm = float(np.linalg.norm(b_))
@@ -1229,6 +1591,7 @@ def solve_huzhang_block_gmres_auxspace(
     coarse_rebuild_interval: int = 1,
     weighted_aux: bool = False,
     elastic_formulation: str = "standard",
+    learned_coarse_provider=None,
     damage=None,
     state=None,
     d_fun=None,
@@ -1296,10 +1659,20 @@ def solve_huzhang_block_gmres_auxspace(
     if _is_zero_rhs(b_, atol=atol):
         return np.zeros_like(b_), _zero_rhs_stats("gmres-auxspace", atol, rtol)
 
-    m, M, B = _extract_mechanical_blocks(A_, gdof_sigma)
-    D_inv = _diag_inv_stress_block(M)
-    S_csr = _approximate_schur_spd(M, B, D_inv)
-    BT = B.T.tocsr()
+    m = int(gdof_sigma)
+    # D^{-1} ≈ diag(A_sigma)^{-1}: read the stress-block diagonal directly off A_;
+    # only the diagonal is needed for the Schur approximation, so no full M2 slice.
+    diag = np.asarray(A_.diagonal(), dtype=float)[:m]
+    diag = np.where(np.abs(diag) > 1e-30, diag, 1.0)
+    D_inv = 1.0 / diag
+    # B = B_div = A_[m:, :m]; cached per mesh for `standard` (d-independent).
+    from fracturex.utilfuc.matfree_elastic import MatrixFreeElasticOperator
+
+    if isinstance(A_, MatrixFreeElasticOperator):
+        B, BT = A_.B_div, A_.B_div_T   # divergence block carried by the MF operator
+    else:
+        B, BT = _schur_div_blocks(A_, m, id(vspace.mesh), form)
+    S_csr = _schur_spd_from_blocks(B, BT, D_inv)
     _auxspace_log(f"built Schur S ≈ B A^{-1} B^T: nnz={S_csr.nnz}, shape={S_csr.shape}")
 
     mesh = vspace.mesh
@@ -1378,28 +1751,60 @@ def solve_huzhang_block_gmres_auxspace(
     # This is an approximation when d/load changes; keep interval=1 for strict rebuild.
     rebuild_interval = max(int(schur_rebuild_interval), 1)
     schur_key = (mesh_id, int(m), float(theta), form, int(bool(schur_ilu_in_precond)))
-    schur_cached = _AUXSPACE_SCHUR_CACHE.get(schur_key, None)
-    reuse_ok = (
-        schur_cached is not None
-        and int(schur_cached.get("interval", 1)) == rebuild_interval
-        and int(schur_cached.get("calls_since_build", 0)) < rebuild_interval
-    )
-    if reuse_ok:
-        ilu_s = schur_cached.get("ilu_s", None)
-        calls = int(schur_cached.get("calls_since_build", 0)) + 1
-        schur_cached["calls_since_build"] = calls
-        _auxspace_log(f"Schur ILU reuse: call {calls}/{rebuild_interval}")
+    # The Schur-side ILU is only applied inside the preconditioner when
+    # `schur_ilu_in_precond=True`. When disabled (the default), skip the spilu
+    # factorization entirely — it can dominate setup cost for nothing.
+    if not schur_ilu_in_precond:
+        ilu_s = None
+        _auxspace_log("Schur ILU skipped (schur_ilu_in_precond=False)")
     else:
-        _auxspace_log("building Schur ILU preconditioner on S_hat ...")
-        ilu_s = make_ilu_preconditioner(S_hat, drop_tol=1e-4, fill_factor=10.0)
-        _auxspace_log("Schur ILU build done" if ilu_s is not None else "Schur ILU build failed (None)")
-        _AUXSPACE_SCHUR_CACHE[schur_key] = {
-            "ilu_s": ilu_s,
-            "interval": rebuild_interval,
-            "calls_since_build": 1,
-        }
+        schur_cached = _AUXSPACE_SCHUR_CACHE.get(schur_key, None)
+        reuse_ok = (
+            schur_cached is not None
+            and int(schur_cached.get("interval", 1)) == rebuild_interval
+            and int(schur_cached.get("calls_since_build", 0)) < rebuild_interval
+        )
+        if reuse_ok:
+            ilu_s = schur_cached.get("ilu_s", None)
+            calls = int(schur_cached.get("calls_since_build", 0)) + 1
+            schur_cached["calls_since_build"] = calls
+            _auxspace_log(f"Schur ILU reuse: call {calls}/{rebuild_interval}")
+        else:
+            _auxspace_log("building Schur ILU preconditioner on S_hat ...")
+            ilu_s = make_ilu_preconditioner(S_hat, drop_tol=1e-4, fill_factor=10.0)
+            _auxspace_log("Schur ILU build done" if ilu_s is not None else "Schur ILU build failed (None)")
+            _AUXSPACE_SCHUR_CACHE[schur_key] = {
+                "ilu_s": ilu_s,
+                "interval": rebuild_interval,
+                "calls_since_build": 1,
+            }
+
+    # D13 learned coarse-space enrichment (optional). Built once per setup from the
+    # current Schur S_hat per-component blocks; None when no provider (zero regression).
+    enr = _build_coarse_enrichment(learned_coarse_provider, S_hat, sgdof, gdim, PI_s)
 
     p_apply_count = {"n": 0}
+
+    def _schur_solve_base(rhs: np.ndarray) -> np.ndarray:
+        """Base Schur preconditioner action B_S ≈ S(d_h)^{-1}: GS + P1 coarse + GS.
+
+        Operates on a displacement-space residual ``rhs`` (nu = gdim*sgdof) and returns
+        the approximate Schur solve ``u1``. Kept as a closure so D13 deflation can wrap it.
+        """
+        rhs = np.asarray(rhs, dtype=float).reshape(-1)
+        u1 = np.zeros_like(rhs)
+        gauss_seidel(S_hat, u1, rhs, iterations=max(int(sstep), int(smoother_steps), 1), sweep="forward")
+        r2 = rhs - S_hat @ u1
+        for i in range(gdim):
+            i0 = i * sgdof
+            i1 = (i + 1) * sgdof
+            crm = PI_s_T @ r2[i0:i1]
+            delta = P_coarse @ crm
+            u1[i0:i1] += PI_s @ delta
+        gauss_seidel(S_hat, u1, rhs, iterations=max(int(sstep), int(smoother_steps), 1), sweep="backward")
+        if schur_ilu_in_precond and ilu_s is not None:
+            u1 = u1 + np.asarray(ilu_s.matvec(rhs - S_hat @ u1)).reshape(-1)
+        return u1
 
     def gmres_preconditioner(r):
         t0p = time.perf_counter()
@@ -1409,30 +1814,13 @@ def solve_huzhang_block_gmres_auxspace(
 
         # B_A(d_h) ≈ A(d_h)^{-1} on stress residual (diagonal part)
         u0 = r[:m] * D_inv
-        u1 = np.zeros_like(r1)
         r1_local = r1 - B @ u0
 
-        # B_S(d_h) ≈ S(d_h)^{-1}: GS + auxiliary coarse correction on S_hat ≈ S(d_h)
-        gauss_seidel(S_hat, u1, r1_local, iterations=max(int(sstep), int(smoother_steps), 1), sweep="forward")
-
-        # pyamg V-cycle on auxiliary P1 Laplacian (per displacement component)
-        r2 = r1_local - S_hat @ u1
-        for i in range(gdim):
-            i0 = i * sgdof
-            i1 = (i + 1) * sgdof
-            crm = PI_s_T @ r2[i0:i1]
-            # One FEALPy algebraic-MG V-cycle on the scalar coarse Laplacian (per displacement component).
-            delta = P_coarse @ crm
-            u1[i0:i1] += PI_s @ delta
-
-        # Backward Gauss-Seidel sweep
-        gauss_seidel(S_hat, u1, r1_local, iterations=max(int(sstep), int(smoother_steps), 1), sweep="backward")
-
-        # Optional Schur correction with ILU inside the preconditioner.
-        # Default OFF: it can dominate cost and may worsen spectral properties for GMRES.
-        if schur_ilu_in_precond and ilu_s is not None:
-            corr = np.asarray(ilu_s.matvec(r1_local - S_hat @ u1)).reshape(-1)
-            u1 += corr
+        # B_S(d_h) ≈ S(d_h)^{-1}; D13 deflation wraps the base solve when enrichment is on.
+        if enr is None:
+            u1 = _schur_solve_base(r1_local)
+        else:
+            u1 = enr.apply_deflated_full(r1_local, _schur_solve_base, sgdof)
 
         # Assemble preconditioned residual: [M^{-1}*r1 + M^{-1}*B^T*u1; -u1]
         out = np.concatenate([u0 + (BT @ u1) * D_inv, -u1])

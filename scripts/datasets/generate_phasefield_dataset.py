@@ -39,6 +39,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import shutil
 import time
 import traceback
 from dataclasses import asdict
@@ -126,6 +127,13 @@ def main() -> int:
                     help="cap how many grid combos to run (debug)")
     ap.add_argument("--skip-existing", action="store_true",
                     help="skip samples whose npz already exists")
+    ap.add_argument("--num-shards", type=int, default=1,
+                    help="split the grid across N parallel processes")
+    ap.add_argument("--shard", type=int, default=0,
+                    help="this process's shard index in [0, num-shards)")
+    ap.add_argument("--cleanup-runs", action="store_true",
+                    help="delete each run dir after its sample is exported "
+                         "(bounds disk to samples/; the npz is self-contained)")
     args = ap.parse_args()
 
     cfg = _load_config(args.config)
@@ -139,7 +147,13 @@ def main() -> int:
     combos = _enumerate_grid(grid)
     if args.max_samples is not None:
         combos = combos[: args.max_samples]
-    print(f"dataset={dataset_name}  combos={len(combos)}")
+    # Shard by GLOBAL index so sample ids never collide across parallel shards
+    # writing into the same dataset dir.
+    indexed = list(enumerate(combos))
+    if args.num_shards > 1:
+        indexed = [(i, c) for (i, c) in indexed if i % args.num_shards == args.shard]
+    print(f"dataset={dataset_name}  combos={len(combos)}  "
+          f"shard={args.shard}/{args.num_shards}  this_shard={len(indexed)}")
 
     samples_dir = args.dataset_dir / "samples"
     runs_dir = args.dataset_dir / "runs"
@@ -150,7 +164,7 @@ def main() -> int:
     failures: list[dict] = []
     t_start = time.perf_counter()
 
-    for i, combo in enumerate(combos):
+    for i, combo in indexed:
         sample_id = f"sample_{i:06d}"
         npz_path = samples_dir / f"{sample_id}.npz"
         meta_path = samples_dir / f"{sample_id}.meta.json"
@@ -191,6 +205,8 @@ def main() -> int:
             })
             print(f"[{i+1}/{len(combos)}] {sample_id}  OK  ({wall:.1f}s)  "
                   f"max_d={sample_meta['stats']['max_damage']:.3f}")
+            if args.cleanup_runs:
+                shutil.rmtree(run_dir, ignore_errors=True)
         except Exception as e:
             tb = traceback.format_exc(limit=3)
             print(f"[{i+1}/{len(combos)}] {sample_id}  FAIL: {e}")
@@ -205,16 +221,19 @@ def main() -> int:
         "config_path": str(args.config),
         "fixed": fixed,
         "grid": grid,
-        "n_samples": len(combos),
+        "n_samples": len(indexed),
         "n_ok": sum(1 for s in manifest_samples if s.get("ok")),
         "n_fail": len(failures),
         "samples": manifest_samples,
         "wall_s_total": round(time.perf_counter() - t_start, 2),
     }
-    (args.dataset_dir / "dataset_manifest.json").write_text(
-        json.dumps(manifest, indent=2)
-    )
-    print(f"manifest -> {args.dataset_dir/'dataset_manifest.json'}")
+    if args.num_shards > 1:
+        manifest["shard"] = args.shard
+        manifest["num_shards"] = args.num_shards
+    manifest_name = ("dataset_manifest.json" if args.num_shards == 1
+                     else f"dataset_manifest.shard{args.shard}.json")
+    (args.dataset_dir / manifest_name).write_text(json.dumps(manifest, indent=2))
+    print(f"manifest -> {args.dataset_dir/manifest_name}")
     print(f"ok={manifest['n_ok']}  fail={manifest['n_fail']}  "
           f"total wall = {manifest['wall_s_total']}s")
     return 0 if manifest["n_fail"] == 0 else 2

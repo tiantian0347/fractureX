@@ -23,6 +23,7 @@ Outputs under ``<root>/phasefield/<case>/<run_label>/epsg_<tag>/`` (same layout 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -98,7 +99,10 @@ def _use_elastic_fast(mode: str) -> bool:
         return True
     if raw == "0":
         return False
-    return _run_short_smoke()
+    # Default: use the optimal `fast` (symmetric two-level V-cycle aux-space)
+    # preconditioner — niter≈6 vs auxspace≈29 (D12 §3.2). Set FRACTUREX_ELASTIC_FAST=0
+    # only for the auxspace ablation column.
+    return True
 
 
 def _elastic_direct_backend() -> str:
@@ -153,15 +157,68 @@ def _env_int(name: str, default: int) -> int:
 
 def _aux_gmres_settings() -> dict:
     """GMRES parameters for the aux-space / fast elastic solver, overridable
-    via FRACTUREX_GMRES_{RTOL,ATOL,RESTART,MAXIT}. Used for rtol/maxit tuning
-    experiments without touching the rest of the pipeline.
+    via FRACTUREX_GMRES_{RTOL,ATOL,RESTART,MAXIT}.
+
+    The restart default is 200 (was 60). On the localized phase-field saddle system,
+    GMRES(60) restarts before the superlinear phase and STALLS on the non-normal block
+    operator: niter inflates 9->93 (maxd 0.998) or even fails to converge (maxd=1.0, DNF)
+    purely as a restart artifact (see docs/.../D13_IMPL §9.4 d12_recheck). restart>=200
+    keeps the Krylov basis long enough for the preconditioner's true O(10-50) localized
+    convergence; restart only changes niter, never the solution. Pre-localization niter is
+    already O(2-8) so the larger restart never triggers and costs nothing but a bit of
+    Krylov-basis memory (200 * ndof * 8B ~= 0.1 GB, negligible).
     """
     return {
         "rtol": _env_float("FRACTUREX_GMRES_RTOL", 1e-8),
         "atol": _env_float("FRACTUREX_GMRES_ATOL", 1e-12),
-        "restart": _env_int("FRACTUREX_GMRES_RESTART", 60),
-        "maxit": _env_int("FRACTUREX_GMRES_MAXIT", 200),
+        "restart": _env_int("FRACTUREX_GMRES_RESTART", 200),
+        "maxit": _env_int("FRACTUREX_GMRES_MAXIT", 400),
     }
+
+
+def _adaptive_restart(base_restart: int, max_d: float) -> int:
+    """maxd-adaptive GMRES restart: small pre-localization, large at localization.
+
+    Pre-localization (max_d < 0.9) the preconditioner converges in O(2-8) iters, so a
+    small restart suffices and saves Krylov-basis memory. At localization (max_d >= 0.9)
+    the non-normal operator needs a longer basis to avoid restart stall, so bump to >=300.
+    Disabled (returns base_restart unchanged) when FRACTUREX_GMRES_ADAPTIVE_RESTART != 1.
+
+    Args:
+        base_restart: the configured restart (from _aux_gmres_settings).
+        max_d: current maximum damage in the field.
+    Returns:
+        the restart to use for this solve.
+    """
+    if os.environ.get("FRACTUREX_GMRES_ADAPTIVE_RESTART", "0").strip() != "1":
+        return int(base_restart)
+    thr = _env_float("FRACTUREX_GMRES_ADAPTIVE_MAXD", 0.9)
+    hi = _env_int("FRACTUREX_GMRES_ADAPTIVE_HI", 300)
+    lo = _env_int("FRACTUREX_GMRES_ADAPTIVE_LO", 60)
+    return int(hi) if float(max_d) >= thr else int(lo)
+
+
+def _phase_direct(A, F):
+    """Direct (PARDISO) phase-field solve.
+
+    The post-peak staggered iterations on the SENS run stall the unpreconditioned
+    GMRES phase solver (1200+ iters/solve, ~half the wall time, and it cannot
+    converge cleanly once max_d=1 saturates). The phase operator is SPD and not
+    much larger than the elastic block, so a sparse direct factorization is both
+    far faster and exact here. Selected by FRACTUREX_PHASE_BACKEND=pardiso.
+    """
+    from fracturex.utilfuc.sparse_direct_backends import solve_direct_pardiso
+
+    x = solve_direct_pardiso(A, F)
+    x = np.asarray(x, dtype=float).reshape(-1)
+    return x, KrylovInfo(
+        solver="pardiso-phase",
+        niter=1,
+        converged=True,
+        residual_norm=0.0,
+        atol=0.0,
+        rtol=0.0,
+    )
 
 
 def _phase_gmres(
@@ -258,7 +315,7 @@ class Model2Material:
     E: float = 210.0
     nu: float = 0.3
     Gc: float = 2.7e-3
-    l0: float = 1.33e-2
+    l0: float = 1.5e-2
 
     @property
     def mu(self) -> float:
@@ -310,13 +367,39 @@ def _truncate_loads(loads: List[float]) -> List[float]:
     return loads
 
 
+def _refine_loads(loads, factor, window=None):
+    """Subdivide each consecutive load interval into ``factor`` equal sub-steps.
+
+    If ``window=(lo,hi)`` is given, only intervals overlapping [lo,hi] are
+    refined (others kept as-is). Used to resolve the snap-back / crack region
+    with smaller load steps so the equilibrium path is unique (scheme-agnostic).
+    Driven by FRACTUREX_LOAD_REFINE / FRACTUREX_LOAD_REFINE_WINDOW.
+    """
+    factor = int(factor)
+    if factor <= 1 or len(loads) < 2:
+        return loads
+    out = [float(loads[0])]
+    for a, b in zip(loads[:-1], loads[1:]):
+        a = float(a); b = float(b)
+        overlap = window is None or (a < window[1] + 1e-12 and b > window[0] - 1e-12)
+        n = factor if overlap else 1
+        for j in range(1, n + 1):
+            out.append(a + (b - a) * j / n)
+    return out
+
+
 def _vtu_step_set(n_steps: int) -> set[int]:
     raw = os.environ.get("FRACTUREX_VTU_STEPS", "").strip()
     if raw:
         return {int(x) for x in raw.split(",") if x.strip()}
+    # Default: export EVERY load step (complete VTU series), so the full
+    # load--displacement / crack history can be reconstructed without gaps.
+    # Set FRACTUREX_VTU_EVERY=N to subsample one frame every N steps (e.g.
+    # for very long runs where disk is a concern), or FRACTUREX_VTU_STEPS=
+    # "0,5,10,..." for an explicit set.
     every = int(os.environ.get("FRACTUREX_VTU_EVERY", "0"))
     if every <= 0:
-        every = max(1, n_steps // 20) if n_steps > 40 else 1
+        every = 1
     steps = set(range(0, n_steps, every))
     steps.add(n_steps - 1)
     return steps
@@ -377,13 +460,46 @@ def _build_case(case_id: str):
         else:
             nx, mesh_info = _resolve_box_nx(mat.l0)
             ny = nx
-        case = Model2NotchXStretchCase(_model=mat, nx=nx, ny=ny, debug_mesh=False)
+        _m2_kwargs = {"_model": mat, "nx": nx, "ny": ny, "debug_mesh": False}
+        # Optional FRACTUREX_N_LOAD_STEPS: re-space the load schedule over the
+        # FULL displacement range with fewer steps (default_loads uses
+        # linspace(0, u_x_total, n+1)). Unlike FRACTUREX_RUN_NSTEPS (which only
+        # truncates to the first N steps and never reaches crack propagation),
+        # this keeps the endpoint and just coarsens du_x.
+        _n_steps_env = os.environ.get("FRACTUREX_N_LOAD_STEPS", "").strip()
+        if _n_steps_env:
+            _m2_kwargs["n_load_steps"] = int(_n_steps_env)
+        case = Model2NotchXStretchCase(**_m2_kwargs)
         case.output_enabled = False
         mesh = case.make_mesh()
         loads = _truncate_loads(np.asarray(case.default_loads(), dtype=float).tolist())
         mesh_param = {"type": "box", **mesh_info}
     else:
         raise ValueError(f"Unknown case {case_id!r}; use model0 | square | model2")
+
+    _refine_env = os.environ.get("FRACTUREX_LOAD_REFINE", "").strip()
+    if _refine_env:
+        _win = None
+        _w = os.environ.get("FRACTUREX_LOAD_REFINE_WINDOW", "").strip()
+        if _w:
+            _parts = [float(x) for x in _w.split(",")]
+            _win = (_parts[0], _parts[1])
+        loads = _refine_loads(loads, int(_refine_env), _win)
+
+    # Explicit load schedule override (FRACTUREX_LOADS_NPZ=path to a .npy/.npz
+    # holding a 1-D float array, key "loads" if .npz). Replaces the schedule
+    # entirely. Used to splice a coarse pre-peak history (so a resume can skip
+    # the already-computed steps by index) with a fine post-peak tail at a new
+    # du. The array's leading entries MUST match the checkpoint's prescribed
+    # displacements step-for-step, or resume-by-index will desync.
+    _loads_npz = os.environ.get("FRACTUREX_LOADS_NPZ", "").strip()
+    if _loads_npz:
+        _arr = np.load(_loads_npz)
+        if hasattr(_arr, "files"):  # npz
+            _arr = _arr["loads"]
+        loads = np.asarray(_arr, dtype=float).tolist()
+        print(f"[loads] override from {_loads_npz}: {len(loads)} steps, "
+              f"u {loads[0]:.4e}..{loads[-1]:.4e}", flush=True)
 
     h_stats = _mesh_h_stats(mesh)
     mesh_param.update(h_stats)
@@ -460,6 +576,13 @@ def _build_driver(
         _gmres_kw = _aux_gmres_settings()
 
         def elastic_solver(A, F):
+            # maxd-adaptive restart (opt-in): large only at localization, where GMRES(60)
+            # would otherwise stall (D13_IMPL §9.4). No-op unless ADAPTIVE_RESTART=1.
+            try:
+                _maxd = float(np.max(np.asarray(discr.state.d[:], dtype=float)))
+            except Exception:
+                _maxd = 1.0
+            _restart = _adaptive_restart(_gmres_kw["restart"], _maxd)
             return solve_huzhang_block_gmres_fast(
                 A,
                 F,
@@ -467,10 +590,27 @@ def _build_driver(
                 vspace=discr.space_u,
                 atol=_gmres_kw["atol"],
                 rtol=_gmres_kw["rtol"],
-                restart=_gmres_kw["restart"],
+                restart=_restart,
                 maxit=_gmres_kw["maxit"],
                 q=3,
+                # Setup amortization: reuse the expensive Schur S + weighted P1-coarse
+                # pyamg hierarchy across this many consecutive elastic solves (1 = rebuild
+                # every solve, old behavior). Stale preconditioner -> niter only, not the
+                # solution. Default 5; override via FRACTUREX_FAST_PRECOND_INTERVAL.
+                precond_rebuild_interval=_env_int("FRACTUREX_FAST_PRECOND_INTERVAL", 5),
+                # Schur smoother knobs (profiled bottleneck: GS sweeps = 54% of solve).
+                # gs_iterations: forward/backward GS sweep count (2 default).
+                # schur_precond: "auto"|"gs_amg_gs"|"coarse_amg_halfgs"|"cheb_amg_cheb"
+                #   ("cheb_amg_cheb" swaps the GS smoother for matvec-based Chebyshev).
+                gs_iterations=_env_int("FRACTUREX_FAST_GS_ITERS", 2),
+                schur_precond=os.environ.get("FRACTUREX_FAST_SCHUR_PRECOND", "auto").strip() or "auto",
                 weighted_aux=True,
+                # B1 (interface-aware coarse space): boost g(d) coarse weight near sharp
+                # damage interfaces to recover O(10) niter under localization. Off by
+                # default; enable via FRACTUREX_AUX_INTERFACE_AWARE=1, tune alpha via
+                # FRACTUREX_AUX_INTERFACE_ALPHA (default 1.0).
+                interface_aware=os.environ.get("FRACTUREX_AUX_INTERFACE_AWARE", "0").strip() == "1",
+                interface_alpha=_env_float("FRACTUREX_AUX_INTERFACE_ALPHA", 1.0),
                 elastic_formulation=ELASTIC_FORMULATION,
                 damage=damage,
                 state=discr.state,
@@ -517,7 +657,10 @@ def _build_driver(
         maxit=500,
         d_relaxation=d_relaxation,
         elastic_solver=elastic_solver,
-        phase_solver=_phase_gmres,
+        phase_solver=(_phase_direct
+                      if os.environ.get("FRACTUREX_PHASE_BACKEND", "").strip().lower()
+                      in ("pardiso", "direct", "mumps")
+                      else _phase_gmres),
         compute_linear_residual=True,
         debug=False,
         timing=True,
@@ -528,6 +671,103 @@ def _build_driver(
     return driver, discr, damage
 
 
+def _resume_enabled() -> bool:
+    """Resume from the latest checkpoint when FRACTUREX_RESUME=1."""
+    return os.environ.get("FRACTUREX_RESUME", "0").strip() == "1"
+
+
+def _latest_checkpoint(tag_dir: Path) -> Optional[Tuple[Path, int]]:
+    """Highest-step full-state checkpoint under ``<tag_dir>/checkpoints/``.
+
+    Inputs:
+        tag_dir: run output dir (the ``epsg_*`` dir holding ``checkpoints/``).
+    Output:
+        (path, step) of ``step_XXX.npz`` with the largest step, or None.
+        The ``step_XXX_qp.npz`` quadrature dumps are ignored; step is parsed
+        from the filename (save_checkpoint does not store a ``step`` field).
+    """
+    ckdir = Path(tag_dir) / "checkpoints"
+    if not ckdir.is_dir():
+        return None
+    best: Optional[Tuple[Path, int]] = None
+    for p in ckdir.glob("step_*.npz"):
+        if p.name.endswith("_qp.npz"):
+            continue
+        try:
+            step = int(p.stem.split("_")[1])
+        except (IndexError, ValueError):
+            continue
+        if best is None or step > best[1]:
+            best = (p, step)
+    return best
+
+
+def _truncate_csv_to_step(path: Path, last_step: int) -> Optional[List[str]]:
+    """Keep header + rows whose ``step`` <= ``last_step``; rewrite in place.
+
+    Inputs:
+        path: history.csv / iterations.csv path.
+        last_step: last completed (checkpointed) load step to retain.
+    Output:
+        The header field list (so the recorder can be primed to APPEND rather
+        than truncate-on-first-write at resume), or None if file absent/empty.
+        Drops any rows the killed run wrote *beyond* the last checkpoint so the
+        resumed run continues without duplicate/partial steps.
+    """
+    if not path.is_file():
+        return None
+    with open(path, newline="") as f:
+        rows = list(csv.reader(f))
+    if not rows:
+        return None
+    header = rows[0]
+    try:
+        si = header.index("step")
+    except ValueError:
+        return header
+    kept = [header]
+    for r in rows[1:]:
+        try:
+            if int(float(r[si])) <= last_step:
+                kept.append(r)
+        except (IndexError, ValueError):
+            continue
+    with open(path, "w", newline="") as f:
+        csv.writer(f).writerows(kept)
+    return header
+
+
+def _restore_state_from_checkpoint(discr, ck_path: Path) -> None:
+    """Inject sigma/u/d/r_hist/H from a checkpoint npz into ``discr.state``.
+
+    Inputs:
+        discr: built HuZhangDiscretization (its ``state`` is mutated in place).
+        ck_path: ``step_XXX.npz`` written by RunRecorder.save_checkpoint.
+    Output:
+        None. Raises RuntimeError on mesh mismatch (different NC) — resuming
+        onto a different mesh is unsupported. H is restored only when present
+        and shape-compatible (preserves phase-field irreversibility / max_H).
+    """
+    from fealpy.backend import backend_manager as bm
+
+    data = np.load(ck_path, allow_pickle=True)
+    if "NC" in data.files:
+        nc_ck, nc_now = int(data["NC"]), int(discr.mesh.number_of_cells())
+        if nc_ck != nc_now:
+            raise RuntimeError(
+                f"resume mesh mismatch: checkpoint NC={nc_ck} != current NC={nc_now}"
+            )
+    state = discr.state
+    state.sigma[:] = bm.asarray(np.asarray(data["sigma"]))
+    state.u[:] = bm.asarray(np.asarray(data["u"]))
+    state.d[:] = bm.asarray(np.asarray(data["d"]))
+    state.r_hist[:] = bm.asarray(np.asarray(data["r_hist"]))
+    H = data["H"]
+    if getattr(state, "H", None) is not None and getattr(H, "ndim", 0) == 2:
+        if np.asarray(state.H[:]).shape == H.shape:
+            state.H[:] = bm.asarray(np.asarray(H))
+
+
 def _run_with_vtu(
     driver: HuZhangPhaseFieldStaggeredDriver,
     case,
@@ -535,14 +775,42 @@ def _run_with_vtu(
     loads: List[float],
     vtu_dir: Path,
     vtu_steps: set[int],
+    tag_dir: Optional[Path] = None,
 ) -> Tuple[list, List[str]]:
-    """Run load history once; write VTU only on selected steps."""
+    """Run load history once; write VTU only on selected steps.
+
+    When FRACTUREX_RESUME=1 and a checkpoint exists under ``tag_dir``, the FE
+    state is restored and the loop continues at ``checkpoint_step + 1`` (already
+    completed steps are skipped; their VTU/CSV rows are preserved).
+    """
     from fracturex.drivers.huzhang_phasefield_staggered import StepInfo
 
     vtu_dir.mkdir(parents=True, exist_ok=True)
     written: List[str] = []
     q = discr.damage_p + 3
     driver.initialize()
+
+    start_step = 0
+    if _resume_enabled() and tag_dir is not None:
+        ck = _latest_checkpoint(Path(tag_dir))
+        if ck is not None:
+            ck_path, ck_step = ck
+            _restore_state_from_checkpoint(discr, ck_path)
+            start_step = ck_step + 1
+            if driver.recorder is not None:
+                h = _truncate_csv_to_step(Path(driver.recorder.csv_path), ck_step)
+                it = _truncate_csv_to_step(Path(driver.recorder.iter_csv_path), ck_step)
+                if h is not None:
+                    driver.recorder._csv_header = h
+                if it is not None:
+                    driver.recorder._iter_csv_header = it
+            print(
+                f"[resume] restored {ck_path.name} (step {ck_step}); "
+                f"continue at step {start_step}/{len(loads)} "
+                f"(note: in-memory summary covers resumed steps only; "
+                f"history.csv/VTU stay complete)",
+                flush=True,
+            )
     if driver.recorder is not None:
         m = case.model()
         driver.recorder.write_meta(
@@ -573,6 +841,8 @@ def _run_with_vtu(
         )
     infos: List[StepInfo] = []
     for s, load in enumerate(loads):
+        if s < start_step:
+            continue
         info = driver.solve_one_step(step=int(s), load=float(load))
         infos.append(info)
         if int(s) in vtu_steps:
@@ -660,6 +930,7 @@ def run(case_id: str, mode: str, out_root: Path) -> Path:
         loads,
         vtu_path,
         _vtu_step_set(len(loads)),
+        tag_dir=Path(tag_dir),
     )
     wall_s = float(time.perf_counter() - t0)
 

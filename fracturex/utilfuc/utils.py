@@ -1,3 +1,4 @@
+"""fracturex 通用小工具：对称张量 Voigt 展平、坐标类型标记、线性求解封装。"""
 
 from typing import Optional
 
@@ -6,8 +7,14 @@ from fealpy.backend import backend_manager as bm
 
 
 def flatten_symmetric_matrices(matrices):
-    """
-    Shape it as Flatten the symmetric matrix.
+    """把对称张量展平为 Voigt 向量。
+
+    Args:
+        matrices: 对称张量 ``(..., 2, 2)`` 或 ``(..., 3, 3)``。
+    Returns:
+        Voigt 向量：2D ``(..., 3)``=(xx,yy,xy)；3D ``(..., 6)``=(xx,yy,zz,xy,yz,xz)。
+    Raises:
+        ValueError: 末两维不是 (2,2) 或 (3,3)。
     """
     flatten_rules = {
         (2, 2): [ 

@@ -1,3 +1,9 @@
+"""高阶有限元结果的 VTK 输出工具。
+
+支持把 Lagrange 三角形（原生 ``VTK_LAGRANGE_TRIANGLE``）以及四边形/六面体张量积单元的
+高阶场采样后写成 .vtu，供 ParaView 显示平滑的高阶变化（含节点排序、数据数组格式化等底层
+helper）。
+"""
 from __future__ import annotations
 
 import os
@@ -56,6 +62,14 @@ def _triangle_lagrange_barycentric_order(order: int) -> np.ndarray:
 
 
 def _format_data_array(name: str, arr: np.ndarray) -> str:
+    """把 1D（标量）或 2D（多分量）数组格式化为 VTU 的 ``<DataArray>`` ASCII 文本块。
+
+    Args:
+        name: 字段名。
+        arr: ``(N,)`` 或 ``(N, ncomp)`` 数组。
+    Returns:
+        一段 ``<DataArray>...</DataArray>`` XML 字符串。
+    """
     arr = np.asarray(arr)
     if arr.ndim == 1:
         ncomp = 1
@@ -350,6 +364,7 @@ def sample_fields_tensor_product_fe(
 
 
 def _parent_dir_makedirs(fname: str) -> None:
+    """确保 ``fname`` 的父目录存在（必要时递归创建）。"""
     d = os.path.dirname(fname)
     if d:
         os.makedirs(d, exist_ok=True)

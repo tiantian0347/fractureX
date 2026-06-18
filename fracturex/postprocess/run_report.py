@@ -10,6 +10,24 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 
+def _whole_run_peak_rss_mb() -> float:
+    """Peak resident memory (MB) over the whole process, read once at summary time.
+
+    VmHWM in /proc/self/status is the resident-set high-water mark since process
+    start, so reading it at the end of the run yields the peak RSS across mesh
+    generation, assembly and the (transient) linear-solve factorization -- the
+    quantity C4 (memory vs N) reports. Returns NaN if /proc is unavailable.
+    """
+    try:
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) / 1024.0
+    except (OSError, ValueError, IndexError):
+        pass
+    return float("nan")
+
+
 def export_paper_summary(
     infos,
     *,
@@ -90,6 +108,7 @@ def export_paper_summary(
         "reaction_force_abs_final": float(abs(residual_force[-1]) if residual_force else 0.0),
         "damage_max_final": float(max_d[-1] if max_d else 0.0),
         "damage_max_peak": float(max(max_d) if max_d else 0.0),
+        "peak_rss_mb": _whole_run_peak_rss_mb(),
     }
 
     summary_json = os.path.join(outdir, "summary.json")

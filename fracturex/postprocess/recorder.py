@@ -16,6 +16,24 @@ def _read_self_rss_mb() -> float:
     return float("nan")
 
 
+def _read_self_peak_rss_mb() -> float:
+    """Read peak process RSS (MB) from /proc/self/status (VmHWM); NaN if unavailable.
+
+    VmHWM is the resident-set high-water mark since process start, so it captures
+    the transient solve/factorization peak even when sampled at the end of a load
+    step (after that memory was freed). This is the figure C4 (memory vs N) needs;
+    the instantaneous ``rss_mb`` from VmRSS systematically undercounts it.
+    """
+    try:
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) / 1024.0
+    except (OSError, ValueError, IndexError):
+        pass
+    return float("nan")
+
+
 class RunRecorder:
     """
     Minimal persistent recorder:
@@ -83,6 +101,7 @@ class RunRecorder:
             None. Creates file/header on first call, then appends rows.
         """
         row.setdefault("rss_mb", _read_self_rss_mb())
+        row.setdefault("peak_rss_mb", _read_self_peak_rss_mb())
         # Keep a stable header from the first row
         if self._csv_header is None:
             self._csv_header = list(row.keys())

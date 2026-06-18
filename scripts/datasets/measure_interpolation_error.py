@@ -333,14 +333,36 @@ def _plot_h1_time_breakdown(rows: list[dict], path: Path) -> None:
 
 
 def _default_cases(root: Path) -> list[CaseSpec]:
+    """Resolve one CaseSpec per h-label, preferring the canonical paper_aux runs.
+
+    For each `h` in DEFAULT_HS, look first at `paper_aux_<h>/epsg_1e-06`
+    (the canonical paper experiment dirs being written by the long-running
+    PID 2475* `run_case.py --case model0 --mode aux` jobs with
+    FRACTUREX_RUN_LABEL_SUFFIX=h2/h3 as of 2026-05-29). If that is missing
+    or has no mesh.npz yet, fall back to the `_dB` variant produced by
+    out-of-band reruns (e.g. nice'd background patches). The non-`_dB`
+    canonical path is preferred so this script auto-uses the user's main
+    paper data without further intervention once those jobs land their
+    full t_a/t_b/t_c checkpoints.
+    """
     base = root / "results" / "phasefield" / "model0_circular_notch"
-    out = []
+    out: list[CaseSpec] = []
     for h in DEFAULT_HS:
-        recorder = base / f"paper_aux_{h}" / "epsg_1e-06"
-        if (recorder / "mesh.npz").exists() and (recorder / "checkpoints").exists():
-            out.append(CaseSpec(name=f"paper_aux_{h}", recorder_dir=recorder, h_label=h))
-        else:
-            print(f"[skip] {recorder}: missing mesh.npz or checkpoints/")
+        candidates = [
+            (f"paper_aux_{h}",    base / f"paper_aux_{h}"    / "epsg_1e-06"),
+            (f"paper_aux_{h}_dB", base / f"paper_aux_{h}_dB" / "epsg_1e-06"),
+        ]
+        picked = None
+        for name, rec_dir in candidates:
+            if (rec_dir / "mesh.npz").exists() and (rec_dir / "checkpoints").exists():
+                picked = (name, rec_dir)
+                break
+        if picked is None:
+            print(f"[skip] {h}: no mesh.npz/checkpoints in any of {[c[0] for c in candidates]}")
+            continue
+        name, rec_dir = picked
+        print(f"[case] {h} -> {name}")
+        out.append(CaseSpec(name=name, recorder_dir=rec_dir, h_label=h))
     return out
 
 

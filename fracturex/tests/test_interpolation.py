@@ -1,6 +1,6 @@
 """Convergence tests for the 𝓘₁ / 𝓘₂ interpolation operators.
 
-Locks in the orders observed in docs/m0_interpolation_error.md §2:
+Locks in the orders observed in docs/operator_learning/m0_interpolation_error.md §2:
   • 𝓘₁ (sample_field_nearest_quad) — relative L² ~ O(h)        on smooth f
   • 𝓘₂ (sample_field_l2_projection, P1) — relative L² ~ O(h²)  on smooth f
 

@@ -1,9 +1,17 @@
+"""相场断裂的自适应网格加密模块。
+
+按误差指示器（恢复型/残差型）标记单元，再用二分法（bisect）加密 2D/3D 网格，并在加密
+过程中转移解数据（位移、损伤、历史场）。加密受最小单元尺度 ``hmin``（与长度尺度 ``l0``
+相关）约束，避免无限细化。
+"""
 from fealpy.backend import backend_manager as bm
 from fealpy.fem.recovery_alg import RecoveryAlg
 from fealpy.mesh.mesh_base import Mesh
 
 
 class AdaptiveRefinement:
+    """自适应网格加密器：标记单元 + 二分加密 + 解数据转移。"""
+
     def __init__(self, marking_strategy: str = 'recovery',
                  refine_method: str = 'bisect', theta: float = 0.2):
         """

@@ -140,6 +140,17 @@ class HuZhangPhaseFieldStaggeredDriver:
         )
 
         self.tol = float(tol)
+        # Separate (looser) tolerance for the displacement increment err_u.
+        # In the fully-localized regime (max_d=1) the elastic stiffness is near
+        # singular, so the direct/iterative solve leaves a numerical floor on
+        # ||du|| (~5e-5) that the damage residual err_d does not have (it cleanly
+        # reaches ~1e-6). Requiring err_u<tol there makes the staggered loop spin
+        # forever on machine noise even though the *physical* state (d) has
+        # converged. FRACTUREX_TOL_U relaxes only err_u; err_d still uses tol.
+        # Defaults to tol -> identical behavior unless explicitly set.
+        import os as _os
+        _tol_u = _os.environ.get("FRACTUREX_TOL_U", "").strip()
+        self.tol_u = float(_tol_u) if _tol_u else float(tol)
         self.maxit = int(maxit)
         self.debug = bool(debug)
         self.timing = bool(timing)
@@ -604,7 +615,10 @@ class HuZhangPhaseFieldStaggeredDriver:
 
             iter_num = k + 1
             last_iter = k == self.maxit - 1
-            converged_now = error < self.tol
+            # Dual-tolerance convergence: damage err_d must hit the strict tol;
+            # displacement err_u only needs the (possibly looser) tol_u. With
+            # tol_u==tol this reduces to the original error<tol test.
+            converged_now = (err_d < self.tol) and (err_u < self.tol_u)
             if self.debug:
                 should_print_progress = True
             elif self._stagger_print_interval <= 0:
@@ -621,7 +635,7 @@ class HuZhangPhaseFieldStaggeredDriver:
                     f"max_d={max_d_iter:.3e}"
                 )
 
-            if error < self.tol:
+            if converged_now:
                 converged = True
                 iters = k + 1
                 break

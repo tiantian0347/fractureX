@@ -198,6 +198,29 @@ def _adaptive_restart(base_restart: int, max_d: float) -> int:
     return int(hi) if float(max_d) >= thr else int(lo)
 
 
+def _phase_direct(A, F):
+    """Direct (PARDISO) phase-field solve.
+
+    The post-peak staggered iterations on the SENS run stall the unpreconditioned
+    GMRES phase solver (1200+ iters/solve, ~half the wall time, and it cannot
+    converge cleanly once max_d=1 saturates). The phase operator is SPD and not
+    much larger than the elastic block, so a sparse direct factorization is both
+    far faster and exact here. Selected by FRACTUREX_PHASE_BACKEND=pardiso.
+    """
+    from fracturex.utilfuc.sparse_direct_backends import solve_direct_pardiso
+
+    x = solve_direct_pardiso(A, F)
+    x = np.asarray(x, dtype=float).reshape(-1)
+    return x, KrylovInfo(
+        solver="pardiso-phase",
+        niter=1,
+        converged=True,
+        residual_norm=0.0,
+        atol=0.0,
+        rtol=0.0,
+    )
+
+
 def _phase_gmres(
     A,
     F,
@@ -463,6 +486,21 @@ def _build_case(case_id: str):
             _win = (_parts[0], _parts[1])
         loads = _refine_loads(loads, int(_refine_env), _win)
 
+    # Explicit load schedule override (FRACTUREX_LOADS_NPZ=path to a .npy/.npz
+    # holding a 1-D float array, key "loads" if .npz). Replaces the schedule
+    # entirely. Used to splice a coarse pre-peak history (so a resume can skip
+    # the already-computed steps by index) with a fine post-peak tail at a new
+    # du. The array's leading entries MUST match the checkpoint's prescribed
+    # displacements step-for-step, or resume-by-index will desync.
+    _loads_npz = os.environ.get("FRACTUREX_LOADS_NPZ", "").strip()
+    if _loads_npz:
+        _arr = np.load(_loads_npz)
+        if hasattr(_arr, "files"):  # npz
+            _arr = _arr["loads"]
+        loads = np.asarray(_arr, dtype=float).tolist()
+        print(f"[loads] override from {_loads_npz}: {len(loads)} steps, "
+              f"u {loads[0]:.4e}..{loads[-1]:.4e}", flush=True)
+
     h_stats = _mesh_h_stats(mesh)
     mesh_param.update(h_stats)
     mesh_param["h_target"] = _h_target(mat.l0)
@@ -619,7 +657,10 @@ def _build_driver(
         maxit=500,
         d_relaxation=d_relaxation,
         elastic_solver=elastic_solver,
-        phase_solver=_phase_gmres,
+        phase_solver=(_phase_direct
+                      if os.environ.get("FRACTUREX_PHASE_BACKEND", "").strip().lower()
+                      in ("pardiso", "direct", "mumps")
+                      else _phase_gmres),
         compute_linear_residual=True,
         debug=False,
         timing=True,

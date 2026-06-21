@@ -24,9 +24,21 @@
 ## routes/ — 其他研究路线规划
 - [plan_gpu_multibackend](routes/plan_gpu_multibackend.md) — GPU + 多后端
 - [plan_high_order_huzhang](routes/plan_high_order_huzhang.md) — Hu–Zhang 高次元定位 + 自适应延伸
+- [plan_adaptive_aposteriori](routes/plan_adaptive_aposteriori.md) — Hu–Zhang 平衡应力驱动的保证型 a posteriori + 自适应相场断裂
+
+## adaptive/ — 自适应理论 / σ 驱动加密
+- [THEORY_equilibrated_aposteriori](adaptive/THEORY_equilibrated_aposteriori.md) — 平衡型 a posteriori 误差估计（无常数、reconstruction-free）
+- [THEORY_marking_strategy](adaptive/THEORY_marking_strategy.md) — M-DF 标记策略
+- [DECISION_sigma_driven_adaptivity](adaptive/DECISION_sigma_driven_adaptivity.md) — σ 驱动 vs $\eta_T$ 驱动的分工决策
+- [DESIGN_program_and_tests](adaptive/DESIGN_program_and_tests.md) — 程序与测试设计
+- [PLAN_m3_pc_v3_certified](adaptive/PLAN_m3_pc_v3_certified.md) — M3 认证版规划
+- [RESULTS_aposteriori](adaptive/RESULTS_aposteriori.md) — 数值结果
 
 ## planning/ — 行动清单 / 实验收尾
 - [P1 行动清单（Week 1–2）](planning/p1_action_checklist.md)
+
+## 顶层路线建议
+- [下一步论文方向建议（基于 READING_NOTES × fractureX）](NEXT_PAPER_DIRECTIONS.md) — 综合 `Tian/paper/fracture/READING_NOTES.md` 的 21 篇文献摘要与现有四条路线，给出 A（自适应+a posteriori，首推）/ B（HZ-supervised 算子学习）/ C（4 阶+应变梯度 PFM）/ D（D12 块预条件）/ E（可微 HZ-PFM 拓扑韧化）五条候选 + 时间盒
 
 ## archive/ — 会话记录归档
 - [archive/m0_sessions/](archive/m0_sessions/) — M0 kickoff / session 报告

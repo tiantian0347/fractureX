@@ -32,7 +32,7 @@ from fracturex.damage.phasefield_damage import PhaseFieldDamageModel
 from fracturex.drivers.huzhang_phasefield_staggered import HuZhangPhaseFieldStaggeredDriver
 from fracturex.adaptivity.adaptive_staggered import make_assemblers, eta_from_state
 from fracturex.adaptivity.primal_elastic_solve import DegradedElasticMaterial
-from fracturex.phasefield.vector_Dirichlet_bc import VectorDirichletBC
+from fracturex.adaptivity.primal_resolve_real import apply_dirichlet_pieces_lifted
 from fracturex.adaptivity.equilibrated_estimator import (
     strain_to_voigt, stress_voigt_from_strain, voigt_inner, degradation,
 )
@@ -65,6 +65,8 @@ def _solve_primal_on_mesh(mesh, g_cell, case, *, lam, mu, load, p, q=None):
     """退化弹性连续 primal（真实分量式 BC，体力 0）——solve_primal_real 的 mesh-level 内核。
 
     与 primal_resolve_real.solve_primal_real 同逻辑，但参数化 mesh+g_cell+p（供细网格 truth）。
+    BC 经 apply_dirichlet_pieces_lifted **带非齐次提升**消元（2026-06-21 修复：直接 apply
+    漏 −A·u_D 致载荷边能量假发散 ⇒ Θ<1，见 RESULTS §Θ<1 根因诊断）。
     """
     q = (p + 3) if q is None else q
     scalar = LagrangeFESpace(mesh, p=p)
@@ -75,17 +77,7 @@ def _solve_primal_on_mesh(mesh, g_cell, case, *, lam, mu, load, p, q=None):
     A = bform.assembly()
     ndof = space.number_of_global_dofs()
     f = bm.zeros(ndof, dtype=bm.float64)
-    uh = space.function()
-    _axis = {"x": 0, "y": 1, "z": 2}
-    probe = bm.array([[0.5, 0.5]], dtype=bm.float64)
-    for piece in case.dirichlet_pieces(load):
-        vec = bm.asarray(piece.value(probe)).reshape(-1)
-        comp = _axis[piece.direction] if piece.direction is not None else None
-        gd = float(vec[comp]) if comp is not None else float(vec[0])
-        bc = VectorDirichletBC(space, gd, piece.threshold, direction=piece.direction)
-        A, f = bc.apply(A, f)
-    from fealpy.solver import spsolve
-    uh[:] = spsolve(A, f, solver="scipy")
+    uh, _, _ = apply_dirichlet_pieces_lifted(A, f, space, case, load)
     return uh, space
 
 

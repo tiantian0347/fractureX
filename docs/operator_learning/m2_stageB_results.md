@@ -101,7 +101,7 @@ training_curves.png, <model>/eval_report.md}`。
 
 ## 6. S 档（~1152 样本）重跑：**数据量是关键**
 
-把 pilot 的 27 样本扩到 **S 档 1152 样本**（`configs/datasets/m2_S.json`：
+把 pilot 的 27 样本扩到 **S 档 1152 样本**（`scripts/datasets/configs/m2_S.json`：
 circle_r×Gc×l0×cx×cy×E 笛卡尔积，几何+材料同扫；64×64，16 步 schedule），
 32 shard 并行生成（每 shard 36，`--cleanup-runs` 控盘，~37 s/样本，**1152/1152 成功**），
 train=806 / test=346。Stage B 训练 120 epoch、batch 16、CPU。
@@ -142,7 +142,7 @@ N=32
 for k in $(seq 0 $((N-1))); do
   OMP_NUM_THREADS=2 PYTHONPATH=$PWD $FEALPY_PYTHON \
     scripts/datasets/generate_phasefield_dataset.py \
-    --config configs/datasets/m2_S.json --dataset-dir results/datasets/m2_S \
+    --config scripts/datasets/configs/m2_S.json --dataset-dir results/datasets/m2_S \
     --num-shards $N --shard $k --cleanup-runs --skip-existing &
 done; wait
 python scripts/datasets/merge_shard_manifests.py --dataset-dir results/datasets/m2_S

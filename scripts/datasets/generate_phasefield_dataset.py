@@ -31,7 +31,7 @@ Config format:
 Run:
     PYTHONPATH=$PWD $FEALPY_PYTHON \\
       scripts/datasets/generate_phasefield_dataset.py \\
-      --config configs/datasets/m0_smoke.json \\
+      --config scripts/datasets/configs/m0_smoke.json \\
       --dataset-dir results/datasets/m0_smoke
 """
 from __future__ import annotations

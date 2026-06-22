@@ -241,7 +241,7 @@ $k$ 为材料参数维度（默认 5：$\lambda,\mu,G_c,\ell_0,\eta$）。
     "stress_scale_std": 2.1e2,
     "damage_max_p95": 0.98
   },
-  "notes": "Generated from configs/datasets/m0_small.yaml"
+  "notes": "Generated from scripts/datasets/configs/m0_small.yaml"
 }
 ```
 

@@ -7,7 +7,7 @@
 
 ## 1. 数据集 `m1_pilot`
 
-- 配置：`configs/datasets/m1_pilot.json`；几何 = Model0 圆缺口。
+- 配置：`scripts/datasets/configs/m1_pilot.json`；几何 = Model0 圆缺口。
 - 参数网格（笛卡尔积，27 组合）：
   `circle_r ∈ {0.15, 0.20, 0.25}` × `Gc ∈ {0.5, 1.0, 2.0}` × `l0 ∈ {0.015, 0.02, 0.025}`。
 - 固定：`hmin=0.08`、`p_sigma=3`、`damage_p=2`、`elastic_mode=direct`。
@@ -64,7 +64,7 @@ U-Net train loss 4.33→0.347、test 2.59→0.458。
 # 环境：conda env py312 + PYTHONPATH=$PWD（base 无 fealpy；torch CPU 已装）
 # 1) 生成数据集（~29 min）
 python scripts/datasets/generate_phasefield_dataset.py \
-  --config configs/datasets/m1_pilot.json \
+  --config scripts/datasets/configs/m1_pilot.json \
   --dataset-dir results/datasets/m1_pilot --skip-existing
 # 2) 跑三 baseline + 出表/曲线（~12 min）
 python scripts/datasets/run_m1_experiment.py \

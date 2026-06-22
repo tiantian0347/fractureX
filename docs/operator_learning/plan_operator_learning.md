@@ -592,7 +592,7 @@ $$
    与原始 vtu/FE 输出叠加对比；
 4. sanity check 测试：`tests/test_dataset_roundtrip.py`，从 npz 读回后验证形状、单位、归一化、mask。
 
-**一条命令**：`python scripts/datasets/generate_phasefield_dataset.py --config configs/datasets/m0_small.yaml`
+**一条命令**：`python scripts/datasets/generate_phasefield_dataset.py --config scripts/datasets/configs/m0_small.yaml`
 产出 200 条样本 + dataset README。
 
 ### M1：damage-only 三 baseline（2–3 周）
@@ -731,7 +731,7 @@ DOF 布局会破坏 Hu-Zhang 数据管线（`tests/case_runners/model0_runner.py
 `RunRecorder`（`history.csv` + 每步 npz）；(b) `dataset_export.py` 新增一个 L 型
 **SDF domain**（替换 `CircularNotchDomain`），σ/d/H 走已有的 Lagrange 采样
 （`_evaluate_lagrange_on_grid` / `sample_field_nearest_quad`），**不走** Hu-Zhang
-`sample_huzhang_stress_on_grid`；(c) 加一个 `configs/datasets/Lshape_*.json`。
+`sample_huzhang_stress_on_grid`；(c) 加一个 `scripts/datasets/configs/Lshape_*.json`。
 这些改动不触碰 schema 字段定义（见 SURROGATE_DATA_SCHEMA.md），只新增几何与采样后端。
 
 
@@ -764,7 +764,7 @@ DOF 布局会破坏 Hu-Zhang 数据管线（`tests/case_runners/model0_runner.py
 | `scripts/datasets/generate_phasefield_dataset.py`（新增） | 笛卡尔积或 LHS 采样 + 并发跑批 | §M0 数据生成 |
 | `scripts/datasets/visualize_npz.py`（新增） | npz 重画 $d/\sigma$ 与 FE 对比 | §M0 sanity check |
 | `tests/test_dataset_roundtrip.py`（新增） | npz 读写、单位、归一化、mask 验证 | §M0 sanity check |
-| `configs/datasets/{m0_small,m2_S,m2_M,m2_L}.yaml`（新增） | 参数空间定义，对应数据规模分档 | §M2 升级只换配置 |
+| `scripts/datasets/configs/{m0_small,m2_S,m2_M,m2_L}.yaml`（新增） | 参数空间定义，对应数据规模分档 | §M2 升级只换配置 |
 | `fracturex/cases/phase_field/Lshape_cyclic.py` | L 型标准 FEM cyclic 校验算例（已落地） | §M3.1 held-out 几何 + cyclic 正确性测试 |
 | 标准 FEM case runner + L 型 SDF domain（follow-up） | 把 `Lshape_cyclic` 接入 schema 导出 | §M3.1 数据导出桥 |
 | `fracturex/learn/`（新增独立子包） | datasets / models / losses / train / eval | 与求解侧完全解耦 |

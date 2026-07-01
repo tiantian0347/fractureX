@@ -19,12 +19,81 @@ from fealpy.backend import backend_manager as bm
 from fealpy.mesh import TriangleMesh
 from fealpy.decorator import barycentric
 
+sys.path.insert(0, '/Users/tian00/repository/fractureX/fracturex/tests/corner_relaxation/experiments')
 sys.path.insert(0, '/Users/tian00/repository/fractureX/fracturex/tests')
 from lshape_point_load import (
     E, NU, LAMBDA, MU, LAMBDA0, LAMBDA1,
     F_TOTAL, LOAD_HALF_WIDTH, LOAD_CENTER, G_MAG,
     make_lshape_mesh, isD_top_short, sigma_gd, zero_u_D, solve, eval_at_points,
 )
+
+
+def constitutive_residual_indicator(mesh, sigmah, uh, p, *, lambda0, lambda1, q=None):
+    """η_T^{cst} = ‖A σ_h − ε(u_h)‖_{L²(T)}.
+
+    Mixed FEM enforces (A σ_h, τ) + (div τ, u_h) = ... weakly. The constitutive
+    residual A σ_h − ε(u_h) equals zero exactly only if u_h has enough smoothness
+    (needs C¹). Since u_h ∈ P_{p-1} DG, ε(u_h) is P_{p-2} per cell (jumping),
+    while A σ_h is smoother — their difference measures constitutive error and is
+    a natural mixed-FEM a posteriori estimator (as in [HM18] (2.1) sans the
+    edge-jump term).
+
+    A σ = c0 (σ − c1·trσ·I) with c0=1/λ0, c1=λ1/(λ0−2λ1).
+    ε(u) Voigt: (∂u_x/∂x, (∂u_x/∂y+∂u_y/∂x)/2, ∂u_y/∂y).
+    """
+    from fealpy.backend import backend_manager as bm
+    space_sig = sigmah.space
+    space_u = uh.space
+    if q is None:
+        q = 2 * p + 2
+    qf = mesh.quadrature_formula(q, 'cell')
+    bcs, ws = qf.get_quadrature_points_and_weights()
+    # σ_h at qp
+    sig = np.asarray(sigmah(bcs))       # (NC, NQ, 3) Voigt
+    tr = sig[..., 0] + sig[..., 2]
+    c0 = 1.0 / lambda0
+    c1 = lambda1 / (lambda0 - 2 * lambda1)
+    Asig = np.empty_like(sig)
+    Asig[..., 0] = c0 * (sig[..., 0] - c1 * tr)
+    Asig[..., 1] = c0 * sig[..., 1]
+    Asig[..., 2] = c0 * (sig[..., 2] - c1 * tr)
+
+    # ε(u_h) via grad_basis of scalar Lagrange space
+    # uh is TensorFunctionSpace shape (-1, 2) over scalar LagrangeFESpace P_{p-1} DG
+    # grad_basis returns (NC, NQ, ldof, 2) for scalar space
+    sc_space = space_u.scalar_space if hasattr(space_u, 'scalar_space') else None
+    if sc_space is None:
+        # 尝试从 TensorFunctionSpace 拿
+        sc_space = getattr(space_u, 'space', None)
+    if sc_space is None:
+        raise RuntimeError("cannot access scalar base for uh's TensorFunctionSpace")
+    grad_phi = np.asarray(sc_space.grad_basis(bcs))   # (NC, NQ, ldof_sc, 2)
+    c2d_sc = np.asarray(sc_space.cell_to_dof())         # (NC, ldof_sc)
+    gdof_sc = int(sc_space.number_of_global_dofs())
+    uh_np = np.asarray(uh)                              # (2*gdof_sc,) or similar
+    # TensorFunctionSpace shape=(-1, 2) 存储：可能是 (gdof_sc, 2) 或 flat (2*gdof_sc)
+    if uh_np.ndim == 1:
+        # 惯例 fealpy: [d0_dofs, d1_dofs]? 还是交错？
+        # 检查 uh.shape
+        uh_arr = uh_np.reshape(-1, 2) if uh_np.size == 2 * gdof_sc else uh_np
+        u0_coeff = uh_arr[:, 0] if uh_arr.ndim == 2 else uh_np[:gdof_sc]
+        u1_coeff = uh_arr[:, 1] if uh_arr.ndim == 2 else uh_np[gdof_sc:]
+    else:
+        u0_coeff = uh_np[:, 0]; u1_coeff = uh_np[:, 1]
+    # (NC, NQ, 2) — ∇u0 at qp
+    grad_u0 = np.einsum('cl, cqld -> cqd', u0_coeff[c2d_sc], grad_phi)
+    grad_u1 = np.einsum('cl, cqld -> cqd', u1_coeff[c2d_sc], grad_phi)
+    eps_xx = grad_u0[..., 0]
+    eps_yy = grad_u1[..., 1]
+    eps_xy = 0.5 * (grad_u0[..., 1] + grad_u1[..., 0])
+    eps = np.stack([eps_xx, eps_xy, eps_yy], axis=-1)
+
+    diff = Asig - eps                                    # (NC, NQ, 3) Voigt
+    w = np.array([1.0, 2.0, 1.0])
+    d2 = (diff * diff * w).sum(axis=-1)
+    cm = np.asarray(mesh.entity_measure('cell'))
+    val = np.einsum('q, cq -> c', np.asarray(ws), d2) * cm
+    return np.sqrt(val)
 
 
 def cell_fluctuation_indicator(mesh, sigmah, p, q=None):
@@ -124,9 +193,15 @@ def solve_and_estimate(N_or_mesh, p=3):
     sigmah = base.function(); sigmah[:] = X[:gdof0]
     uh = space_u.function(); uh[:] = X[gdof0:]
 
-    eta = divergence_indicator(mesh, sigmah, p=p)
-    total_eta = float(np.sqrt(np.sum(eta**2)))
-    return mesh, sigmah, uh, eta, total_eta, gdof0
+    eta_fluc = cell_fluctuation_indicator(mesh, sigmah, p=p)
+    eta_cst = constitutive_residual_indicator(mesh, sigmah, uh, p=p,
+                                              lambda0=LAMBDA0, lambda1=LAMBDA1)
+    # 归一化各自最大值后相加，让两个 estimator 平等贡献
+    eta_fluc_norm = eta_fluc / (float(np.max(eta_fluc)) + 1e-30)
+    eta_cst_norm = eta_cst / (float(np.max(eta_cst)) + 1e-30)
+    eta = eta_fluc_norm + eta_cst_norm
+    total_eta = float(np.sqrt(np.sum(eta_fluc**2 + eta_cst**2)))
+    return mesh, sigmah, uh, eta, total_eta, gdof0, eta_fluc, eta_cst
 
 
 def adaptive_loop(n_iter, N0=8, p=3, theta=0.5):
@@ -147,7 +222,7 @@ def adaptive_loop(n_iter, N0=8, p=3, theta=0.5):
         res = solve_and_estimate(mesh, p=p)
         if res is None:
             print(f'  iter {it}: NaN'); break
-        mesh, sigmah, uh, eta, total_eta, gdof0 = res
+        mesh, sigmah, uh, eta, total_eta, gdof0, eta_fluc, eta_cst = res
         NC = mesh.number_of_cells()
         sig_now, u_now = eval_at_points(mesh, sigmah, uh, probe_pts)
         if sig_prev is None:
@@ -156,6 +231,14 @@ def adaptive_loop(n_iter, N0=8, p=3, theta=0.5):
             ds = f'{float(np.linalg.norm(sig_now - sig_prev)):.4e}'
             du = f'{float(np.linalg.norm(u_now - u_prev)):.4e}'
         print(f'{it:>4} {gdof0:>6} {NC:>6} {total_eta:>12.4e} {ds:>12} {du:>12}')
+        # 诊断: fluctuation vs constitutive residual 谁主导
+        cell_ = np.asarray(mesh.entity('cell'))
+        node_ = np.asarray(mesh.entity('node'))
+        arg_fluc = int(np.argmax(eta_fluc)); arg_cst = int(np.argmax(eta_cst))
+        b_fluc = node_[cell_[arg_fluc]].mean(axis=0)
+        b_cst = node_[cell_[arg_cst]].mean(axis=0)
+        print(f'      max eta_fluc={eta_fluc[arg_fluc]:.3e} @ {b_fluc.round(3).tolist()}   '
+              f'max eta_cst={eta_cst[arg_cst]:.3e} @ {b_cst.round(3).tolist()}')
         sig_prev, u_prev = sig_now, u_now
         if it == n_iter - 1:
             break

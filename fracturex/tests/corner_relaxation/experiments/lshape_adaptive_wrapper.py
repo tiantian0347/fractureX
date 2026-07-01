@@ -40,6 +40,7 @@ from fracturex.boundarycondition.huzhang_boundary_condition import (
 from fracturex.discretization.huzhang_corner_relax import HuZhangCornerRelax
 from fracturex.assemblers.huzhang_unc_assembler import assemble_M_unc, assemble_B_unc
 
+sys.path.insert(0, '/Users/tian00/repository/fractureX/fracturex/tests/corner_relaxation/experiments')
 sys.path.insert(0, '/Users/tian00/repository/fractureX/fracturex/tests')
 from linear_elastic_pde import LinearElasticPDE
 

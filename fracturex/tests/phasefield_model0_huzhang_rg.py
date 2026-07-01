@@ -104,7 +104,32 @@ def build_pipeline(hmin: float, *, l0: float = 0.02):
     return case, discr, damage, elastic_asm, phase_asm
 
 
-def make_driver(case, discr, damage, elastic_asm, phase_asm, *, tol=1e-4, maxit=30):
+def _make_elastic_solver(discr, mode: str, *, atol=1e-12, rtol=1e-8):
+    """Build the elastic linear solver callback (direct or aux-space GMRES)."""
+    if mode == "direct":
+        return HuZhangPhaseFieldStaggeredDriver._default_spsolve
+    if mode == "aux":
+        from fracturex.utilfuc.linear_solvers import (
+            solve_huzhang_block_gmres_auxspace,
+        )
+
+        def _solver(A, F):
+            x, _ = solve_huzhang_block_gmres_auxspace(
+                A, F,
+                gdof_sigma=discr.gdof_sigma,
+                vspace=discr.space_u,
+                atol=atol,
+                rtol=rtol,
+            )
+            return x
+
+        return _solver
+    raise ValueError(f"unknown elastic_mode {mode!r}; expected 'direct' or 'aux'")
+
+
+def make_driver(case, discr, damage, elastic_asm, phase_asm, *,
+                tol=1e-4, maxit=30, elastic_mode: str = "direct",
+                elastic_atol: float = 1e-12, elastic_rtol: float = 1e-8):
     driver = HuZhangPhaseFieldStaggeredDriver(
         case=case,
         discr=discr,
@@ -113,6 +138,9 @@ def make_driver(case, discr, damage, elastic_asm, phase_asm, *, tol=1e-4, maxit=
         phase_assembler=phase_asm,
         tol=tol,
         maxit=maxit,
+        elastic_solver=_make_elastic_solver(
+            discr, elastic_mode, atol=elastic_atol, rtol=elastic_rtol
+        ),
     )
     driver.initialize()
     return driver
@@ -203,6 +231,9 @@ def run(args) -> Path:
     driver = make_driver(
         case, discr, damage, elastic_asm, phase_asm,
         tol=args.tol, maxit=args.maxit,
+        elastic_mode=args.elastic_mode,
+        elastic_atol=args.elastic_atol,
+        elastic_rtol=args.elastic_rtol,
     )
 
     for k, load in enumerate(loads):
@@ -291,6 +322,11 @@ def parse_args():
                     help="staggered iterations per load step")
     ap.add_argument("--outdir", type=str,
                     default="results/model0_rg")
+    ap.add_argument("--elastic-mode", type=str, default="direct",
+                    choices=["direct", "aux"],
+                    help="linear solver for the elastic subproblem")
+    ap.add_argument("--elastic-atol", type=float, default=1e-12)
+    ap.add_argument("--elastic-rtol", type=float, default=1e-8)
     return ap.parse_args()
 
 

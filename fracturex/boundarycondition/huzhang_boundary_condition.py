@@ -479,6 +479,194 @@ class HuzhangStressBoundaryCondition:
             return A_new, F_new, uh_stress, isbddof_stress
         return A_new, F_new
 
+    def set_essential_bc_v2(self, gd, *, threshold=None, coord="auto", piecewise=None,
+                             skip_nn_corner_nodes: bool = False):
+        """Corrected stress essential BC.
+
+        Why a v2:
+            HuZhang 2D 节点 trace DOFs 与边内部 trace DOFs 使用 **不同标架**：
+              - 节点 trace（每端 2 个）: nsframe = cartesian {S_xx, S_xy}，即
+                DOF 值 = (σ_xx(node), 2·σ_xy(node))。
+              - 边内部 trace（共 2(p-1) 个）: esframe = (nn, sym(nt))，即
+                DOF 值 = (σ_nn(edge_pt), 2·σ_nt(edge_pt))。
+            原 ``set_essential_bc`` 对所有 8 个 trace DOFs 都用 esframe 投影，
+            导致节点位置的 σ_nn 被当作 σ_xx 强加 → σ·n ≠ 0 时整体不收敛。
+
+        Args:
+            gd, threshold, coord, piecewise: same as ``set_essential_bc``.
+            skip_nn_corner_nodes: if True, drop the node-trace essential DOFs
+              at any NN corner (a boundary node touched by ≥ 2 ΓN edges of
+              non-antiparallel directions). This avoids over-constraining σ
+              at the corner — σ near the corner is then determined by:
+                - edge-internal (nn, sym(nt)) traces along both ΓN edges
+                - the balance equation ``div σ = -f`` in variational form.
+              Recommended for L-shape / mixed-boundary problems where the
+              corner traction is smoothly implied (analytic solution) but
+              node-trace locking would freeze σ_yy at bogus values.
+        """
+        space = self.space
+        mesh = self.mesh
+        if piecewise is None:
+            piecewise = [(threshold, gd, coord, None)]
+        uh = bm.zeros((space.number_of_global_dofs(),), dtype=space.ftype)
+        isBdDof = bm.zeros((space.number_of_global_dofs(),), dtype=bm.bool)
+
+        # 若开启 skip，预先算一次 NN 角点集合（不依赖 threshold，用 space.isNedge 判断）
+        skip_nid_set = None
+        if skip_nn_corner_nodes:
+            skip_nid_set = self._detect_nn_corner_nodes()
+
+        for item in piecewise:
+            if len(item) == 3:
+                thr, gdi, ci = item
+                comp = None
+            elif len(item) == 4:
+                thr, gdi, ci, comp = item
+            else:
+                raise ValueError("piecewise item must be (thr,gd,coord) or (thr,gd,coord,comp)")
+            if thr is None:
+                continue
+            uh, isBdDof = self._apply_one_piece_v2(uh, isBdDof, gdi, thr, ci, comp,
+                                                    skip_nn_corner_nodes=skip_nid_set)
+        return uh, isBdDof
+
+    def _detect_nn_corner_nodes(self):
+        """Return set of node ids that are NN corners (≥2 ΓN edges meeting non-antiparallelly)."""
+        import numpy as _np
+        mesh = self.mesh
+        space = self.space
+        isN = _np.asarray(space.isNedge) if hasattr(space, 'isNedge') else None
+        if isN is None:
+            return set()
+        isBd = _np.asarray(mesh.boundary_edge_flag())
+        isN_bd = isN & isBd
+        edge = _np.asarray(mesh.entity('edge'))
+        node = _np.asarray(mesh.entity('node'))
+        adj = {}
+        for eid in _np.where(isN_bd)[0]:
+            a, b = int(edge[eid, 0]), int(edge[eid, 1])
+            adj.setdefault(a, []).append(int(eid))
+            adj.setdefault(b, []).append(int(eid))
+        out = set()
+        for nid, eids in adj.items():
+            if len(eids) < 2:
+                continue
+            # 判定"不反向共线"：找两条方向不 antiparallel 的入边
+            dirs = []
+            for eid in eids:
+                a, b = int(edge[eid, 0]), int(edge[eid, 1])
+                other = b if a == nid else a
+                v = node[other] - node[nid]
+                nv = _np.linalg.norm(v)
+                if nv < 1e-30:
+                    continue
+                dirs.append(v / nv)
+            found = False
+            for i in range(len(dirs)):
+                for j in range(i + 1, len(dirs)):
+                    if abs(_np.dot(dirs[i], dirs[j]) + 1.0) > 1e-10:
+                        found = True; break
+                if found:
+                    break
+            if found:
+                out.add(nid)
+        return out
+
+    def _apply_one_piece_v2(self, uh, isBdDof, gd, threshold, coord, comp=None,
+                              skip_nn_corner_nodes=None):
+        space = self.space
+        mesh = self.mesh
+        mask = boundary_entity_mask(mesh, "edge", threshold, name="threshold")
+        sel = bm.where(mask)[0]
+        NEsel = int(sel.shape[0])
+        if NEsel == 0:
+            return uh, isBdDof
+
+        e2d_all = space.face_to_dof()
+        e2d = e2d_all[sel]                                    # (NEsel, 8 for p=3)
+        p = space.p
+
+        bcs = bm.multi_index_matrix(p, 1) / p                 # (Nbasis=p+1, 2)
+        pts_all = mesh.bc_to_point(bcs)                       # (NE, Nbasis, 2)
+        pts = pts_all[sel]                                    # (NEsel, Nbasis, 2)
+
+        if callable(gd):
+            gd_vals = gd(pts)
+        else:
+            gd_arr = bm.asarray(gd)
+            if gd_arr.ndim == 1:
+                gd_vals = bm.broadcast_to(gd_arr, (NEsel, int(bcs.shape[0]), int(gd_arr.shape[0])))
+            else:
+                gd_vals = bm.broadcast_to(gd_arr, (NEsel, int(bcs.shape[0]), int(gd_arr.shape[-1])))
+
+        dim = int(gd_vals.shape[-1])
+        if dim != 3:
+            raise NotImplementedError("v2 currently expects Voigt stress (dim=3) input")
+
+        # Voigt 内积权重：xx*1 + xy*2 + yy*1
+        num = bm.array([1.0, 2.0, 1.0], dtype=space.ftype)
+
+        # --- 边内部 trace DOFs (e2d[:, 2:-2])：用 esframe (nn, sym(nt)) 标架 ---
+        e_int = e2d[:, 2:-2]                                  # (NEsel, 2(p-1))
+        # 取 edge-internal 求值点：bcs 中端点之外的 (p-1) 个点；这里偷懒：
+        # fealpy interpolation 节点顺序就是 e2d 顺序，我们对应 gd_vals[:, 1:-1] (内部点)
+        gd_int = gd_vals[:, 1:-1, :]                          # (NEsel, p-1, 3)
+        eframe = space.esframe[sel, :2].copy()                # (NEsel, 2, 3) Voigt
+        eframe[:, 1] *= 2.0
+        val_int = bm.einsum('eid, jd, d -> eij', gd_int, eframe[0], num)  # 占位，正下方修正
+        val_int = bm.einsum('eid, ejd, d -> eij', gd_int, eframe, num)    # (NEsel, p-1, 2)
+        val_int_flat = val_int.reshape(NEsel, -1)             # (NEsel, 2(p-1))
+
+        # --- 节点 trace DOFs (e2d[:, :2] 和 e2d[:, -2:])：用 nsframe (cartesian S_xx, S_xy) ---
+        # nsframe 是节点上的，全网格统一为 cartesian {(1,0,0),(0,1/2,0),(0,0,1)}
+        # 端点 trace DOFs 取该节点对应的 (S_xx, S_xy)，即 σ_xx, 2σ_xy
+        # 端点 a 在 gd_vals[:, 0, :]；端点 b 在 gd_vals[:, -1, :]
+        gd_a = gd_vals[:, 0, :]                               # (NEsel, 3) Voigt
+        gd_b = gd_vals[:, -1, :]
+        # 节点 trace DOF 值 = (σ_xx, 2 σ_xy)，注意 Voigt[1] = σ_xy
+        val_a = bm.stack([gd_a[:, 0], 2.0 * gd_a[:, 1]], axis=-1)  # (NEsel, 2)
+        val_b = bm.stack([gd_b[:, 0], 2.0 * gd_b[:, 1]], axis=-1)
+
+        # --- 写入 uh / isBdDof ---
+        dof_a = e2d[:, :2]
+        dof_b = e2d[:, -2:]
+        dof_int = e_int
+
+        if comp is None:
+            # 边内部 trace（(nn, sym(nt))）总是写：这里不涉及节点，不受 skip 影响
+            uh = bm.set_at(uh, dof_int.reshape(-1), val_int_flat.reshape(-1))
+            isBdDof = bm.set_at(isBdDof, dof_int.reshape(-1), True)
+
+            # 端点 trace：可选跳过 NN 角点节点
+            import numpy as _np
+            edge = _np.asarray(mesh.entity('edge'))
+            sel_np = _np.asarray(sel)
+            end_a_nid = edge[sel_np, 0]     # a 端点 node id
+            end_b_nid = edge[sel_np, 1]
+
+            if skip_nn_corner_nodes is None or len(skip_nn_corner_nodes) == 0:
+                mask_a = _np.ones(NEsel, dtype=bool)
+                mask_b = _np.ones(NEsel, dtype=bool)
+            else:
+                skip_arr = _np.array(sorted(skip_nn_corner_nodes), dtype=_np.int64)
+                mask_a = ~_np.isin(end_a_nid, skip_arr)
+                mask_b = ~_np.isin(end_b_nid, skip_arr)
+
+            if mask_a.any():
+                da = _np.asarray(dof_a)[mask_a]
+                va = _np.asarray(val_a)[mask_a]
+                uh = bm.set_at(uh, da.reshape(-1), va.reshape(-1))
+                isBdDof = bm.set_at(isBdDof, da.reshape(-1), True)
+            if mask_b.any():
+                db = _np.asarray(dof_b)[mask_b]
+                vb = _np.asarray(val_b)[mask_b]
+                uh = bm.set_at(uh, db.reshape(-1), vb.reshape(-1))
+                isBdDof = bm.set_at(isBdDof, db.reshape(-1), True)
+        else:
+            raise NotImplementedError("v2 with comp filter not implemented yet")
+
+        return uh, isBdDof
+
     def set_essential_bc(self, gd, *, threshold=None, coord="auto", piecewise=None):
         """
         参数

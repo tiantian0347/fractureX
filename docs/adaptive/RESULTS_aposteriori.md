@@ -20,8 +20,81 @@
 | M3 full (model1) | 2026-06-13 | ✅ PASS | η_T 自适应加密耦合进真实 staggered，跑到裂纹贯通失效；峰值反力后陡降，内存 1.09 GB |
 | M3 PC v2 (model1) | 2026-06-14 | ✅ PASS | σ 驱动 M-DF + predictor–corrector：峰值反力高估 **+16%→+2.8%**、起裂 +32%→+2.9%，v1 欠分辨缺陷修复 |
 | M3 PC v3 (model1) | 2026-06-15 | ✅ PASS | Anderson 加速：墙钟 **6.98h→1.13h(6×)**、消 v2 step22 DNF，峰值更贴参照(**+2.8%→−1.5%**)；归因证松 tol 有害已弃 |
-| primal_real (a) | 2026-06-15 | ✅ PASS | 非-MMS 连续 primal 重解跑通(真实分量式 BC)；严格 η_τ：DG-u=0.039(循环虚低) vs 连续=0.617 |
+| primal_real (a) | 2026-06-15 | ⚠️ 修订 | ~~严格 η_τ：DG-u=0.039 vs 连续=0.617(~16×)~~ **2026-06-21 修复后：η_τ=0.0427≈DG-η 0.0389(1.1×)**，16× 是 BC bug 假象、「揭穿 DG-u」论断撤销 |
 | Phase 2 (du=1e-4) | 2026-06-18 | ✅ PASS（负结果） | 细化 du **不**让峰值收敛参照(−1.5%→+3.6%，跨参照两侧)⇒ 峰值本质路径依赖、报 ±4% 带；副产严格 η_τ 全程线性轨迹(slope≈124≈刚度)、η_τ/DG ~18–40× |
+| M3 效率 (DOF) | 2026-06-21 | ✅ PASS | 等精度对照：自适应 31406 σ-DOF 达 −1.5% 峰值精度，均匀需 nx=120 的 476883 DOF ⇒ **省 93% DOF**；均匀 nx24/48 峰值虚高 +37%/+25%（论证需自适应） |
+| Θ<1 根因诊断 | 2026-06-21 | 🐞→✅ **已修+坐实** | 根因 = `VectorDirichletBC` 误用缺非齐次提升项 (`f−=A·u_D`)，primal "truth" 能量随网格 ×√2 假发散 ⇒ Θ<1。修复后**生产 k_res=1e-6 真数：err 收敛 0.044、Θ 单调→nref4 的 1.044(→1⁺)**，η 仅比真误差大 4%。reliability+efficiency 双坐实，§7 主线全安全 |
+
+---
+
+## Θ<1 根因诊断：primal "truth" 因缺 Dirichlet 提升项假发散（2026-06-21）
+
+- **日期**：2026-06-21
+- **触发**：复查 06-18 surrogate-truth Θ 实验报 **Θ=η_τ/err=0.5717<1**，与理论头条「可靠性常数=1、保证型上界」直接冲突。
+- **诊断链路**（脚本 `tests/aposteriori/diag_theta_breakdown.py`，粗态算一次三项并查）：
+  1. **(B) 牵引泄漏排除**：`b_j=∫σ_h:ε(φ_j)`（连续 P1 测试，f=0 时 = ∮_∂(σ_h·n)φ_j）。
+     自由边 Γ_N `‖b‖=3.2e-16`、内部 `4.9e-15` = **机器零** ⇒ σ_h 精确满足 div σ_h=0 + 自由边 σ_h·n=0，
+     **equilibration 精确、可靠性等号项干净**（T4 担心的 osc(t_N) 坑实测不存在）。
+  2. **(A) truth 发散**：err 随 uniform-refine `nref∈{1,2,3,4}` **单调发散** 0.406→0.703→1.074→1.572
+     （err² 增量每级 ×2），Θ 从 0.99 掉到 0.26。**参照没收敛，Θ 无定义**，0.57 只是 nref=2 的偶然点。
+  3. **系数口径排除**：给 truth 加「父元继承分片常数 g」(嵌套精确，parent(k)=k%NC0) 对照「逐细元重心 g」，
+     两者 err **逐位相同** ⇒ 系数口径不是病因。
+  4. **物理全排除**：KRES 扫 {1e-6,1e-2,**1.0**}，**g≡1 纯均匀拉伸(无裂纹/无系数反差) err 照样发散**
+     0.134→0.232→0.355→0.519 ⇒ 与裂纹、k_res 奇异、估计子全无关，纯 harness 数值假象。
+  5. **缩到一个函数**：原生新网格(不用 refine) `‖u_ref‖` 随 nx 同样 ×√2 发散 ⇒ bug 在 `_solve_primal_on_mesh` 本身。
+  6. **根因坐实**：dump uy 剖面——**uy 在 y=0…0.875 全为 0，只有顶边 y=1 跳到 load=0.002**（应是 uy=load·y 线性）。
+     位移跳变全挤顶层一排 ⇒ ε_yy 出 O(1/h) 边界层尖峰 ⇒ 能量 ∫ε²~√(1/h) 假发散。`max|ε_yy|=load·nx`（随网格爆）。
+  7. **修复验证**：手动补正确非齐次提升 `f −= A·u_D`（顶边 uy=load 的列贡献移入右端）后，
+     uy_mid≈0.001（≈load/2，物理正确）、**`‖u‖` 完全收敛** 0.03085→0.03079→0.03077→0.03076（nx=8→64 稳到常数）。
+- **根因**：`fracturex/phasefield/vector_Dirichlet_bc.py::VectorDirichletBC.apply` 只做行列消去 + 边界对角置 1，
+  **漏掉非齐次 Dirichlet 提升**——内部 dof 的右端没有减去 `A[interior, bd]·g_D`。齐次 BC(g_D=0)无害，
+  顶边非零载荷 g_D=load 时载荷耦合被丢弃 ⇒ 内部以 f=0 求解。
+- **影响范围（须复核重算）**：`_solve_primal_on_mesh`（theta runner）与 `primal_resolve_real.py::solve_primal_real`
+  都经此 BC ⇒ **06-15 primal_real 严格 η_τ=0.617、06-18 Θ=0.57 两数据建立在错误 primal 上，须修 BC 后重算**。
+  **不塌的**：η_τ 作可靠上界的论点、equilibration 精确性、reliability=1 理论（机器核验，与 primal 无关）。
+- **修复方案（待定，用户选「先落档再修」）**：在 `_solve_primal_on_mesh` 内部补 lifting，**不动 VectorDirichletBC 生产类**
+  （它被 staggered 主求解器依赖，改它风险大；且生产路径载荷常齐次增量式注入，未必受影响——修前须查）。
+
+- **★影响面排查（2026-06-21，范围极小，§7 主线全安全）**：grep 全仓 VectorDirichletBC 用户：
+  | 路径 | 用 BC? | 提升正确? | 受影响 |
+  |------|--------|-----------|--------|
+  | Hu–Zhang staggered（§7 论文主线 run_case.py）| **否** | 混合元位移 Dirichlet 是**自然边界**走 `F_sigma+=TM^T·r_dirichlet` 进 RHS | ✅ **不受影响** |
+  | `main_solve.py` 标准 P2 相场 | 是 | **正确**：line319 `apply_value(uh)` 写非齐次值 + line327 `R=−A@uh`(=提升项 −A·u_D) + line332 第二个 ubc 用 **gd=0** 齐次消元 | ✅ **不受影响** |
+  | `_solve_primal_on_mesh`(theta) / `solve_primal_real`(primal_real) | 是 | **漏提升**：直喂非齐次 gd 给 `apply`，没在外面先做 `apply_value+R=−A@uh` | 🐞 **受影响** |
+  - **关键澄清**：`VectorDirichletBC.apply` 的契约**本就是「只做齐次对称消元」**，非齐次提升由调用方在外面 `apply_value+R=−A@uh` 完成
+    （main_solve 是正确范例）。**bug 不在 BC 类，在两个 primal 函数误用了它**（直喂非齐次 gd、漏外部提升）。
+  - **结论**：论文 §7 已记录的 square/model0/model2 全部数据**安全**；只有自适应侧两个 primal 重解中招（即 η_τ=0.617、Θ=0.57 两数）。
+  - **修复落点更明确**：照 main_solve 模式在 `_solve_primal_on_mesh` + `solve_primal_real` 补 `apply_value + R=−A@uh` 两步，**仍不动 VectorDirichletBC**。
+- **文件**：`tests/aposteriori/diag_theta_breakdown.py`（诊断脚本，含 fine/inherit/KRES 三探针）；
+  数据见本会话 task 输出（未持久化）。
+- **结论**：Θ<1 是 primal-truth BC bug 的假象，非估计子失效。论文头条不受威胁。
+
+### 修复 + 重测（2026-06-21，★Θ→1⁺ 坐实）
+
+- **修复**：写共享助手 `primal_resolve_real.apply_dirichlet_pieces_lifted`（照 `main_solve.solve_displacement`
+  正确模式：① `apply_value` 写非齐次 g_D 进 u_D；② 提升 `f ← f − A·u_D`；③ 各 piece 用 **g_D=0** 齐次消元；
+  ④ 解增量 du、u=u_D+du）。三处调用切到它：`solve_primal_real`、`run_theta_surrogate_model1._solve_primal_on_mesh`、
+  `diag_theta_breakdown._solve_primal_on_mesh`。**未动 `VectorDirichletBC`**（其契约「只做齐次消元」是对的）。
+- **修复验证（KRES=1.0 纯均匀，bug 最赤裸处）**：err 从**发散 0.134→0.519** 变 **收敛 0.0042→0.0050**；Θ 全程 ≥1。
+- **★ 生产真数（nx=24/nstep=20/k_res=1e-6 真实预裂纹，fine 连续-g truth）**：
+
+  | nref | nc_fine | err（修复后） | Θ=η/err | （修复前 err，发散） |
+  |------|---------|--------------|---------|---------------------|
+  | 1 | 4608 | 0.02566 | 1.78 | 0.406 |
+  | 2 | 18432 | 0.03511 | 1.30 | 0.703 |
+  | 3 | 73728 | 0.04066 | 1.12 | 1.074 |
+  | 4 | 294912 | **0.04380** | **1.044** | 1.572 |
+
+  - **err 单调收敛到 ~0.044 平台**（修复前几何发散），**Θ 单调降到 nref=4 的 1.044**（→1⁺）。
+    η_τ=0.0457，err_exact≈0.044 ⇒ **η 仅比真误差大 4.4%，保证型上界几乎紧、估计子尖锐**。
+  - **reliability（η≥err，常数=1）+ efficiency（Θ→1⁺）双双有硬数值证据**——这是平衡型估计子最强形态，
+    且 equilibration 机器精确（leak 3e-16）。**头条不仅没塌，反被坐实并加强**。
+  - **inherit 分片常数-g truth** Θ≈3.0（nref→4）偏大，因其能量范数用分片常数 g、与 σ_h 的连续 per-qp g 口径不同；
+    **物理真误差以 fine 连续-g 为准（Θ=1.04）**。inherit 仅作「系数嵌套 ⇒ err 收敛」的方法学对照（已验收敛）。
+- **连带更正（已在 primal_real / Phase 2 节标注）**：旧「严格 η_τ=0.617≫DG-η 16×」「Phase2 轨迹 slope≈124、18–40×」
+  均 buggy primal 假象 ⇒ 撤销；修复后 η_τ=0.0427≈DG-η 0.0389（1.1×），两估计子一致。
+- **文件**：助手 `fracturex/adaptivity/primal_resolve_real.py::apply_dirichlet_pieces_lifted`；
+  诊断 `tests/aposteriori/diag_theta_breakdown.py`（fine/inherit/KRES 三探针，可作回归）。
 
 ---
 
@@ -60,6 +133,13 @@
     额外健全性印证。η_τ/DG-η 比全程 **18.4–39.6×**，再次定量坐实 v2 诚实标注 #1
     的 DG-u 循环虚低（DG-u 与 σ_h 同源 ⇒ 残差虚低）。这条轨迹可直接作 Phase 3 的
     全程认证素材（虽稀疏）。
+
+  > 🐞 **2026-06-21 更正（η_τ 绝对值 + 18–40× 论断作废）**：本轨迹经 `CERTIFY_EVERY=5` 调
+  > **buggy `solve_primal_real`** 算出（同 Θ<1 根因）。η_τ 绝对值 0.063→0.681 被 O(1/h) 边界层尖峰
+  > 系统性吹大，**18.4–39.6× 比值与「揭穿 DG-u」论断撤销**（修复后实测 η_τ≈DG-η ~1.1×，见 primal_real 节更正）。
+  > **可能仍存活的**：η_τ 随载荷**近线性 + 过原点**的定性趋势（弹性段 η∝load 是估计子正常量纲行为，
+  > 不依赖绝对值标定）——但 slope≈124≈刚度的**定量巧合需修复后重测确认**，修复前不得引用。
+  > **不影响** Phase 2 头条（峰值 ±4% 路径带，那是反力数据、与 η_τ 无关）���
 
   ![strict eta_tau trajectory](../figures/adaptive/m3pc_du_phase2_model1_eta_tau.png)
 
@@ -107,6 +187,14 @@
   - **严格 η_τ ≫ DG-η（坐实 v2 caveat #1）**：load 5e-3 处 η_τ=**0.617** vs DG-η=0.039（~16×）；
     load 2.5e-4 处 η_τ=0.031 vs 0.0020（~15×）。DG-u 循环虚低被定量揭穿。
   - **η_τ 随载荷单调增** 0→0.031→…→0.617，行为正常。
+
+  > 🐞 **2026-06-21 更正（本节 η_τ 数据作废）**：上面 η_τ=0.617 与「≫DG-η ~16×」结论**建立在 buggy
+  > `solve_primal_real`（缺 Dirichlet 提升，见上方 §Θ<1 根因诊断）**。修复后同配置（nx=24/load=5e-3/k_res=1e-6）
+  > 重测：**严格 η_τ=0.0427、DG-η=0.0389，比值仅 1.10×（非 16×）**。BC check：y=1 u_y=5.0e-3 ✓、y=0 |u|=0 ✓。
+  > **真相反转**：连续 primal 与 DG-u 给的 η **本就接近**（都是合理估计子），旧 16× gap 纯粹是 buggy primal
+  > 的 O(1/h) 边界层尖峰把分子吹大。**「DG-u 循环虚低被 16× 揭穿」论断撤销**；正确陈述是「严格 η_τ ≈ DG-η（1.1×），
+  > 两通道一致，η_τ 的价值在 reliability 常数=1 的**理论保证**而非数值上压倒 DG-η」。
+  > 数据 `_dev_test_primal_real.py`（修复后）；旧 0.617 仅存档。
 - **诚实标注（重要，影响论文）**：
   1. **η_τ 在绝对量上偏大（~O(R)）**，因**预裂纹带 d=1 ⇒ g=k_res=1e-6 ⇒ g⁻¹=1e6** 在 η 积分里
      放大该处欠分辨残差。即 η_τ 被**尖锐预裂纹尖端**主导。这是估计子**正确地**标出欠分辨，但意味
@@ -119,6 +207,34 @@
 - **结论（阶段）**：严格 η_τ 通路打通、格式一致、循环虚低被揭穿。**剩**：(1) 接受态 surrogate-truth
   效率 Θ 评估；(2) 全程认证轨迹长 run（**已由 2026-06-18 Phase 2 du=1e-4 run 补上稀疏每5步
   η_τ 轨迹**，见上节）；(3) (iv)(v) 联合标记/起裂后 η-Dörfler 作 Discussion。
+
+---
+
+## M3 效率：等精度 DOF/墙钟对照（plan §M3 第1条，2026-06-21）
+
+- **目的**：闭合 M3 full 节 §(b) 留的「等精度 vs 均匀 DOF 效率」缺口。脆性 mode-I 物理判据 = **峰值反力**；
+  "等精度" = 峰值反力相对 nx=120 参照(R_ref=0.6306) 的偏差。脚本 `tests/aposteriori/m3_efficiency_table.py`。
+- **结果**：
+
+  | run | 峰值反力 | 偏差 | σ-DOF@peak | 峰值step | 墙钟→peak | 峰值RSS |
+  |-----|---------|------|-----------|---------|----------|--------|
+  | 均匀 nx=120（参照真值）| 0.6306 | — | 476883 | 60 | 104176s | 16672MB |
+  | 均匀 nx=24 | 0.8633 | **+36.9%** | 19347 | 29 | 531s | 658MB |
+  | 均匀 nx=48 | 0.7904 | **+25.3%** | 76707 | 25 | 4494s | 2603MB |
+  | **自适应 PC v3** | 0.6214 | **−1.5%** | **31406** | 20 | 536s | 1103MB |
+
+  - **★ 头条**：自适应用 **31406 σ-DOF 达到 −1.5% 峰值精度**（踩中参照），均匀网格要达同等精度需 nx=120 的
+    **476883 DOF ⇒ 自适应省 93% DOF**（31406 ≈ nx120 的 6.6%）。
+  - **均匀粗网格峰值严重虚高**（nx24 **+37%**、nx48 **+25%**）：相场峰值载荷强依赖裂纹带分辨，���均匀欠分辨⇒虚高。
+    **这正面论证「为何需要自适应」**——不是为省钱，是粗均匀根本拿不到对的峰值（与 [[surrogate_data_underresolved_hl0]] 同源）。
+  - 墙钟 195×、内存 15× ⚠ **跨求解器+机器负载，仅量级参考**（nx120 是 direct 大系统）；**DOF 是干净指标**
+    （同款 Hu–Zhang p=3，σ-dof 随 nx² 缩放一致：76707×(120/48)²≈476883 ✓）。
+- **诚实标注**：(1) 自适应 −1.5% 在 ±4% 路径带内（见 Phase 2），与参照同精度档；(2) σ-DOF@peak 取**峰值步**
+  （自适应动态加密，峰值步 DOF < 失效末态）；(3) 峰值反力作判据而非全曲线——脆性失效后曲线陡降、路径敏感。
+- **文件**：`tests/aposteriori/m3_efficiency_table.py`（鲁棒读三套 schema）；数据 `results/{uniform_m3_model1_nx24,
+  nx48, adaptive_m3_pc_model1_v3/history_anderson_canonical.csv}` + nx120 参照 `paper_direct_full_nx120`。
+- **结论**：M3 §(b) 缺口闭合。**等精度省 93% DOF**（呼应 M2/T8 的 70%，真实断裂算例更显著）。
+  论文 effectivity/efficiency 论据齐：Θ→1⁺（紧界）+ 等精度省 93% DOF（自适应价值）+ 粗均匀虚高（需自适应的动机）。
 
 ---
 

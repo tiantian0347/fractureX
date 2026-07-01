@@ -26,6 +26,7 @@ import numpy as np
 
 from fealpy.backend import backend_manager as bm
 from fracturex.cases.square_tension_precrack import SquareTensionPreCrackCase
+from fracturex.cases.model2_notch_shear import Model2NotchXStretchCase
 from fracturex.discretization.huzhang_discretization import HuZhangDiscretization
 from fracturex.damage.phasefield_damage import PhaseFieldDamageModel
 from fracturex.drivers.huzhang_phasefield_staggered import HuZhangPhaseFieldStaggeredDriver
@@ -91,8 +92,12 @@ def main():
     # 且峰值更贴参照（v2 无 Anderson +2.8% → -1.5%）。显式 FRACTUREX_ANDERSON_DEPTH=0 可关。
     os.environ.setdefault("FRACTUREX_ANDERSON_DEPTH", "5")
     smoke = os.environ.get("FRACTUREX_SMOKE", "0") == "1"
+    # 算例选择：square(model1 拉伸,默认) / model2(剪切 x-stretch)。默认行为与历史一致。
+    case_name = os.environ.get("FRACTUREX_CASE", "square").lower()
+    is_model2 = case_name in ("model2", "shear", "notch_shear")
     nx = _i("FRACTUREX_NX", 24)
-    du = _f("FRACTUREX_DU", 1.0e-3 if smoke else 2.5e-4)
+    _du_default = (1.0e-3 if smoke else (1.0e-4 if is_model2 else 2.5e-4))
+    du = _f("FRACTUREX_DU", _du_default)
     max_steps = _i("FRACTUREX_MAX_STEPS", 4 if smoke else 80)
     beta = _f("FRACTUREX_BETA", 0.6)            # θ_D = β·𝒟_c = β/3
     c_h = _f("FRACTUREX_CH", 2.0)               # h_τ ≤ l0/c_h 即停加密
@@ -107,7 +112,9 @@ def main():
     tol_coarse = _f("FRACTUREX_TOL_COARSE", tol_fine)
     # (a) 严格 Θ 认证：每 cert_every 个接受步做一次连续 primal 重解 + η_τ（0=关，默认关，贵）。
     cert_every = _i("FRACTUREX_CERTIFY_EVERY", 0)
-    outdir = os.environ.get("FRACTUREX_OUTDIR", "results/adaptive_m3_pc_model1")
+    outdir = os.environ.get("FRACTUREX_OUTDIR",
+                            "results/adaptive_m3_pc_model2" if is_model2
+                            else "results/adaptive_m3_pc_model1")
     want_vtu = os.environ.get("FRACTUREX_NO_VTU", "0") != "1"
     use_failure_stop = not smoke
 
@@ -118,8 +125,10 @@ def main():
 
     mat = _Mat()
     l0 = mat.l0
-    case = SquareTensionPreCrackCase(_model=mat, nx=nx, ny=nx,
-                                     crack_y=0.5, crack_length=0.5)
+    CaseCls = Model2NotchXStretchCase if is_model2 else SquareTensionPreCrackCase
+    case = CaseCls(_model=mat, nx=nx, ny=nx, crack_y=0.5, crack_length=0.5)
+    print(f"[cfg-case] {'model2(shear x-stretch)' if is_model2 else 'square(model1 tension)'} "
+          f"reaction_dir={case.reaction_direction()}", flush=True)
     mesh = case.make_mesh()
     discr = HuZhangDiscretization(case=case, p=3, damage_p=1,
                                   use_relaxation=True).build(mesh=mesh)

@@ -42,6 +42,61 @@ def _g_cell_from_state(discr, *, k_res: float):
     return g_cell
 
 
+def apply_dirichlet_pieces_lifted(A, f, space, case, load):
+    """对分量式 Dirichlet 片做**带非齐次提升**的对称消元，解 u（非增量）。
+
+    背景（2026-06-21 bug 修复，见 RESULTS §Θ<1 根因诊断）：`VectorDirichletBC.apply`
+    的契约是「只做齐次对称消元」——它**不**把 −A[:,bd]·g_D 加进内部 RHS。对非零载荷
+    g_D≠0（如 y=1 上 u_y=load）直接 `apply` 会丢弃载荷耦合，使解把位移跳变全挤到载荷边
+    一排单元 ⇒ ε 出 O(1/h) 边界层尖峰 ⇒ 能量假发散。正确做法照 `main_solve.solve_displacement`：
+      ① 把所有 piece 的 g_D 写进 u_D（`apply_value`）；
+      ② 提升 f ← f − A·u_D；
+      ③ 各 piece 用 **g_D=0** 齐次消元（f 在边界 dof 置 0）；
+      ④ 解增量 du，u = u_D + du（边界 dof du=0 ⇒ 保留 u_D 的 g_D）。
+
+    输入:
+      A     : 已装配刚度（SparseTensor；本函数内被对称消元修改并返回）。
+      f     : 右端（体力项；断裂无源时全 0）。
+      space : 向量位移空间（分量优先 (GD,-1)，与 VectorDirichletBC 一致）。
+      case  : 提供 dirichlet_pieces(load) 的分量式位移边界。
+      load  : 当前载荷（= y=1 边的 u_y）。
+    输出:
+      uh    : 解出的连续位移 FE function（含正确非齐次边界值）。
+      A, f  : 消元后的系统（诊断/复用）。
+    限制: piece value 为常数（在单点求值取分量得 g_D）；direction=None 仅支持各分量同值。
+    """
+    _axis = {"x": 0, "y": 1, "z": 2}
+    probe = bm.array([[0.5, 0.5]], dtype=bm.float64)     # 常数场与位置无关
+    pieces = list(case.dirichlet_pieces(load))
+    specs = []                                            # [(gd, threshold, direction)]
+    for piece in pieces:
+        vec = bm.asarray(piece.value(probe)).reshape(-1)  # (GD,)
+        comp = _axis[piece.direction] if piece.direction is not None else None
+        gd = float(vec[comp]) if comp is not None else float(vec[0])
+        if comp is None and not bool(bm.all(vec == vec[0])):
+            raise NotImplementedError(
+                "direction=None 仅支持各分量同值常数边界（本算例 fix=0 满足）。")
+        specs.append((gd, piece.threshold, piece.direction))
+
+    # ① 写非齐次边界值进 u_D
+    uh = space.function()
+    for gd, thr, direction in specs:
+        bc = VectorDirichletBC(space, gd, thr, direction=direction)
+        uh, _ = bc.apply_value(uh)
+    # ② 提升：f ← f − A·u_D
+    f = f - A @ uh[:]
+    # ③ 各 piece 齐次消元（g_D=0）
+    for _, thr, direction in specs:
+        bc0 = VectorDirichletBC(space, 0, thr, direction=direction)
+        A, f = bc0.apply(A, f)
+    # ④ 解增量并叠加（边界 dof du=0，保留 u_D 的 g_D）
+    from fealpy.solver import spsolve
+    du = spsolve(A, f, solver="scipy")
+    uh[:] = uh[:] + du
+    return uh, A, f
+
+
+
 def solve_primal_real(discr, case, *, lam: float, mu: float, load: float,
                       k_res: float = 1e-6, p: Optional[int] = None,
                       q: Optional[int] = None):
@@ -83,22 +138,7 @@ def solve_primal_real(discr, case, *, lam: float, mu: float, load: float,
     ndof = space.number_of_global_dofs()
     f = bm.zeros(ndof, dtype=bm.float64)
 
-    uh = space.function()
     # 分量式 Dirichlet（真实算例边界）：y=0 固定 (x,y)，y=1 仅 u_y=load，侧边自由 Neumann。
-    # VectorDirichletBC 用标量 gd 填该方向边界 dof；本算例 piece value 为常数（fix=0/load=const），
-    # 在单点求值取对应分量即得 gd（非常数边界须扩展为按插值点求值，本算例不需要）。
-    _axis = {"x": 0, "y": 1, "z": 2}
-    probe = bm.array([[0.5, 0.5]], dtype=bm.float64)     # 任意点（常数场与位置无关）
-    for piece in case.dirichlet_pieces(load):
-        vec = bm.asarray(piece.value(probe)).reshape(-1)  # (GD,)
-        comp = _axis[piece.direction] if piece.direction is not None else None
-        gd = float(vec[comp]) if comp is not None else float(vec[0])
-        if comp is None and not bool(bm.all(vec == vec[0])):
-            raise NotImplementedError(
-                "direction=None 仅支持各分量同值常数边界（本算例 fix=0 满足）。")
-        bc = VectorDirichletBC(space, gd, piece.threshold, direction=piece.direction)
-        A, f = bc.apply(A, f)
-
-    from fealpy.solver import spsolve
-    uh[:] = spsolve(A, f, solver="scipy")
+    # **带非齐次提升**的对称消元（2026-06-21 修复：直接 apply 漏 −A·u_D 致载荷边能量假发散）。
+    uh, A, f = apply_dirichlet_pieces_lifted(A, f, space, case, load)
     return {"uh": uh, "space": space, "g_cell": g_cell}

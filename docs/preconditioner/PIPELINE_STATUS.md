@@ -656,3 +656,5 @@ aux_fast niter 在 maxd≤0.82 时恒 =7,局部化处**骤升到 ~95–121**(约
 - [2026-06-15 07:40:00] model2 direct_full [ANDERSON] 进程已退出 [pid 346766],最终 rows=201 step=200 maxd=1.0000 Rx=-0.2373248805915773 dispx=0.016666666666666666
 - [2026-06-15 07:40:00] model2 reaction 曲线摘要已刷新 results/phasefield/model2_notch_x_stretch/paper_direct_full/epsg_1e-06/reaction_curve.csv
 - [2026-06-15 07:41:33] model2 看门狗 [ANDERSON]:检测到 summary.json (run 已完成 step200),退出。共自动重启 1 次。
+- [2026-06-19 11:15:42] === [0619] 续跑 aux_h2(@step12) ‖ aux_h3(@step000) -> step30;restart=400/maxit=800 + Anderson(d5);复试 step16 DNF + 取完整 load 曲线 ===
+- [2026-06-19 11:15:42] PIDs(dnfbreak_0619): h2=2800555 (resume@step12) h3=2800557 (resume@step000)

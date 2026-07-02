@@ -763,9 +763,10 @@ def _restore_state_from_checkpoint(discr, ck_path: Path) -> None:
     state.d[:] = bm.asarray(np.asarray(data["d"]))
     state.r_hist[:] = bm.asarray(np.asarray(data["r_hist"]))
     H = data["H"]
-    if getattr(state, "H", None) is not None and getattr(H, "ndim", 0) == 2:
-        if np.asarray(state.H[:]).shape == H.shape:
-            state.H[:] = bm.asarray(np.asarray(H))
+    # initialize() resets state.H=None via on_build; assign directly so the
+    # checkpointed max-history is preserved across resume (phase-field irreversibility).
+    if getattr(H, "ndim", 0) == 2:
+        state.H = bm.asarray(np.asarray(H))
 
 
 def _run_with_vtu(
@@ -846,7 +847,7 @@ def _run_with_vtu(
         info = driver.solve_one_step(step=int(s), load=float(load))
         infos.append(info)
         if int(s) in vtu_steps:
-            fname = vtu_dir / f"step_{s:04d}_load_{float(load):.6e}.vtu"
+            fname = vtu_dir / f"step_{s:04d}.vtu"
             driver._save_vtkfile(str(fname), cell_mode="mean", q=q)
             written.append(str(fname))
     return infos, written

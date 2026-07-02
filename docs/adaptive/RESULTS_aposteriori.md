@@ -24,6 +24,7 @@
 | Phase 2 (du=1e-4) | 2026-06-18 | ✅ PASS（负结果） | 细化 du **不**让峰值收敛参照(−1.5%→+3.6%，跨参照两侧)⇒ 峰值本质路径依赖、报 ±4% 带；副产严格 η_τ 全程线性轨迹(slope≈124≈刚度)、η_τ/DG ~18–40× |
 | M3 效率 (DOF) | 2026-06-21 | ✅ PASS | 等精度对照：自适应 31406 σ-DOF 达 −1.5% 峰值精度，均匀需 nx=120 的 476883 DOF ⇒ **省 93% DOF**；均匀 nx24/48 峰值虚高 +37%/+25%（论证需自适应） |
 | Θ<1 根因诊断 | 2026-06-21 | 🐞→✅ **已修+坐实** | 根因 = `VectorDirichletBC` 误用缺非齐次提升项 (`f−=A·u_D`)，primal "truth" 能量随网格 ×√2 假发散 ⇒ Θ<1。修复后**生产 k_res=1e-6 真数：err 收敛 0.044、Θ 单调→nref4 的 1.044(→1⁺)**，η 仅比真误差大 4%。reliability+efficiency 双坐实，§7 主线全安全 |
+| paper 配图 + shear | 2026-06-23 | ✅ / ⚠ | load–disp/mesh+damage/marker 三图入 adaptive 主稿（[报告](REPORT_paper_physical_figures_and_shear_2026-06-23.md)）；marker 用 v1(η-Dörfler+16%) vs v3(σ-M-DF−1.5%) 并标注 strategy-level 非单变量。**shear(model2) 局部化 DNF：旧进程 1.3 天卡 step12 不推进 ⇒ 无峰值/软化，维持 future work** |
 
 ---
 

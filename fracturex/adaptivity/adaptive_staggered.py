@@ -22,6 +22,8 @@
 """
 from __future__ import annotations
 
+import os
+
 from typing import Callable, Dict, Optional, Tuple
 
 from fealpy.backend import backend_manager as bm
@@ -76,7 +78,9 @@ def make_assemblers(discr, case, damage, *, parallel: bool = False
     输出: (elastic_assembler, phase_assembler)，均绑定到传入的 discr。
     """
     el = HuZhangElasticAssembler(discr, case, damage,
-                                 formulation="standard", assembly_parallel=parallel)
+                                 formulation=os.environ.get(
+                                     "FRACTUREX_FORMULATION", "standard"),
+                                 assembly_parallel=parallel)
     ph = PhaseFieldAssembler(discr, case, damage, assembly_parallel=parallel)
     return el, ph
 
@@ -170,19 +174,29 @@ def driving_force_per_cell(discr, damage, *, Gc=None, l0=None):
     return (2.0 * l0 / Gc) * Hcell
 
 
-def mark_driving_force(discr, Dcell, *, l0, beta: float = 0.6, c_h: float = 2.0):
+def mark_driving_force(discr, Dcell, *, l0, beta: float = 0.6, c_h: float = 2.0,
+                       d_cap: float = 0.95):
     """M-DF 标记掩码：𝒟_τ ≥ θ_D=β·𝒟_c=β/3 且 h_τ > l0/c_h（THEORY §6、§3 (6)）。
 
     h_τ=√(2·area_τ)（结构右三角网格的边长尺度）⇒ 下限 h_τ>l0/c_h ⟺ area_τ>(l0/c_h)²/2。
+    Saturation guard：max_τ d ≥ d_cap 的单元已完全破坏，H 仍按 max 历史累积但物理上不会
+    再扩裂，加密它们只会让线性系统更病态（𝒟max 失控、lgmres fallback spsolve、单步几十小时）。
     输入:
-      discr : 当前离散（取单元面积）
+      discr : 当前离散（取单元面积、损伤 cell-max）
       Dcell : (NC,) 无量纲驱动力 𝒟_τ
       l0    : 相场长度尺度
       beta  : β∈(0,1)，θ_D=β/3；越小越提前加密（更预测，更多 DOF）
       c_h   : h_τ≤l0/c_h 即停（c_h=2 ⇒ h≤l0/2；更准用 4）
+      d_cap : max_τ d ≥ d_cap 的单元从标记中排除（默认 0.95，与 failure_stop 阈值一致）
     输出: (NC,) bool 掩码。
     """
     theta_D = float(beta) / 3.0                       # 𝒟_c = 1/3 (THEORY §2 (4))
     cm = discr.mesh.entity_measure("cell")
     area_floor = (float(l0) / float(c_h)) ** 2 / 2.0  # h=√(2 area) ≤ l0/c_h ⟺ area ≤ floor
-    return bm.logical_and(Dcell >= theta_D, cm > area_floor)
+    mask = bm.logical_and(Dcell >= theta_D, cm > area_floor)
+    d = discr.state.d if discr.state is not None else None
+    if d is not None:
+        c2d = discr.space_d.cell_to_dof()
+        d_cell = bm.max(bm.asarray(d)[c2d], axis=1)
+        mask = bm.logical_and(mask, d_cell < float(d_cap))
+    return mask

@@ -432,14 +432,72 @@ assembles the phase system, and reports:
 The script does not mutate the checkpoint; the eliminated state is
 restored to `d_before` on exit.
 
-### M6 — Paper paragraph (deferred)
+### M5 spike result (paper_aux_h1, 2026-07-03)
 
-Runs behind M5; the LaTeX edit at `phasefield_huzhang.tex` §
-`sec:numerics_localization` (line 2646 anchor, before
-`\paragraph{Restart}`) is gated on the spike output. If the contraction
-is neutral, the paragraph is intentionally not written — see the "论文
-诚实报告" rule in the plan
-(`.claude/plans/radiant-squishing-shamir.md`).
+Executed on `lab` against `paper_aux_h1/epsg_1e-06/checkpoints/step_020.npz`
+(the only qualifying run with a persisted `mesh.npz`; h2 stalled at
+`max_d=0.43`, and several sibling runs pre-date the 2026-05-28
+auto-mesh-recorder cutoff). Full stdout + CSV in
+`results/nepin_spike_out/`.
+
+| quantity | value |
+|---|---|
+| `max_d` | 0.9777 |
+| $\vert S\vert$ | 21 nodes |
+| `local_iters` | 1 |
+| `local_res_reduction` | 2.29e-14 |
+| $\Vert\Delta d\Vert$ before | 2.1325 |
+| $\Vert\Delta d\Vert$ after | 2.1295 |
+| contraction | 1.0014× |
+| $\hat\omega$ surrogate | 0.937 |
+| outer-increment reduction | 0.14% |
+| $t_\text{NEPIN}$ | 0.10 s |
+| $t_\text{re-assemble}$ | 0.80 s |
+
+**Interpretation.** The local Newton converges to machine precision in
+one step (`local_res_reduction = 2.3e-14`) — the kernel and hook are
+correct. But the outer damage increment $\Vert\Delta d\Vert$ moves by
+0.14%. NEPIN's promised acceleration
+($\omega_{\text{cov}}(\mathcal F) \le L_{S^c}/L_S\cdot\omega_{\text{cov}}(F)$,
+Cai-Keyes 2002 Prop. 2.2) requires $L_S \gg L_{S^c}$. In our AT2 +
+quadratic-degradation setting at $d\to1$, the local damage residual is
+$F_i(d) \propto g''(d)H + 2(1-d) - $... with
+$g''(d) = 2(1-d) + \varepsilon_g$: **$L_S$ actually collapses to
+$\mathcal O(\varepsilon_g)$** rather than diverging, so the contrast
+vanishes and elimination on $\Omega_s$ gains nothing.
+
+The 21-node crack band contributes ≈ 21/1384 ≈ 1.5% of the damage dofs;
+even a perfect subset solve cannot move the outer step direction, which
+is dominated by the diffuse-body coupling.
+
+**Caveats logged** (from the operator):
+1. `paper_aux_h2` (originally requested) had stopped at `max_d=0.43`;
+   h1 was the only qualifying run with `mesh.npz`.
+2. `paper_aux_h1/mesh.npz` recorded `damage_p=1`, but the checkpoint's
+   `d.shape` matched P2 gdof; spike ran against a shadow `mesh.npz`
+   with `damage_p=2`. Root cause **not yet confirmed** — the recorder
+   code path (`recorder.py:198`) writes `int(discr.damage_p)` and
+   `HuZhangDiscretization.__init__` binds `self.damage_p` and builds
+   `space_d` from the same value (`discretization.py:74, 136`), so a
+   pure recorder bug is ruled out on the current code. Suspected
+   sources: (a) `paper_aux_h1` predates the auto-mesh-recorder cutoff
+   (2026-05-28), or (b) `discr.damage_p` was mutated after `space_d`
+   creation. Verification needed before drawing conclusions from this
+   spike beyond "kernel + hook are correct."
+3. `load_discr_from_dir` does not re-attach a material model. Spike
+   patched its local copy to read `meta.json` for `lam/mu/Gc/l0`; the
+   upstreamable form of this is TBD (competing convention: hard-coded
+   `Mat()` in `d12_recheck.py`).
+
+### M6 — Paper paragraph (not written)
+
+Gate: outer-increment reduction $\ge 5\%$ → write; observed 0.14% →
+**skip**. The `phasefield_huzhang.tex` §`sec:numerics_localization`
+placeholder at line 2646 is left as-is. If a future spike on a
+Cai-Keyes-favourable configuration (e.g. AT1 or non-quadratic
+degradation with divergent $L_S$) yields a real contraction, this
+becomes a paper edit; until then the NEPIN infrastructure is
+documented here only.
 
 ### Test surface
 

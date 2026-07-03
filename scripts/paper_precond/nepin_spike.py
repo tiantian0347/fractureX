@@ -52,6 +52,7 @@ from fracturex.assemblers.phasefield_assembler import PhaseFieldAssembler  # noq
 from fracturex.damage.phasefield_damage import PhaseFieldDamageModel  # noqa: E402
 from fracturex.postprocess.dataset_export.adapters.huzhang_phasefield import (  # noqa: E402
     load_discr_from_dir,
+    verify_discr_matches_checkpoint,
 )
 from fracturex.utilfuc.linear_solvers import as_scipy_csr  # noqa: E402
 
@@ -121,6 +122,7 @@ def main() -> int:
     print(f"[spike] loading {ck_path}")
 
     discr = load_discr_from_dir(ckdir_root)
+    verify_discr_matches_checkpoint(discr, ck_path)
     max_d_loaded = _load_state_into(discr, ck_path)
     print(f"[spike] state loaded: max d = {max_d_loaded:.4f}")
 

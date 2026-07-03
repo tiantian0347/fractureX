@@ -189,14 +189,26 @@ class RunRecorder:
         else:
             is_n_bd = np.zeros(0, dtype=bool)
 
+        # damage_p / u_space_order: prefer the built space's polynomial order
+        # (authoritative). Fall back to the discr attribute only if the space
+        # is missing. Older pre-2026-05-31 runs recorded a stale damage_p=1
+        # while space_d was actually P2, which broke load_discr_from_dir.
+        space_d = getattr(discr, "space_d", None)
+        damage_p_recorded = int(getattr(space_d, "p", getattr(discr, "damage_p", 1)))
+        space_u = getattr(discr, "space_u", None)
+        space_u_scalar = getattr(space_u, "scalar_space", None) if space_u is not None else None
+        u_order_recorded = int(
+            getattr(space_u_scalar, "p",
+                    getattr(discr, "u_space_order", max(int(discr.p) - 1, 1)))
+        )
         path = os.path.join(self.outdir, "mesh.npz")
         np.savez_compressed(
             path,
             node=node,
             cell=cell,
             p_sigma=int(discr.p),
-            damage_p=int(getattr(discr, "damage_p", 1)),
-            u_space_order=int(getattr(discr, "u_space_order", max(int(discr.p) - 1, 1))),
+            damage_p=damage_p_recorded,
+            u_space_order=u_order_recorded,
             use_relaxation=bool(getattr(discr, "use_relaxation", True)),
             boundary_edge_flag_aug=be_aug,
             is_neumann_edge=is_n_bd,

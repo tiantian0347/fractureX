@@ -159,6 +159,52 @@ def load_discr_from_dir(recorder_dir: Path):
     return discr
 
 
+def verify_discr_matches_checkpoint(discr, checkpoint_path) -> None:
+    """Raise ValueError if ``discr`` cannot host ``checkpoint_path``'s arrays.
+
+    Guard against stale ``mesh.npz`` fields (in particular the
+    ``damage_p=1`` written by pre-2026-05-31 runs while the state was
+    actually P2). Compares the checkpoint's ``d``/``u``/``sigma``
+    shapes against the rebuilt ``discr``'s space gdofs.
+
+    Args:
+        discr: HuZhangDiscretization from load_discr_from_dir.
+        checkpoint_path: Path to a ``step_XXX.npz`` under ``checkpoints/``.
+
+    Raises:
+        ValueError: with an actionable message pointing at the offending
+            field and its recorded vs. expected size.
+    """
+    ck = np.load(str(checkpoint_path), allow_pickle=False)
+    mismatches = []
+    checks = [
+        ("d", discr.space_d.number_of_global_dofs(),
+         "damage_p (rebuild) vs state.d (checkpoint)"),
+        ("u", discr.space_u.number_of_global_dofs(),
+         "u_space_order (rebuild) vs state.u (checkpoint)"),
+        ("sigma", discr.space_sigma.number_of_global_dofs(),
+         "p_sigma (rebuild) vs state.sigma (checkpoint)"),
+    ]
+    for field, expected, hint in checks:
+        if field not in ck.files:
+            continue
+        got = int(np.asarray(ck[field]).shape[0])
+        if got != int(expected):
+            mismatches.append(
+                f"  {field}: ck.shape={got}  expected={int(expected)}  ({hint})"
+            )
+    if mismatches:
+        raise ValueError(
+            "load_discr_from_dir: rebuilt spaces do not match checkpoint "
+            f"{checkpoint_path}. This usually means mesh.npz has a stale "
+            "damage_p / p_sigma / u_space_order field (pre-2026-05-31 runs "
+            "recorded damage_p=1 while state.d was P2). Run "
+            "`scripts/fix_stale_mesh_damage_p.py --apply <recorder_dir>` "
+            "to rewrite mesh.npz consistent with the checkpoint sizes.\n"
+            + "\n".join(mismatches)
+        )
+
+
 @dataclass(frozen=True)
 class HuZhangPhaseFieldAdapter:
     """:class:`SolverAdapter` for Hu-Zhang mixed-element phase-field fracture.

@@ -401,3 +401,75 @@ uh_sig, isbd_sig = HSBC.set_essential_bc_v2(
   - `HuzhangStressBoundaryCondition.set_essential_bc_v2`：修 fealpy 标架 bug + `skip_nn_corner_nodes` A 方案
 
 **未动**：任何 fealpy 代码。
+
+---
+
+## 6. 理论根基：任意维奇异顶点的代数定义
+
+> 补充于 2026-07-03。目的：把当前 wrapper 从"2D 补丁"（[HM18] §4 的 2D 情形）
+> 升级到"n 维统一理论"的**理论钩子**，为 A+ 论文（Extended Hu-Zhang element +
+> AFEM for L-shape / reentrant corners）铺底。
+
+### 6.1 为什么需要更一般的定义
+
+[HM18] §4 只处理 2D 情形（三角形网格上一个内部或边界顶点被 $m$ 个三角形围绕）；
+[Li21] 处理的是杂交化版本，仍然是 2D。fracturex 未来会推 3D 相场（NEXT_PAPER_DIRECTIONS §A.4 M5），
+届时需要一个能同时覆盖 2D / 3D 的**代数**（而不是几何）奇异性判据。
+
+### 6.2 参照定义：Gong–Wu–Xu 2019
+
+Gong, Wu, Xu, *New hybridized mixed methods for linear elasticity and optimal
+multilevel solvers*, Numer. Math. **141** (2019) 569–604, DOI 10.1007/s00211-018-1001-3
+（本组龚老师的博士工作正式发表版；此工作**统一了任意维**的 Hu–Zhang 元推广，
+是 wrapper 未来 3D 化的直接理论出口）给出如下代数判据（改述自该文 §3
+关于奇异点自由度的讨论）：
+
+**定义 (algebraic singular vertex)**：设 $x$ 是 $\mathcal T_h$ 的一个顶点，
+$\{K_1,\ldots,K_m\}$ 是包含 $x$ 的所有单纯形，$\{e_1,\ldots,e_r\}$ 是通过 $x$ 的
+所有内部面（$n-1$ 维单纯形）。记
+
+$$V_x := \operatorname{span}\{ n_{e_j} n_{e_j}^\top : j=1,\ldots,r \} \subset \mathbb S,$$
+
+即由这些面的法向张量积张成的对称张量子空间。$x$ 称为**代数奇异**当
+
+$$\dim V_x < \binom{n+1}{2}.$$
+
+**推论**：在这种 $x$ 处，Hu–Zhang 元强加"$\sigma$ 顶点连续"会**过度约束**分片
+多项式空间——具体过度约束的自由度数为 $\binom{n+1}{2} - \dim V_x$。这正是
+[HM18] §4 wrapper 里"添加 $r-1$ 个法向连续约束、放松 $3m$ 个 cell-local DOF"
+在 2D 三角形网格上的特例（$n=2$，$\binom{3}{2}=3$；具体计数在 §2.3）。
+
+### 6.3 2D 特化对照
+
+在 2D 单纯形网格上：
+- $\binom{n+1}{2} = \binom{3}{2} = 3$；
+- $V_x$ 由通过 $x$ 的边法向张量积张成；
+- 一般"共线三角"或"边共面"的顶点 $\dim V_x < 3$（例如 $m=2$ 相邻三角、
+  共线内部边 $r=1$，$V_x = \mathrm{span}\{n n^\top\}$，$\dim=1<3$）；
+- 所以 wrapper 的 $m+2$ 个 rel-DOF、$2(m-1)$ 个法向约束（详见 §2.3）在这个
+  代数框架下有精确解释。
+
+（该等式的严格推导是 A+ 论文的第 2 章素材；此处仅作对照观察。）
+
+### 6.4 与 wrapper 现状的接口
+
+**当前 wrapper（`huzhang_corner_relax.py`）** 判据是几何的：识别 NN 边界角点
++ 内部边通过它。这与 §6.2 的代数定义在 2D 特殊几何下等价，但在 3D 会失效
+（3D 里可能有"几何看似不奇异但代数奇异"的顶点）。
+
+**A+ 论文迁移路径**（不在本 doc 落地，仅记锚点）：
+1. 引 gong2019hybridized §3 的代数定义作 Theorem statement；
+2. 证 2D 情形与 [HM18] wrapper 等价；
+3. 推 3D 情形（`_singular_vertex_indicator_3d`，未来 fracturex 3D 分支）；
+4. 与 AFEM (NVB) 联动的嵌套性证明（Hu–Ma 2020 已经做的 2D 情形 + 龚–Wu–Xu 2019 的
+   任意维推广）。
+
+### 6.5 参考文献锚点
+
+- **Gong, Wu, Xu 2019**（`gong2019hybridized` in
+  `Tian/thesis/fracture_huzhang/ref.bib`）— DOI 10.1007/s00211-018-1001-3。
+  **这是本节唯一需要引用的公开发表工作**。
+- Hu, Ma 2020, arXiv:1807.08090v2（[HM18] in this doc）— 2D 扩展空间 + AFEM。
+- 龚世华 PhD 论文（2018，北京大学）— **背景素材，不作为公开引用**；其内容
+  已在 gong2019hybridized 里公开发表。
+

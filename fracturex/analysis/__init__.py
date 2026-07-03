@@ -12,6 +12,7 @@ from fracturex.analysis.affine_invariant import (
     write_iteration_detail_csv,
     write_summary_csv,
 )
+from fracturex.analysis.nepin_hook import build_nepin_callbacks
 from fracturex.analysis.nonlinear_elimination import (
     NEPINConfig,
     NEPINEliminator,
@@ -30,4 +31,5 @@ __all__ = [
     "NEPINEliminator",
     "NEPINResult",
     "identify_subset",
+    "build_nepin_callbacks",
 ]

@@ -170,6 +170,30 @@ class HuZhangPhaseFieldStaggeredDriver:
             self._anderson_depth = int(os.environ.get("FRACTUREX_ANDERSON_DEPTH", "0"))
         except (TypeError, ValueError):
             self._anderson_depth = 0
+        # NEPIN (Ch10) nonlinear-elimination preconditioner on the damage
+        # subproblem. Opt-in via FRACTUREX_NEPIN=1; d_c defaults to the
+        # paper_aux localization hard-wall reported in the PIPELINE_STATUS
+        # log. All three knobs match the NEPINConfig defaults; see
+        # docs/preconditioner/DESIGN_nepin_driver.md.
+        self._nepin_enabled = os.environ.get("FRACTUREX_NEPIN", "0").strip() in (
+            "1", "true", "yes", "on",
+        )
+        try:
+            self._nepin_d_c = float(os.environ.get("FRACTUREX_NEPIN_D_C", "0.82"))
+        except (TypeError, ValueError):
+            self._nepin_d_c = 0.82
+        try:
+            self._nepin_max_local_iter = int(
+                os.environ.get("FRACTUREX_NEPIN_MAX_LOCAL_ITER", "5")
+            )
+        except (TypeError, ValueError):
+            self._nepin_max_local_iter = 5
+        try:
+            self._nepin_local_tol = float(
+                os.environ.get("FRACTUREX_NEPIN_LOCAL_TOL", "1e-2")
+            )
+        except (TypeError, ValueError):
+            self._nepin_local_tol = 1e-2
         try:
             self._anderson_beta = float(os.environ.get("FRACTUREX_ANDERSON_BETA", "1.0"))
         except (TypeError, ValueError):
@@ -298,6 +322,54 @@ class HuZhangPhaseFieldStaggeredDriver:
                 except Exception:
                     pass
         return x, diag
+
+    def _maybe_nepin_precondition(self, sys_d, state) -> Dict[str, Any]:
+        """Optionally run a NEPIN elimination on ``state.d`` in-place.
+
+        Returns a stats dict with keys ``applied, subset_size, local_iters,
+        local_res_reduction, wall_time`` (all numeric; ``applied`` is int
+        0/1). When the guard fails (env off or max_d <= d_c) returns a
+        no-op stats dict without importing the NEPIN modules.
+        """
+        stats: Dict[str, Any] = dict(
+            applied=0, subset_size=0, local_iters=0,
+            local_res_reduction=1.0, wall_time=0.0,
+        )
+        if not self._nepin_enabled:
+            return stats
+        d_arr = bm.asarray(state.d[:])
+        max_d = float(bm.max(d_arr))
+        if max_d <= self._nepin_d_c:
+            return stats
+        # Local import so the driver remains free of the NEPIN dependency
+        # when the flag is off (matches the "opt-in" contract).
+        from fracturex.analysis import (
+            NEPINConfig, NEPINEliminator, build_nepin_callbacks,
+        )
+        residual, jacobian = build_nepin_callbacks(sys_d, d_arr)
+        cfg = NEPINConfig(
+            d_c=self._nepin_d_c,
+            max_local_iter=self._nepin_max_local_iter,
+            local_tol=self._nepin_local_tol,
+        )
+        elim = NEPINEliminator(residual, jacobian, cfg)
+        res = elim.eliminate(d_arr, None)
+        if res.subset_size == 0:
+            return stats
+        # Write the eliminated damage back into state.d. Clip to [0, 1]
+        # because the local Newton on the affine residual can slightly
+        # overshoot in either direction and would otherwise leave the
+        # ``decode`` step with an out-of-range anchor.
+        d_new = bm.clip(bm.asarray(res.d_corrected), 0.0, 1.0)
+        state.d[:] = d_new
+        stats.update(
+            applied=1,
+            subset_size=int(res.subset_size),
+            local_iters=int(res.local_iters),
+            local_res_reduction=float(res.local_res_reduction),
+            wall_time=float(res.wall_time),
+        )
+        return stats
 
     def initialize(self):
         """Initialize damage model with current discretization state.
@@ -515,6 +587,22 @@ class HuZhangPhaseFieldStaggeredDriver:
             t_phase_assemble_iter = float(time.perf_counter() - t0)
             t_phase_assemble += t_phase_assemble_iter
 
+            # ----------------------------------------------------------
+            # (2b) OPTIONAL: NEPIN nonlinear-elimination on Omega_s = {d > d_c}
+            # (see docs/preconditioner/DESIGN_nepin_driver.md). Off by default;
+            # enabled by FRACTUREX_NEPIN=1 and only fires when max(d_old) > d_c.
+            # If NEPIN moves d_old, we re-assemble sys_d so that decode(dd) has
+            # the correct anchor d_new = d_old + dd.
+            # ----------------------------------------------------------
+            nepin_stats = self._maybe_nepin_precondition(sys_d, state)
+            if nepin_stats["applied"]:
+                t0 = time.perf_counter()
+                self._timer_mark("phase_reassemble_start")
+                sys_d = self.phase_assembler.assemble(load)
+                self._timer_mark("phase_reassemble_end")
+                t_phase_assemble_iter += float(time.perf_counter() - t0)
+                t_phase_assemble += float(time.perf_counter() - t0)
+
             t0 = time.perf_counter()
             self._timer_mark("phase_solve_start")
             dd, lin_d = self._solve_with_diagnostics(self.phase_solver, sys_d.A, sys_d.F)
@@ -609,6 +697,11 @@ class HuZhangPhaseFieldStaggeredDriver:
                     t_elastic_iter_total_s=float(t_elastic_assemble_iter + t_elastic_solve_iter),
                     t_phase_iter_total_s=float(t_phase_assemble_iter + t_phase_solve_iter),
                     t_iter_s=float(time.perf_counter() - t_iter0),
+                    nepin_applied=int(nepin_stats["applied"]),
+                    nepin_subset_size=int(nepin_stats["subset_size"]),
+                    nepin_local_iters=int(nepin_stats["local_iters"]),
+                    nepin_local_res_reduction=float(nepin_stats["local_res_reduction"]),
+                    nepin_wall_time_s=float(nepin_stats["wall_time"]),
                 )
                 if self.recorder is not None and hasattr(self.recorder, "append_iteration"):
                     self.recorder.append_iteration(iter_row)

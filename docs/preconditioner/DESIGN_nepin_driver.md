@@ -387,6 +387,69 @@ Theory §5 M4–M6, executed after this task closes.
 
 ---
 
+## 6.5 M4–M6 landing (2026-07-03)
+
+### M4 — Driver hook
+
+`fracturex.drivers.huzhang_phasefield_staggered.HuZhangPhaseFieldStaggeredDriver`
+now carries an opt-in NEPIN sweep on the damage sub-problem. Env vars
+(all default to off / kernel defaults):
+
+- `FRACTUREX_NEPIN=1`        — master switch
+- `FRACTUREX_NEPIN_D_C=0.82` — $d_c$ threshold ($\Omega_s = \{d > d_c\}$)
+- `FRACTUREX_NEPIN_MAX_LOCAL_ITER=5`
+- `FRACTUREX_NEPIN_LOCAL_TOL=1e-2`
+
+Wiring: between phase assemble and phase solve, `_maybe_nepin_precondition`
+inspects `max(state.d)`; on the guard passing it builds the callbacks via
+`fracturex.analysis.nepin_hook.build_nepin_callbacks`, runs one
+`NEPINEliminator.eliminate`, writes the clipped `d_corrected` back into
+`state.d`, and forces a phase re-assembly so that `sys_d.decode(dd)`
+still has the correct anchor. When the flag is off, the driver path is
+byte-identical to the pre-hook version (imports are deferred to the
+inner branch).
+
+New iter_row columns (all zero when the sweep skips):
+`nepin_applied, nepin_subset_size, nepin_local_iters,
+nepin_local_res_reduction, nepin_wall_time_s`. These are additive; the
+`AffineInvariantMonitor._ALIASES` map is unchanged and reads existing
+CSVs unmodified.
+
+### M5 — Spike script
+
+`scripts/paper_precond/nepin_spike.py` accepts a recorder root
+(`--checkpoint-dir`), auto-picks the earliest step whose `max_d > d_c +
+0.02` (or accepts `--step`), rebuilds the discretization via
+`load_discr_from_dir`, loads state from `checkpoints/step_XXX.npz`,
+assembles the phase system, and reports:
+- $|S|$, local Newton iters, $\|F_S(y_\star)\|/\|F_S(0)\|$;
+- $\|\Delta d\|$ from the outer LGMRES step before vs. after NEPIN;
+- surrogate $\hat\omega \approx 2\|\Delta d_{\text{after}}\|/\|\Delta d_{\text{before}}\|^2$
+  (single-point Deuflhard witness);
+- a decision line: outer-increment reduction $\ge 5\%$ triggers the
+  paper paragraph, otherwise the finding lives here only.
+
+The script does not mutate the checkpoint; the eliminated state is
+restored to `d_before` on exit.
+
+### M6 — Paper paragraph (deferred)
+
+Runs behind M5; the LaTeX edit at `phasefield_huzhang.tex` §
+`sec:numerics_localization` (line 2646 anchor, before
+`\paragraph{Restart}`) is gated on the spike output. If the contraction
+is neutral, the paragraph is intentionally not written — see the "论文
+诚实报告" rule in the plan
+(`.claude/plans/radiant-squishing-shamir.md`).
+
+### Test surface
+
+`fracturex/tests/analysis/test_nepin_hook.py` adds four hook-level
+regressions on synthetic scipy-sparse `A/F` (residual freezing,
+sub-block extraction, end-to-end one-step convergence, CSRTensor lift).
+Analysis suite: **26 passed, 2 skipped** (was 22+2 pre-Ch10-hook).
+
+---
+
 ## 7. Open questions
 
 - **Dense vs sparse local Jacobian.** Current design uses dense LU

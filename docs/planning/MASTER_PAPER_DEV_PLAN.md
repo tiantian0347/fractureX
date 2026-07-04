@@ -1,4 +1,7 @@
-# fracturex 论文 + 开发 主计划（2026-07-02 v0.1）
+# fracturex 论文 + 开发 主计划（2026-07-04 v0.2）
+
+> **v0.2 更新（2026-07-04）**：D12 (`Tian/thesis/fracture_huzhang/phasefield_huzhang.tex`) 与 A (`.../adaptive/equilibrated_aposteriori.tex`) 两篇 tex 均已完成正文 + Conclusion + Outlook。基于两篇 Outlook 自认的欠账，重新校准 Phase 1/2 排期：短期先补两篇 gap 送审，中期改为 **T3 (B 线) + T5 (D+ 线) 并行**，T4 (A+ 线) 后置到 2027。
+
 
 > **输入源**：① `docs/planning/p1_action_checklist.md`（P1 止血清单）② `docs/planning/conf_202606_inspirations.md`（港中深会议迁移路径）③ `docs/NEXT_PAPER_DIRECTIONS.md`（A/B/C/D/E 五方向）④ `docs/preconditioner/D12_PRECONDITIONER_PAPER_PLAN.md` + `PIPELINE_STATUS.md`（D12 头条与在跑流水线）⑤ `docs/adaptive/*`、`docs/routes/plan_adaptive_aposteriori.md`（A 线理论与主循环代码就位）⑥ `docs/operator_learning/paper_thesis.md`（B 线主定理锁定 2026-06-02）⑦ `/Users/tian00/Desktop/gong办公资料/TalksAndPapers/SUMMARY.md`（龚世华 2018 博士论文 + 2015 H(div,S) 手稿）。
 >
@@ -28,14 +31,14 @@
 | # | 类别 | 项目 | 状态 | 依赖 | 目标产出 | ETA |
 |---|---|---|---|---|---|---|
 | **T0** | 运维 | P1 遗留 + aux_h2/h3/model1 三段并行流水线 | 🟡 运行中（2026-06-04 起） | — | paper_aux 数据齐全 | 1–2 周 |
-| **T1** | 论文 D | D12 §13 sweep 表补齐 + 头条改写 + 收稿 | 🟡 结果多已在 `D12_RESULTS.md` | T0（部分档需要 pipeline 出货） | **SISC/CMAME 短稿** | 2–3 月 |
-| **T2** | 论文 A | 平衡 a posteriori + σ-驱动 AFEM（M0→M3） | 🟢 理论 + 代码骨架 100% 就位 | T0 无关；PoC 已有 | **CMAME/SINUM 主推** | 4–5 月 |
-| **T3** | 论文 B | HZ-supervised 算子学习 Stage D + 对照表 + 数据重生 | 🟢 主定理锁定 2026-06-02，欠 `equilibrium_residual_l2` stub 实现 | T2 无关，可并行 | **JCP/CMAME** | 5–6 月 |
-| **T4** | 论文 A+ | Hu-Ma 扩展 H-Z 空间 + NVB 处理 L-shape（博士论文第 3 章 + conf 马睿线 2） | 🔵 fealpy 需新增顶点分裂逻辑 | T2 完成后接入 | A 论文附加章 / 独立短文 | 6–8 月 |
-| **T5** | 论文 D+ | 多水平/两层 Schwarz 预条件（博士论文第 6 章 + conf 胡齐芽） | 🔵 未开工 | T1 收稿后启动；paper_aux 数据可复用 | D 论文续作或合并进 T4 | 8–12 月 |
-| **T6** | 论文 C | 4 阶 PFM + 应变梯度（Ali 2024 + Aifantis） | 🔵 需新写离散 | T2 完成 | Comput. Mech./IJNME | 10–14 月 |
-| **T7** | 理论 | 仿射不变 Lipschitz + NEPIN 用到 fracturex staggered（博士论文第 8–10 章 + conf §3 葛志昊） | 🔵 未开工，理论文 | T2/T3 完成 | SINUM/M2AN | 12–18 月 |
-| **T8** | 论文 E | 可微 HZ-PFM + AuTO 拓扑韧化 | 🔵 需 JAX 端到端 | T3 完成 + jax backend | ML4Science / PNAS 短篇 | 18–24 月 |
+| **T1** | 论文 D | D12 tex 已成稿（`phasefield_huzhang.tex` 3148 行含 Conclusion + Appendix）→ 补 Outlook 自认欠账 + §13 sweep 表 + 收稿 | 🟡 tex 骨架 100%，欠 SENT shear 完整 aux-vs-direct + 局部化 mesh-independence + shear 局部化 iteration 一栏 | T0（h2/h3/model1 pipeline 出货） | **SISC/CMAME 短稿** | 2–3 月 |
+| **T2** | 论文 A | A tex 已成稿（`equilibrated_aposteriori.tex` 907 行含 Conclusion）→ 补 SENT shear、equilibrating correction、spectral split majorant、marker efficiency 下界 | 🟡 tex 骨架 100%，SENT tension + CNT red-green 已交付 | T0 无关；代码全在手 | **CMAME/SINUM 主推** | 4–5 月 |
+| **T3** | 论文 B | HZ-supervised 算子学习 Stage D + 对照表 + 数据重生 | 🟢 主定理锁定 2026-06-02，欠 `equilibrium_residual_l2` stub 实现 | T1/T2 无关，可并行 | **JCP/CMAME** | 5–6 月 |
+| **T5** | 论文 D+ | 多水平/两层 Schwarz 预条件（博士论文第 6 章 + conf 胡齐芽） | 🟢 D12 Outlook 自己点名"contrast-adapted, interface-resolving coarse space"；paper_aux 数据可直接复用 | T1 tex 送审后启动 | D 论文续作 / SIMAX-NLAA | 8–12 月 |
+| **T4** | 论文 A+ | Hu-Ma 扩展 H-Z 空间 + NVB 处理 L-shape（博士论文第 3 章 + conf 马睿线 2） | 🔵 fealpy 需新增顶点分裂逻辑；工程量最重 | T2 送审后接入 | A 论文附加章 / 独立短文 | 12–14 月 |
+| **T6** | 论文 C | 4 阶 PFM + 应变梯度（Ali 2024 + Aifantis） | 🔵 需新写离散 | T2 完成 | Comput. Mech./IJNME | 14–18 月 |
+| **T7** | 理论 | 仿射不变 Lipschitz + NEPIN 用到 fracturex staggered（博士论文第 8–10 章 + conf §3 葛志昊） | 🔵 未开工，理论文 | T2/T3 完成 | SINUM/M2AN | 15–20 月 |
+| **T8** | 论文 E | 可微 HZ-PFM + AuTO 拓扑韧化 | 🔵 需 JAX 端到端 | T3 完成 + jax backend | ML4Science / PNAS 短篇 | 20–24 月 |
 
 **颜色**：🟡 在跑/在写 🟢 立即可起 🔵 依赖前置
 
@@ -56,50 +59,64 @@
 
 ---
 
-### Phase 1（2026-07 中 → 2026-09）— T2（A 线）主推 + T3（B 线）打底 + T1（D 线）收尾
+### Phase 1（2026-07 中 → 2026-09）— **T1 (D) + T2 (A) 两篇 tex 补 gap 送审**
 
-**T2 · A 线 · 平衡 a posteriori 自适应**（首推，`plan_adaptive_aposteriori.md` + `THEORY_equilibrated_aposteriori.md`）
+> **v0.2 起点**：两篇 tex 骨架已完成正文 + Conclusion + Outlook。以下"欠账"清单直接来自两篇 Conclusion 里作者自认的 open extension。
 
-已就位的代码（不再补建）：
-- `fracturex/adaptivity/equilibrated_estimator.py`（η_T 入口）
-- `fracturex/adaptivity/adaptive_loop_equilibrated.py`（主循环）
-- `fracturex/adaptivity/{primal_elastic_solve, degraded_huzhang_solve, degraded_mms, primal_resolve_real}.py`
+**T1 · D 线 · D12 tex 收稿**（`Tian/thesis/fracture_huzhang/phasefield_huzhang.tex` 3148 行）
 
-**M0（2 周）**：MMS 上验 effectivity index，split 情形 Θ 在合理 k_res 下有界（**Go/No-Go 卡点**）
-**M1（3 周）**：标准 FEM + Hu-Zhang 双解装配，PoC 在 model0/model2 上 η_T 与真误差比较
-**M2（3 周）**：自适应循环 + Dörfler 标记
-**M3（4 周）**：对照 [10] 郭雯 2024 四叉树双相场（FRC 30/45/60/90°），报 CPU/网格节省与裂纹路径 Hausdorff。**目标：超过 56.17% / 89.47%**
-**M4（选做，2 周）**：3D 起步小规模验证 2D 论点不退化
+Outlook 自认欠账（Conclusion §Future Work 明写）：
+1. SENT shear 的 aux-vs-direct 端到端复现 + crack-path 场对比图（tension 已交付）
+2. SENT shear 上的局部化 iteration 研究（tension 已在 §Bounded convergence 交付）
+3. 局部化区 mesh-independence 一栏（uniform 已交付）
+4. §13 sweep 表仍留空档 → 等 T0 pipeline (h2/h3/model1) 出货填补
+5. Cervera VMS-OSGS 对照段落补进 §Related Work
 
-**T3 · B 线 · HZ-supervised 算子学习**（并行推进，`paper_thesis.md` 主定理已锁）
+**T2 · A 线 · A tex 收稿**（`Tian/thesis/fracture_huzhang/adaptive/equilibrated_aposteriori.tex` 907 行）
 
-- **M3a（2 周）**：`fracturex/learn/eval/metrics.py:277` 的 `equilibrium_residual_l2` NotImplementedError 实现掉（B 的第一笔代码；paper_thesis §C 给了完整公式）
+Outlook 自认欠账（Conclusion 尾段明写）：
+1. SENT shear 验证（tension + CNT red-green 已交付）
+2. 一般数据 $(f, t_N)$ 的显式 equilibrating correction，把 canonical setting 之外的 Prager–Synge 补齐
+3. spectral tension–compression split 的 convex-duality majorant（当前只覆盖 isotropic $\mathbb C_d = g(d)\mathbb C$）
+4. marker efficiency 下界 / 认证（predictor 循环之外的 marker certification）
+
+**T3 · B 线 · 并行打底**（不阻塞 T1/T2 收稿）
+- **M3a（2 周）**：`fracturex/learn/eval/metrics.py:277` 的 `equilibrium_residual_l2` NotImplementedError 实现掉（B 的第一笔代码；`paper_thesis.md` §C 给了完整公式）
 - **M3b（2 周）**：σ_h 监督 vs σ_h^rec 监督对照表（命题 B2 + T2 实验证据）
-- **M3c（3 周）**：数据重生成满足 h_FE ≤ l₀/2（`surrogate_data_underresolved_hl0`），验证 T1c 峰幅值预言
+- **M3c（3 周）**：数据重生成满足 h_FE ≤ ℓ₀/2（`surrogate_data_underresolved_hl0`），验证 T1c 峰幅值预言
 - **M4 选做**：§I Airy 势硬约束 ablation
 
-**T1 · D 线 · D12 收稿**（备胎，`D12_PRECONDITIONER_PAPER_PLAN.md` §13 状态表）
-
-头条（2026-06-09 已锁）：*难 regime 唯一收敛*（对手全 DNF，direct OOM/singular）。收稿路径：
-1. `D12_RESULTS.md` §5 已按论文章节组织，可直接转 TeX
-2. §13 状态表把仍留空的 sweep 档从 pipeline 出货后填掉（h2/h3/model1 数据即将齐）
-3. Cervera VMS-OSGS 对照段落补进 §Related Work
-
-**T2 与 T3 共享**：§2 "Why Hu-Zhang" 段落（**同一祖父段落，两篇复用**——见 SUMMARY 博士论文摘要"$H(\mathrm{div},\mathbb{S})$ 上的 inf-sup 稳定 + 逐元精确平衡"两条独家性质）。
+**T1 与 T2 共享**：§2 "Why Hu-Zhang" 段落（**同一祖父段落，两篇复用**——SUMMARY 博士论文摘要 "$H(\mathrm{div},\mathbb{S})$ 上的 inf-sup 稳定 + 逐元精确平衡" 两条独家性质）。
 
 ---
 
-### Phase 2（2026-10 → 2027-01）— T4/T5 深化 + 论文投稿
+### Phase 2（2026-10 → 2027-03）— **T3 (B) + T5 (D+) 双线主推**，T4 后置
 
-**T4 · A+ 线 · Hu-Ma 扩展 H-Z 空间处理 L-shape/角点奇异**
+> **v0.2 调整**：D12 Conclusion §Future Work 自己点名 "contrast-adapted, interface-resolving coarse space — replacing the geometric $P_1$ correction where the damage interface is sharp"，这正是 T5 (D+) 的入口，直接从 D12 头条 "局部化区 aux niter 骤升 ~14×" 的口子接续。T4 (A+) 由于 fealpy 顶点分裂逻辑工程量最重，后置到 2027 春。
+
+**T5 · D+ 线 · 多水平/两层 Schwarz 预条件**（D12 收稿即刻启动）
+（博士论文第 6 章 + `conf_202606_inspirations.md` §1 胡齐芽/谢和虎/梁启刚）
+
+**为何现在做**：
+- D12 Outlook 自认 "residual gap between the few-tens count at full localization and the $\mathcal O(10)$ of the uniform regime" 需要 contrast-adapted coarse space 来关闭——**这是作者自己的 next-step**
+- 博士论文第 6 章的**非嵌套粗空间 + 稳定提升算子 + 覆盖 DD 磨光**，正是对症方案
+- 胡齐芽的**局部 GEP 自适应构造粗空间** = 龚博士非嵌套粗空间的现代版
+- paper_aux 数据可**直接复用**做离线 GEP-coarse 实验，不需要新造 dataset
+
+**里程碑**：
+1. 在 paper_aux baseline 上离线做 GEP-coarse 实验
+2. 与现有 aux-space Schwarz 对照 niter 曲线（重点看 max d → 0.99 区段）
+3. 出成 D 线续作（SIMAX/NLAA）
+
+**T4 · A+ 线 · Hu-Ma 扩展 H-Z 空间处理 L-shape/角点奇异**（A 送审后启动，2027 春）
 （博士论文第 3 章 + `conf_202606_inspirations.md` §4 马睿线 2 ★★★）
 
 **核心机制**：在 NVB 加密新顶点 x_e 处，把纯切向 φ_{x_e} t_e t_e^T 基沿边 e 拆成 ω⁺/ω⁻ 两侧的 τ⁺、τ⁻；法向分量（n_e n_e^T、n_e t_e^T + t_e n_e^T）不动。x_e 处 DoF 从 3 变 4，H(div) 协调性保持。
 
-**为何现在做**：
-- fracturex 处理 L-shape 目前是"corner_relaxation_PR.md"里的临时补丁，缺理论
-- 博士论文第 3 章正好给了"任意维奇异点代数定义"——把 Hu-Ma 2020（k=2/3 情形）与龚论文（任意 k）合起来，是一个漂亮的 unified 结果
-- 与 T2 自适应循环天然嵌套：AFEM 加密后的新顶点自动落进 Hu-Ma 扩展空间
+**为何后置**：
+- fracturex 处理 L-shape 目前是 `corner_relaxation_PR.md` 里的临时补丁，缺理论——**A 论文的现有 CNT/SENT 场景未受此影响**，不阻塞 A 送审
+- fealpy 需新增顶点分裂逻辑，工程量最重
+- 与 A 自适应循环天然嵌套：AFEM 加密后的新顶点自动落进 Hu-Ma 扩展空间——A 送审后接入更自然
 
 **里程碑**：
 1. fealpy 上复现 Hu-Ma §5.2 rotated L-shape（α=0.544...，不带相场）
@@ -107,23 +124,9 @@
 3. 嵌回 fracturex model2 + L-shape 或 V-notch 几何
 4. 写成 A 线论文附加章 or 独立短文
 
-**T5 · D+ 线 · 多水平/两层 Schwarz 预条件**
-（博士论文第 6 章 + `conf_202606_inspirations.md` §1 胡齐芽/谢和虎/梁启刚）
-
-**为何现在做**：
-- D12 头条已经承认"在损伤局部化区 aux niter 骤升 ~14×"，这是 §3.2 加权 P1 粗空间对尖界面变难所致
-- 博士论文第 6 章的**非嵌套粗空间 + 稳定提升算子 + 覆盖 DD 磨光**，正是治这个的对症方案
-- 胡齐芽的**局部 GEP 自适应构造粗空间** = 龚博士非嵌套粗空间的现代版
-- 与 T4 的扩展 H-Z 空间可以合并到同一个 architecture 变更里
-
-**里程碑**：
-1. 在 paper_aux baseline 上离线做 GEP-coarse 实验
-2. 与现有 aux-space Schwarz 对照 niter 曲线（重点看 max d → 0.99 区段）
-3. 出成 D 线续作或与 T4 合并
-
 ---
 
-### Phase 3（2027-02 之后）— T6/T7/T8
+### Phase 3（2027-04 之后）— T6/T7/T8
 
 **T6 · C 线 · 4 阶 PFM + 应变梯度**（`NEXT_PAPER_DIRECTIONS.md` §C）
 - 依赖 T2 完成；4 阶 + Hu-Zhang inf-sup 是理论新工作，工程量 ≥ A 全部
@@ -147,8 +150,8 @@
 | 1 | **D12** | Auxiliary-space preconditioning for Hu-Zhang mixed phase-field fracture: uniqueness of convergence in the fully-localized regime | SISC / CMAME | 难 regime 唯一收敛；引龚博论 Ch 7 为理论根基 | 2026-09 |
 | 2 | **A** | Equilibrated a posteriori error estimation and σ-driven adaptivity for Hu-Zhang mixed phase-field fracture | CMAME / SINUM | 无常数超圆界；osc(f)=0 干净；超过郭雯 2024 的 CPU/mesh 节省 | 2026-11 |
 | 3 | **B** | Balance-preserving neural operators for phase-field fracture via Hu-Zhang supervision | JCP / CMAME | 平衡监督 = 结构最优；R̃_h 平台 vs 下降曲线；诚实边界 T1/D1 | 2027-01 |
-| 4 | **A+** | Extended Hu-Zhang element with vertex-tangent relaxation for adaptive elasticity at reentrant corners | Math. Comp. / M2AN | 合并 Hu-Ma 2020 + 龚博论 Ch 3 任意维奇异点代数定义 | 2027-03 |
-| 5 | **D+** | Non-nested coarse spaces and two-level Schwarz preconditioning for Hu-Zhang phase-field fracture in the localized regime | SIMAX / NLAA | 龚博论 Ch 6 多水平 + 胡齐芽 GEP-coarse 合并 | 2027-06 |
+| 4 | **D+** | Non-nested coarse spaces and two-level Schwarz preconditioning for Hu-Zhang phase-field fracture in the localized regime | SIMAX / NLAA | 龚博论 Ch 6 多水平 + 胡齐芽 GEP-coarse；D12 自己 Outlook 点名的续作 | 2027-03 |
+| 5 | **A+** | Extended Hu-Zhang element with vertex-tangent relaxation for adaptive elasticity at reentrant corners | Math. Comp. / M2AN | 合并 Hu-Ma 2020 + 龚博论 Ch 3 任意维奇异点代数定义 | 2027-06 |
 | 6 | **T7** | Affine-invariant analysis of staggered Newton for Hu-Zhang phase-field fracture | SINUM / M2AN | 龚博论 Ch 8–10 NEPIN 框架用到相场 staggered，补严格能量下降证明 | 2027-09 |
 | 7 | **C** | Fourth-order phase-field fracture with strain-gradient elasticity in Hu-Zhang mixed setting | Comput. Mech. / IJNME | mesh 放松 + 尺寸效应 + T2 估计子扩展 | 2027-12 |
 | 8 | **E** | Differentiable Hu-Zhang phase-field for topology-toughening design | ML4Science / PNAS | JAX 端到端 + SH-com 最小模型 | 2028 |
@@ -162,23 +165,29 @@
 - [ ] T0.2 EXPERIMENT_MATRIX 自动扫描脚本（0.5 天）
 - [ ] T0.3 aux_h2/h3/model1 三段过完局部化，产出 D12 sweep 数据
 
-### 4.2 P1 · Phase 1（Q3 2026）
-- [ ] T2.M0 MMS 上验 effectivity index（Go/No-Go）
-- [ ] T2.M1 双解装配 PoC on model0/model2
-- [ ] T2.M2 自适应循环 + Dörfler 标记
-- [ ] T2.M3 vs 郭雯 2024 四叉树对照实验
+### 4.2 P1 · Phase 1（Q3 2026）· D12 + A tex 补 gap 送审 + B 线并行打底
+- [ ] T1.tex.1 SENT shear 完整 aux-vs-direct 端到端 + crack-path 场对比
+- [ ] T1.tex.2 SENT shear 局部化 iteration 研究一栏
+- [ ] T1.tex.3 局部化区 mesh-independence 一栏
+- [ ] T1.tex.4 §13 sweep 表空档从 pipeline (h2/h3/model1) 出货后补齐
+- [ ] T1.tex.5 Cervera VMS-OSGS 对照段落补进 §Related Work
+- [ ] T2.tex.1 SENT shear 场景验证（tension + CNT red-green 已交付）
+- [ ] T2.tex.2 一般数据 $(f, t_N)$ 的显式 equilibrating correction
+- [ ] T2.tex.3 spectral tension–compression split 的 convex-duality majorant
+- [ ] T2.tex.4 marker efficiency 下界 / marker certification
 - [ ] T3.M3a `equilibrium_residual_l2` stub 实现（`fracturex/learn/eval/metrics.py:277`）
 - [ ] T3.M3b σ_h vs σ_h^rec 监督对照表
-- [ ] T3.M3c 数据重生成 h_FE ≤ l₀/2
-- [ ] T1 D12 §13 sweep 表补齐 + 论文转 TeX
+- [ ] T3.M3c 数据重生成 h_FE ≤ ℓ₀/2
 
-### 4.3 P2 · Phase 2（Q4 2026 – Q1 2027）
-- [ ] T4.1 fealpy 复现 Hu-Ma §5.2 rotated L-shape
-- [ ] T4.2 corner relaxation 装配模块升级（对接 `architecture/huzhang_corner_relaxation_design.md`）
-- [ ] T4.3 扩展 H-Z 空间嵌回 fracturex model2 + L-shape
+### 4.3 P2 · Phase 2（Q4 2026 – Q1 2027）· T3 完稿 + T5 D+ 主推，T4 后置
+
 - [ ] T5.1 GEP-coarse 离线实验（paper_aux 数据复用）
 - [ ] T5.2 两层 Schwarz vs 现 aux-space 对照（重点 max d → 0.99 区段）
+- [ ] T5.3 D+ 论文成稿（SIMAX/NLAA，2027-03 投稿）
 - [ ] T3.M4（选做）§I Airy 势硬约束 ablation
+- [ ] T4.1 fealpy 复现 Hu-Ma §5.2 rotated L-shape（A 送审后启动）
+- [ ] T4.2 corner relaxation 装配模块升级（对接 `architecture/huzhang_corner_relaxation_design.md`）
+- [ ] T4.3 扩展 H-Z 空间嵌回 fracturex model2 + L-shape
 
 ### 4.4 P3 · Phase 3（Q2 2027+）
 - [ ] T6 4 阶 PFM + 应变梯度离散

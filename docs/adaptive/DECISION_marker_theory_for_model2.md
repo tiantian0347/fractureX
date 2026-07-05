@@ -182,7 +182,42 @@ $93\%$ DOF 节省。**保留** SENT 的既有结论。在 model2 里，那两层
 
 ## 8. TODO（挂起项）
 
-- [ ] 主文 §4 marker 章节改写为 $\eta_T$ 版；$\mathcal D_{\tau,T}$ 降级为 remark。
-- [ ] Remark 5.6 升级为正式引理，含证明。
-- [ ] SENT/SENS 数值验证跑通后，更新 [RESULTS_aposteriori.md](RESULTS_aposteriori.md)。
-- [ ] `equilibrated_aposteriori.tex` §5.4 SENS 新章节等 SENS 结果收敛后再补图和文。
+- [x] 主文 §4 marker 章节改写为 $\eta_T$ 版；$\mathcal D_{\tau,T}$ 降级为 remark（§sec:sigma-marker + Remark rem:marker-variant）。
+- [x] Remark 5.6 升级为正式引理（Lemma lem:local-eff）+ 证明。
+- [x] `equilibrated_aposteriori.tex` §4 title 改为 "Equilibrated-marker adaptivity"；Algorithm 1 使用 $\eta_T$ + CKNS 相对下降停机；参数表加 $\theta_{\max},q,d_{\mathrm{hi}}$。
+- [x] `refs.bib` 加 Dörfler 1996, Cascón--Kreuzer--Nochetto--Siebert 2008, Feischl--Führer--Praetorius 2014, Ainsworth--Oden 2000, Verfürth 2013, Zienkiewicz--Zhu 1992, Tian--Chen--He--Wei 2024。
+- [ ] SENS 数值验证跑通后（lab 已在跑，见 `/tmp/sens_eta_T_monitor.md`），更新 [RESULTS_aposteriori.md](RESULTS_aposteriori.md)。
+- [ ] `equilibrated_aposteriori.tex` §5.4 SENS 新章节等 SENS 结果收敛后补图和文；示范 $\mathcal D_{\tau,T}$-marker 的失败 + $\eta_T$-marker 的成功对比。
+
+## 9. SENT 数值验证（2026-07-05）
+
+配置：`FRACTUREX_MARKER=eta_T, ETA_T_STRATEGY=max, THETA_REC=0.9, ETA_DECREMENT=0.7, du=2.5e-4, nx=24, spsolve`。
+
+| 指标 | $\eta_T$ marker (本次) | $\mathcal D_{\tau,T}$ v3 canonical | 参考 nx=120 |
+|---|---:|---:|---:|
+| Peak $\lvert R_y\rvert$ | **0.6206** | 0.6211 | 0.631 |
+| 起 peak 位移 $u_y$ | 5.00e-3 | 5.25e-3 | 5.10e-3 |
+| 相对参考偏差 | **−1.6%** | −1.5% | ref |
+| Peak 处 NC | 1716 | ~1500 | 14400 |
+| Peak 处 $\mathrm{dof}_\sigma$ | 28667 | 31406 | 476883 |
+| 全跑 wall (25 步到 stop) | 378 s | 小时级（Anderson canonical run） | — |
+| 每步 corr 平均 | ~1 | 3–8 | — |
+
+**结论**：$\eta_T$-marker + CKNS 相对下降停机在 SENT 上 peak accuracy 与 $\mathcal D_{\tau,T}$ 持平，
+DOF 略少，wall 快，每步只 1 轮 corrector（stopping 生效）。**理论升级不掉性能**。
+
+SENT 实测让我们（1）确认了 max 准则 + $\theta_{\max}=0.9$ 是正确的候选：$\theta_{\max}=0.5$ 在
+弹性阶段一步标 70%+ 胞，$\theta_{\max}=0.9$ 只标 top 1-2%；（2）确认了 CKNS 相对下降 $q=0.7$ 停机
+能让 corrector 自然收敛，替代 "$\mathcal D_\tau\ge\theta_D$" 的阈值型自然停机。
+
+## 10. Bibliography（进入 `equilibrated_aposteriori.tex`）
+
+标准 AFEM 收敛与停机理论的引用一律通过 [refs.bib](../../Tian/thesis/fracture_huzhang/adaptive/refs.bib) 提供：
+
+- `Doerfler1996`: Dörfler 收缩型标记 [Dörfler 1996, SIAM JNA 33(3)].
+- `CasconKreuzerNochettoSiebert2008`: 拟最优 AFEM 收敛率 [SIAM JNA 46(5)].
+- `FeischlFuehrerPraetorius2014`: 一般非对称/非线性问题的 AFEM 最优收敛 [SIAM JNA 52(2)].
+- `AinsworthOden2000`: A Posteriori Error Estimation in FEA (book).
+- `Verfuerth2013`: A Posteriori Error Estimation Techniques for FEM (book).
+- `ZienkiewiczZhu1992a`: 超收敛 patch recovery [IJNME 33(7)].
+- `TianChenHeWei2024`: 基于 recovery 型后验估计的相场自适应有限元 [JCAM 472].

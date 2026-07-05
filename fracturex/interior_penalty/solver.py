@@ -58,7 +58,7 @@ def _to_scipy_csr(A):
     raise TypeError(f"unknown sparse matrix type: {type(A)}")
 
 
-def _assemble_interior_penalty(space, gamma, q):
+def _assemble_interior_penalty(space, gamma, q, edge_coef_inner=None, edge_coef_bd=None):
     """
     C^0 IPDG 内罚项，用于双调和方程。
 
@@ -69,6 +69,14 @@ def _assemble_interior_penalty(space, gamma, q):
         a_P(u,v) = -∫_e {∂²u/∂n²}[∂v/∂n]
                    -∫_e {∂²v/∂n²}[∂u/∂n]
                    +γ ∫_e [∂u/∂n][∂v/∂n]
+
+    Parameters
+    ----------
+    edge_coef_inner
+        Optional (NIE,) 数组，作为内部边的 cell-average scalar 权系数
+        (整个 P1+P2+P2T 一起乘)。默认 None → 权系数 = 1。
+    edge_coef_bd
+        Optional (NBE,) 数组，作为边界边的权系数。
     """
     mesh = space.mesh
     isBdEdge = mesh.boundary_edge_flag()
@@ -84,6 +92,9 @@ def _assemble_interior_penalty(space, gamma, q):
     P2 = bm.einsum("q, qfi, qfj, f->fij", ws, gnjphi, gn2jphi, em[isInnerEdge])
     P2T = bm.permute_dims(P2, axes=(0, 2, 1))
     Pi = P1 + P2 + P2T
+    if edge_coef_inner is not None:
+        w = np.asarray(edge_coef_inner, dtype=np.float64).reshape(-1)
+        Pi = Pi * w[:, None, None]
 
     ie2cd = space.dof.iedge2celldof
     be2cd = space.dof.bedge2celldof
@@ -102,6 +113,10 @@ def _assemble_interior_penalty(space, gamma, q):
     Pb2 = bm.einsum("q, qfi, qfj, f->fij", ws, bgnjphi, bggnjphi, em[isBdEdge])
     Pb2T = bm.permute_dims(Pb2, axes=(0, 2, 1))
     Pb = Pb1 + Pb2 + Pb2T
+    if edge_coef_bd is not None:
+        w = np.asarray(edge_coef_bd, dtype=np.float64).reshape(-1)
+        Pb = Pb * w[:, None, None]
+
     Ib = bm.broadcast_to(be2cd[:, :, None], Pb.shape)
     Jb = bm.broadcast_to(be2cd[:, None, :], Pb.shape)
     Mat = Mat + csr_matrix(

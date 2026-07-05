@@ -47,39 +47,33 @@
   - `_make_loader` 按 `supervision_source == 'sigma_h_rec'` 自动开 `include_stress_rec`
   - 全套 38 项 (stress_recovery 10 + losses 9 + metrics 8 + m1_smoke 11) 零回归——B 线对照实验的**训练侧基础设施**齐全，等 M3b.4 数据生成脚本吐出带 `stress_rec` 的数据集即可 A/B 训练
 
-## T3.M3b 服务器待办（等待落地）
+## T3.M3b 服务器进展（2026-07-05 更新）
 
-**M3b.4 · 数据管线：把 u_h 和 σ_h^rec 写进 npz 数据集**（服务器侧）
+**M3b.4 · 数据管线：把 σ_h^rec 写进 npz 数据集** ✅ 完成 (2026-07-05)
 
-现状：数据集 npz 已存 `stress`=σ_h(HZ) + `damage` + `mask`，但**没有存 u_h**（位移场）。要跑 σ_h vs σ_h^rec 对照，必须先把 u_h 也存进去。
+**关键决策**：**不用重生 dataset**。HZ solver 的 checkpoints (`runs/sample_XXX/checkpoints/step_XXX.npz` 的 `u` 键) 已经存了 P2-DG × 2 分量的位移 FE DOF 向量。offline 采样到网格即可。
 
-具体步骤：
+- 新脚本 `scripts/datasets/add_stress_rec.py`（scripts/datasets/ 而不是 data_generation/，跟其他数据生成脚本目录一致）
+- 关键实现：自写向量化 barycentric point-locate（`mesh.location` 是 fealpy 空占位）+ 硬编码 fealpy DG P2 local DOF 顺序 `[v0, mid(v0v1), mid(v0v2), v1, mid(v1v2), v2]`
+- Round-trip 验证：已知位移 u=(x, 2y) 经 `tspace.interpolate` → 我的 sampler → 网格误差 = 4e-16（机器精度）
+- σ_h^rec / p95 归一化至 O(1) 训练空间；非收敛步用 σ_h 覆盖避免裂尖数值污染
+- **观测到裂尖 10⁴× 于 p95 的重尾**（p95=1.0 vs max=9780 in sample_000000）—— σ_h^rec ∉ H(div,S) 的法向跳跃 pathology，正是 paper_thesis §F.3 想暴露的对照点
+- 详细状态：`docs/operator_learning/m3b_stageD_status.md`
 
-1. **改数据生成器**（`fracturex/learn/datasets.py` 写侧，或 `scripts/data_generation/*.py` 里对应写 npz 的入口）：把 HZ 求解器输出的位移 u_h 采样到 (H, W) 网格，作为 `displacement` 键写入 npz，shape `(T, 2, H, W)`
-2. **重生成 dataset**（服务器上跑）：以现有 dataset generation 脚本为基线（参考 `results/operator_learning_smoke/sample_paper_aux_h1.*` 附近的 pipeline），加 `displacement` 输出。paper_thesis 目标 `h_FE ≤ ℓ₀/2` — 如要重生也顺便把这个约束一起补上（对应 master plan 里的 T3.M3c）
-3. **σ_h^rec 预计算脚本**（新写 `scripts/data_generation/add_stress_rec.py`）：对已生成 npz 批处理调 `fracturex.learn.stress_recovery.stress_recovered_from_displacement`，写回 `stress_rec` 键。这是**offline 数据变换**，本地或服务器都能跑，不涉及 FEM 求解
+**M3b.5 · A/B 对照训练** 🟢 A/A' sweep running (2026-07-05 10:57)
 
-**M3b.5 · A/B 对照训练 + 图表**（服务器 GPU）
+已启动（nohup, log `/tmp/m3b_hz_sweep.log`）：
 
-数据齐后：
+- **A/A' sweep**（HZ σ_h supervision）：`run_m3b_lambda_eq_sweep.py` × λ_eq ∈ {0, 0.01, 0.1, 1.0}
+- 数据集：m1_pilot（train=19/test=8，64×64）
+- 模型：`multioutput_fno`, Stage B, 100 epochs
+- CPU 让位 D12 aux h2/h3 (267325/267327) + model2 direct (3782490/4142145)
 
-1. **A 组**（HZ 监督基线）：`TrainConfig(..., supervision_source='sigma_h', lambda_eq=0.0)` 若干 epoch，记录 val R̃_h 曲线
-2. **A' 组**（HZ + Stage D）：同 A 组但扫 `lambda_eq ∈ {0.01, 0.1, 1.0}`，观察 R̃_h 下降与 σ 拟合的 trade-off
-3. **B 组**（σ_h^rec 监督）：`supervision_source='sigma_h_rec'`，同架构同 hyperparams
-4. **B' 组**（σ_h^rec + Stage D）
-5. **产图**（对应 `paper_thesis.md §F.3` "平台 vs 下降" 曲线）：R̃_h vs epoch，四条曲线；预期 HZ 组 → ε 可降，rec 组 → Θ(h^m) 平台锁死
-6. **写进 B 论文**（`docs/operator_learning/paper_thesis.md` §5 / `docs/operator_learning/plan_operator_learning.md`）：λ·R_h² ablation + supervision-source 对照，作为命题 B2 + T2 的实验证据
+**待跑（M3b.4 批处理跑完后）**：
 
-**服务器 job 优先级**：M3b.4 先于 M3b.5；M3b.5 需要 GPU；两者与 D12 aux h2/h3 续算 (~1–2 周)、A adaptive model2 后处理相互独立，可并行。
-
-**依赖表**：
-
-| 步骤 | 阻塞条件 | 何时能起 |
-|---|---|---|
-| M3b.4 步 1（改 writer） | 需要读 HZ 求解器接口，找 u_h 在哪个字段 | 立即 |
-| M3b.4 步 2（重生 dataset） | writer 改完 + 服务器时窗 | 1 天写代码 + 数天/一周跑数据 |
-| M3b.4 步 3（add_stress_rec.py） | dataset 有 `displacement` 键 | offline，小时级 |
-| M3b.5 全部 | 数据集有 `stress_rec` 键 + GPU 时窗 | 2–3 天训练 + 图表 |
+- **B/B' sweep**（σ_h^rec supervision）：同架构同 hyperparams，加 `--supervision sigma_h_rec --sigma-transform arcsinh`（压缩 10⁴× 重尾）
+- **产图**（对应 `paper_thesis.md §F.3` "plateau vs descent"）：R̃_h vs epoch，四条曲线；预期 HZ 组 → ε 可降，rec 组 → Θ(h^m) plateau
+- **写进 B 论文**（`docs/operator_learning/paper_thesis.md` §5 / `plan_operator_learning.md`）：λ·R_h² ablation + supervision-source 对照，作为命题 B2 + T2 的实验证据
 
 
 

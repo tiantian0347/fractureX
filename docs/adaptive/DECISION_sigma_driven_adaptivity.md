@@ -1,5 +1,13 @@
 # 决策：σ 驱动自适应的最优选择（M-DF 主驱动 + η_τ 认证）
 
+> **✱ 2026-07-05 supersession（SENT-only）**: 本决策的 "M-DF 主驱动 + η_τ 认证" 组合**仅在
+> tension 主导案例（SENT/model1）上仍然有效**。在 Mode-II 剪切（SENS/model2）上 M-DF 因 $g^{-2}$
+> 权重放大 $\sigma_h$ 数值噪声、$d_{\mathrm{cut}}=0.9$ 过滤不足，**失效**并致求解器发散。当前论文
+> 主线改用**$\eta_T$ 直接作 marker**（Prager–Synge 估计子既认证又标记）+ CKNS 相对下降停机——
+> 见 [DECISION_marker_theory_for_model2.md](DECISION_marker_theory_for_model2.md)。SENT 数值验证：
+> $\eta_T$ marker peak vs 参考 nx=120 差 −1.6%（M-DF 是 −1.5%），DOF 更少。本文档保留为
+> **σ-driven 分工的历史决策**，涉及 M-DF 的部分被 $\eta_T$ 一体化路径取代。
+
 > 状态：决策稿 v0.1（2026-06-14）。本文是 `docs/adaptive` 的**选择性总纲**，
 > 在 [THEORY_marking_strategy.md](THEORY_marking_strategy.md)（预测型标记）与
 > [THEORY_equilibrated_aposteriori.md](THEORY_equilibrated_aposteriori.md)（保证型误差估计）

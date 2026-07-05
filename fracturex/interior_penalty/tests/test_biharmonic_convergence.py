@@ -8,7 +8,9 @@
 已知 fealpy v3 的多后端兼容性：
 - Bernstein 空间 + pytorch: fealpy BernsteinFESpace.grad_m_basis 里
   `bm.transpose(M, tuple)` 在 pytorch 后端会报 TypeError，本文件里 xfail。
-- jax 后端：venv 里没装 jax 时自动 skip。
+- Bernstein 空间 + jax: fealpy `symmetry_span_array` 里
+  `list.extend([count] * jax_array)` 会报 TypeError，本文件里 xfail。
+- jax 后端未安装时自动 skip。
 """
 import numpy as np
 import pytest
@@ -49,10 +51,13 @@ TOL = 0.4
 def test_biharmonic_convergence(backend, space_type, p):
     _skip_if_backend_unavailable(backend)
 
-    # 已知不支持的组合：Bernstein + pytorch (fealpy 上游 bug)
+    # 已知不支持的组合：Bernstein 只在 numpy 上通过 (fealpy 上游 bug)
     if space_type == "Bernstein" and backend == "pytorch":
         pytest.xfail("BernsteinFESpace.grad_m_basis uses bm.transpose with "
                      "tuple axes, which pytorch backend does not accept.")
+    if space_type == "Bernstein" and backend == "jax":
+        pytest.xfail("fealpy symmetry_span_array uses [count] * jax_array, "
+                     "which is not supported.")
 
     pde = sin_sq_pde()
     maxit = 4

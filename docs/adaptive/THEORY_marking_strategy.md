@@ -1,5 +1,13 @@
 # 理论：Hu–Zhang 应力驱动的预测型（anticipatory）自适应标记
 
+> **✱ 2026-07-05 supersession**: 本文档描述的 M-DF ($\mathcal D_{\tau,T}$) 是 heuristic marker，在
+> **Mode-II 载荷（SENS/model2）上失效**（$g^{-2}$ 权重放大 $\sigma_h$ 数值噪声）。理论级替代是
+> Prager–Synge 估计子 $\eta_T$ 本身直接作 marker——见
+> [DECISION_marker_theory_for_model2.md](DECISION_marker_theory_for_model2.md)。SENT smoke 已验证
+> $\eta_T$ marker 在 tension 案例上与 $\mathcal D_{\tau,T}$ peak accuracy 持平（相对参考 −1.6%
+> vs −1.5%）、DOF 更少。本文档保留作 M-DF 的**历史推导记录**，实际主线用 $\eta_T$ 走 CKNS-based
+> AFEM（[DECISION_marker_theory_for_model2.md](DECISION_marker_theory_for_model2.md) §4）。
+
 > 状态：推导稿 v0.1（2026-06-13）。配合
 > [THEORY_equilibrated_aposteriori.md](THEORY_equilibrated_aposteriori.md)（误差估计子）与
 > [../routes/plan_adaptive_aposteriori.md](../routes/plan_adaptive_aposteriori.md)（路线）。

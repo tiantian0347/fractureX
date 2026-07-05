@@ -111,9 +111,120 @@ def front_weighted_l2(pred, target, mask, alpha: float = 1.0, eps: float = 1e-8)
 # Physics-consistency losses (Stage D) — deferred to M2
 # ---------------------------------------------------------------------------
 
-def equilibrium_residual_fd(sigma_pred, body_force, mask):
-    """L_eq^FD (eq. 3.15a): ‖m ⊙ (∇_h · σ̂ + f)‖² with central differences."""
-    raise NotImplementedError("M2 Stage D: central-diff divergence on grid")
+def equilibrium_residual_fd(
+    sigma_pred,
+    mask,
+    dx: float = 1.0,
+    dy: float = 1.0,
+    body_force=None,
+    d=None,
+    d_c: float = 0.9,
+):
+    """Differentiable grid equilibrium residual R_h(σ̂) — paper_thesis §C.
+
+    Training-side companion to :func:`fracturex.learn.eval.metrics.equilibrium_residual_l2`.
+    The Stage D composite loss L_D = E² + λ R_h² (paper_thesis §G.2)
+    should square the value returned here; this function returns R_h itself,
+    consistent with the other loss primitives in this module.
+
+    Central-difference divergence of the stress on a Cartesian grid restricted to
+    the interior mask Ω_h^∘ = {(i,j): m=1 and all four central-difference
+    neighbours in m and (if ``d`` is given) d ≤ d_c}. Channel axis (-3) order is
+    (σ_xx, σ_yy, σ_xy); row axis (-2) is y (i), column axis (-1) is x (j).
+
+        r_x[i,j] = (σ_xx[i,j+1] − σ_xx[i,j−1])/(2Δx)
+                   + (σ_xy[i+1,j] − σ_xy[i−1,j])/(2Δy) + f_x
+        r_y[i,j] = (σ_xy[i,j+1] − σ_xy[i,j−1])/(2Δx)
+                   + (σ_yy[i+1,j] − σ_yy[i−1,j])/(2Δy) + f_y
+
+    Returns the mean over the batch axis of the per-sample absolute L²(Ω_h^∘)
+    norm of (r_x, r_y). Fully autograd-compatible in ``sigma_pred``.
+
+    Parameters
+    ----------
+    sigma_pred
+        Tensor of shape (B, T, 3, H, W) or (B, 3, H, W). Channel order
+        (σ_xx, σ_yy, σ_xy).
+    mask
+        Mask indicating Ω on the grid; must broadcast to
+        ``sigma_pred[..., 0, :, :]`` (typically ``(B, 1, H, W)`` like other
+        losses in this module).
+    dx, dy
+        Grid spacings along axis -1 (x) and axis -2 (y).
+    body_force
+        Optional body force. ``None`` or ``0`` for the canonical fracture setting;
+        an array of shape ``(B, T, 2, H, W)`` (or broadcastable) with channel
+        order (f_x, f_y).
+    d
+        Optional damage field with the same leading shape as ``sigma_pred[..., 0, :, :]``;
+        cells with ``d > d_c`` are removed from Ω_h^∘.
+    d_c
+        Damage cutoff excluded from the residual (paper_thesis §C).
+    """
+    if sigma_pred.dim() < 3 or sigma_pred.shape[-3] != 3:
+        raise ValueError(
+            f"sigma_pred must have shape (..., 3, H, W); got {tuple(sigma_pred.shape)}"
+        )
+    sxx = sigma_pred[..., 0, :, :]
+    syy = sigma_pred[..., 1, :, :]
+    sxy = sigma_pred[..., 2, :, :]
+
+    m_bool = mask.to(torch.bool)
+    while m_bool.dim() > sxx.dim():
+        if m_bool.shape[1] != 1:
+            raise ValueError(
+                f"mask has non-singleton extra dim vs sigma spatial slice: mask {tuple(m_bool.shape)}, sigma slice {tuple(sxx.shape)}"
+            )
+        m_bool = m_bool.squeeze(1)
+    while m_bool.dim() < sxx.dim():
+        m_bool = m_bool.unsqueeze(1)
+    m_bool = m_bool.expand_as(sxx)
+    m_int = torch.zeros_like(m_bool)
+    inner = (
+        m_bool[..., 1:-1, 1:-1]
+        & m_bool[..., 2:, 1:-1]
+        & m_bool[..., :-2, 1:-1]
+        & m_bool[..., 1:-1, 2:]
+        & m_bool[..., 1:-1, :-2]
+    )
+    m_int[..., 1:-1, 1:-1] = inner
+    if d is not None:
+        d_t = d
+        while d_t.dim() > sxx.dim():
+            if d_t.shape[1] != 1:
+                raise ValueError(
+                    f"d has non-singleton extra dim vs sigma spatial slice: d {tuple(d_t.shape)}"
+                )
+            d_t = d_t.squeeze(1)
+        while d_t.dim() < sxx.dim():
+            d_t = d_t.unsqueeze(1)
+        d_t = d_t.expand_as(sxx)
+        m_int = m_int & (d_t <= d_c)
+    m_int_f = m_int.to(sxx.dtype)
+
+    d_sxx_dx = torch.zeros_like(sxx)
+    d_sxy_dy = torch.zeros_like(sxx)
+    d_sxy_dx = torch.zeros_like(sxx)
+    d_syy_dy = torch.zeros_like(sxx)
+    d_sxx_dx[..., 1:-1, 1:-1] = (sxx[..., 1:-1, 2:] - sxx[..., 1:-1, :-2]) / (2.0 * dx)
+    d_sxy_dy[..., 1:-1, 1:-1] = (sxy[..., 2:, 1:-1] - sxy[..., :-2, 1:-1]) / (2.0 * dy)
+    d_sxy_dx[..., 1:-1, 1:-1] = (sxy[..., 1:-1, 2:] - sxy[..., 1:-1, :-2]) / (2.0 * dx)
+    d_syy_dy[..., 1:-1, 1:-1] = (syy[..., 2:, 1:-1] - syy[..., :-2, 1:-1]) / (2.0 * dy)
+
+    r_x = d_sxx_dx + d_sxy_dy
+    r_y = d_sxy_dx + d_syy_dy
+    if body_force is not None:
+        if body_force.shape[-3] != 2:
+            raise ValueError(
+                f"body_force must have shape (..., 2, H, W); got {tuple(body_force.shape)}"
+            )
+        r_x = r_x + body_force[..., 0, :, :]
+        r_y = r_y + body_force[..., 1, :, :]
+
+    cell_area = dx * dy
+    res_sq = (r_x * r_x + r_y * r_y) * m_int_f            # (..., H, W)
+    per_sample = torch.sqrt(res_sq.flatten(1).sum(dim=1) * cell_area + 1e-30)
+    return per_sample.mean()
 
 
 def equilibrium_residual_weak(sigma_pred, test_functions, traction, body_force, mask):

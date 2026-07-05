@@ -274,5 +274,146 @@ def peak_load_error_grid(sigma_pred, sigma_target, mask) -> float:
     return float(err.mean())
 
 
-def equilibrium_residual_l2(sigma_pred, body_force, mask) -> float:
-    raise NotImplementedError("M2 Stage D: ‖m⊙(∇_h·σ̂ + f)‖_2")
+def equilibrium_residual_l2(
+    sigma_grid,
+    mask,
+    dx: float = 1.0,
+    dy: float = 1.0,
+    f=0.0,
+    d=None,
+    d_c: float = 0.9,
+    L: Optional[float] = None,
+    eps: float = 1e-12,
+) -> float:
+    """Discrete grid equilibrium residual R̃_h(σ̂) — paper_thesis §C.
+
+    Central-difference divergence of the stress on a Cartesian grid, restricted
+    to the interior mask Ω_h^∘ = {(i,j): m=1 and all four central-difference
+    neighbours are in m}; if ``d`` is provided, cells with d > d_c are also
+    excluded from Ω_h^∘ to keep the crack band from dominating through
+    finite-difference noise (paper_thesis §C, "一致性" clause).
+
+    Sigma channel order (axis -3) is (σ_xx, σ_yy, σ_xy); the row axis (-2) is
+    the y direction (i-index) and the column axis (-1) is the x direction
+    (j-index), matching :func:`_grid_reaction_y` and the paper's convention
+    "行 i↔y, 列 j↔x".
+
+        r_x[i,j] = (σ_xx[i,j+1] − σ_xx[i,j−1])/(2Δx)
+                   + (σ_xy[i+1,j] − σ_xy[i−1,j])/(2Δy) + f_x
+        r_y[i,j] = (σ_xy[i,j+1] − σ_xy[i,j−1])/(2Δx)
+                   + (σ_yy[i+1,j] − σ_yy[i−1,j])/(2Δy) + f_y
+
+    The scale-free reported value is
+
+        R̃_h = L · ‖(r_x, r_y)‖_{L²(Ω_h^∘)} / ‖σ̂‖_{L²(Ω_h^∘)},
+
+    with L = diam(Ω); when ``L`` is not supplied it is taken as the diagonal
+    of the mask's bounding box in physical units. Sigma is assumed already
+    normalised (stress_scale removed), so the ratio is O(1). The returned
+    scalar is the mean of R̃_h over any leading batch/time axes.
+
+    Parameters
+    ----------
+    sigma_grid
+        Array of shape (..., 3, H, W). Channel order (σ_xx, σ_yy, σ_xy).
+    mask
+        Boolean/0-1 mask indicating Ω on the grid, broadcastable to (..., H, W).
+    dx, dy
+        Grid spacings along axis -1 (x, cols) and axis -2 (y, rows).
+    f
+        Body force. Scalar (default 0 for the fracture benchmark) or an array
+        broadcastable to (..., 2, H, W); channels (f_x, f_y).
+    d
+        Optional damage field of shape (..., H, W). Cells with d > d_c are
+        removed from Ω_h^∘.
+    d_c
+        Damage threshold beyond which cells are excluded from Ω_h^∘.
+    L
+        Domain diameter; if ``None``, taken from the mask's bounding box.
+    eps
+        Numerical floor added to the denominator ‖σ̂‖.
+    """
+    s = _to_numpy(sigma_grid).astype(np.float64)
+    if s.ndim < 3 or s.shape[-3] != 3:
+        raise ValueError(f"sigma_grid must have shape (..., 3, H, W); got {s.shape}")
+    H, W = s.shape[-2], s.shape[-1]
+    sxx = s[..., 0, :, :]
+    syy = s[..., 1, :, :]
+    sxy = s[..., 2, :, :]
+
+    m = _broadcast_mask(mask, sxx.shape).astype(bool)
+
+    # Interior mask: central-difference neighbours all present in Ω, and the
+    # centre itself is in Ω. We compare shifted copies of the mask; cells at
+    # the boundary of the array (i or j at 0 or H-1 / W-1) automatically fail
+    # because their shifted counterparts wrap in with zero — build via slicing.
+    m_int = np.zeros_like(m)
+    inner = (
+        m[..., 1:-1, 1:-1]
+        & m[..., 2:, 1:-1]
+        & m[..., :-2, 1:-1]
+        & m[..., 1:-1, 2:]
+        & m[..., 1:-1, :-2]
+    )
+    m_int[..., 1:-1, 1:-1] = inner
+
+    if d is not None:
+        d_arr = _to_numpy(d).astype(np.float64)
+        d_arr = np.broadcast_to(d_arr, sxx.shape)
+        m_int = m_int & (d_arr <= d_c)
+
+    # Central differences, defined only on the interior.
+    d_sxx_dx = np.zeros_like(sxx)
+    d_sxy_dy = np.zeros_like(sxx)
+    d_sxy_dx = np.zeros_like(sxx)
+    d_syy_dy = np.zeros_like(sxx)
+    d_sxx_dx[..., 1:-1, 1:-1] = (sxx[..., 1:-1, 2:] - sxx[..., 1:-1, :-2]) / (2.0 * dx)
+    d_sxy_dy[..., 1:-1, 1:-1] = (sxy[..., 2:, 1:-1] - sxy[..., :-2, 1:-1]) / (2.0 * dy)
+    d_sxy_dx[..., 1:-1, 1:-1] = (sxy[..., 1:-1, 2:] - sxy[..., 1:-1, :-2]) / (2.0 * dx)
+    d_syy_dy[..., 1:-1, 1:-1] = (syy[..., 2:, 1:-1] - syy[..., :-2, 1:-1]) / (2.0 * dy)
+
+    if np.isscalar(f) or (isinstance(f, np.ndarray) and f.ndim == 0):
+        fx = np.float64(f)
+        fy = np.float64(f)
+    else:
+        f_arr = _to_numpy(f).astype(np.float64)
+        if f_arr.shape[-3] != 2:
+            raise ValueError(
+                f"f must be scalar or shape (..., 2, H, W); got {f_arr.shape}"
+            )
+        fx = f_arr[..., 0, :, :]
+        fy = f_arr[..., 1, :, :]
+
+    r_x = d_sxx_dx + d_sxy_dy + fx
+    r_y = d_sxy_dx + d_syy_dy + fy
+
+    m_int_f = m_int.astype(np.float64)
+    cell_area = dx * dy
+    res_sq = (r_x * r_x + r_y * r_y) * m_int_f
+    sig_sq = (sxx * sxx + syy * syy + sxy * sxy) * m_int_f
+
+    spatial_axes = (-2, -1)
+    per_res = np.sqrt(res_sq.sum(axis=spatial_axes) * cell_area)
+    per_sig = np.sqrt(sig_sq.sum(axis=spatial_axes) * cell_area)
+
+    if L is None:
+        # Bounding-box diagonal of the passed-in mask, in physical units.
+        # Use the outer mask (not m_int) so the domain scale is stable
+        # regardless of whether the crack-band exclusion is active.
+        rows_any = m.any(axis=-1)  # (..., H)
+        cols_any = m.any(axis=-2)  # (..., W)
+        # Per-sample bbox extent — reduce over leading dims by taking the
+        # max span (a stable per-sample scale, same across leading axes when
+        # the mask is shared, which is the common case).
+        rows_span = rows_any.sum(axis=-1).astype(np.float64) * dy
+        cols_span = cols_any.sum(axis=-1).astype(np.float64) * dx
+        L_arr = np.sqrt(rows_span * rows_span + cols_span * cols_span)
+        # Guard: if a sample has an empty mask, fall back to grid diagonal.
+        grid_diag = np.sqrt((H * dy) ** 2 + (W * dx) ** 2)
+        L_arr = np.where(L_arr > 0.0, L_arr, grid_diag)
+    else:
+        L_arr = np.float64(L)
+
+    R_tilde = L_arr * per_res / (per_sig + eps)
+    return float(np.asarray(R_tilde).mean())
+

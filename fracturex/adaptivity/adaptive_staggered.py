@@ -186,3 +186,141 @@ def mark_driving_force(discr, Dcell, *, l0, beta: float = 0.6, c_h: float = 2.0)
     cm = discr.mesh.entity_measure("cell")
     area_floor = (float(l0) / float(c_h)) ** 2 / 2.0  # h=√(2 area) ≤ l0/c_h ⟺ area ≤ floor
     return bm.logical_and(Dcell >= theta_D, cm > area_floor)
+
+
+# ---------------------------------------------------------------------------
+# Recovery marker on d（tian2024 重构型指示子；抗 g^{-2} 噪声）
+# ---------------------------------------------------------------------------
+def recovery_indicator_d(discr, *, method: str = "area"):
+    """相场重构型指示子 η_τ^d = ‖R_h d_h − ∇d_h‖_{0,τ}（见 tian2024 §recovery）。
+
+    直接用 FEALPy `RecoveryAlg().recovery_estimate(state.d, method)`；返回 (NC,) 逐元误差²。
+    与 σ 驱动指示子相比：整个量只涉及 ∇d，无 g(d)^{-2} 权重；d≡1 的 seed 预裂缝上 ∇d_h=0、
+    R_h d_h=0 ⇒ η_τ^d=0，天然屏蔽了 Section 4 里 g^{-2} 数值噪声放大源。
+    输入:
+      discr : 已 build 的离散（state.d 是 damage_p 阶 P1/P2 连续 Lagrange FE 函数）
+      method: 权重方案 simple/area/area_harmonic/distance/distance_harmonic（tian2024 §Recovery
+              各方案；area 默认，稳且便宜）
+    输出: (NC,) η_τ^d²（fealpy 的 celltype=True error 返回逐元 L² 平方，直接送 Dörfler 即可）。
+    """
+    from fealpy.fem.recovery_alg import RecoveryAlg
+    return RecoveryAlg().recovery_estimate(discr.state.d, method=method)
+
+
+def _cell_max_d(discr):
+    """逐元最大节点 d：用于 σ-mask 的 d_cut 过滤（"任一 q 点 d>d_cut 即视为已饱和"）。返回 (NC,)。"""
+    d = discr.state.d[:]
+    c2d = discr.space_d.cell_to_dof()
+    return bm.max(d[c2d], axis=-1)
+
+
+def _cell_min_d(discr):
+    """逐元最小节点 d：用于 recovery 的 d_hi 过滤（"至少一个顶点未坏 ⇒ 可细分"）。返回 (NC,)。
+    区别 _cell_max_d：seed 边界胞（一顶点 d=1，其余 d=0）min_d=0，会被保留——正是 ∇d 跳变、
+    η_τ^d 最大处；若用 max_d 过滤会连过渡带一起误杀，导致 Dörfler 空标（见 mark_recovery 备注）。
+    """
+    d = discr.state.d[:]
+    c2d = discr.space_d.cell_to_dof()
+    return bm.min(d[c2d], axis=-1)
+
+
+def mark_recovery(discr, eta_d, *, l0, c_h: float = 2.0, theta: float = 0.5,
+                  d_hi: float = 0.995):
+    """基于 η_τ^d 的 Dörfler L² 标记，尺寸下限 h_τ>l0/c_h，且跳过完全断裂胞（min_d>d_hi）。
+
+    过滤放在 Dörfler **之前**：先把已完全断裂胞（min d>d_hi，所有顶点都已坏）的 η 清零，再算
+    L² 累积；否则 seed 内部（若 eta 非零）会挤占 bulk 配额，把过渡带真正想细分的胞漏掉。
+    输入:
+      discr : 当前离散
+      eta_d : (NC,) 来自 recovery_indicator_d 的逐元误差²
+      l0    : 相场长度尺度
+      c_h   : h_τ≤l0/c_h 停加密
+      theta : Dörfler bulk 比例（0.5 与 model0 rg 一致）
+      d_hi  : 逐元 min d 上限；>d_hi 视为完全断裂，Dörfler 前清零
+    输出: (NC,) bool 掩码。
+    """
+    cm = discr.mesh.entity_measure("cell")
+    area_floor = (float(l0) / float(c_h)) ** 2 / 2.0
+    keep = bm.logical_and(cm > area_floor, _cell_min_d(discr) <= d_hi)
+    eta_masked = bm.where(keep, eta_d, bm.zeros_like(eta_d))
+    marked = Mesh.mark(eta=eta_masked, theta=theta, method="L2")
+    return bm.logical_and(marked, keep)
+
+
+def mark_hybrid(discr, damage, Dcell, eta_d, *, l0,
+                beta: float = 0.6, c_h: float = 2.0, d_cut: float = 0.9,
+                theta_rec: float = 0.5, d_hi_rec: float = 0.995):
+    """混合标记：σ-mask（d_cut on cell max d，屏蔽 g^{-2} 噪声）∪ recovery Dörfler（d_hi on cell min d）。
+
+    两个子掩码各自的域：
+      - σ-mask   : {τ : 𝒟_τ≥β/3, cell max d ≤ d_cut, h_τ>l0/c_h}
+                   d_cut<1 排除任一 q 点 d>d_cut 的胞（Section 4 Htau 处方；屏蔽 g^{-2} 噪声）。
+      - recovery : mark_recovery 的输出（d_hi 用 cell min d，保留过渡带；预清零后 Dörfler）。
+    合并: σ-mask ∨ recovery-mask。
+
+    输入:
+      discr, damage : 当前离散/损伤
+      Dcell         : (NC,) driving_force_per_cell 的返回
+      eta_d         : (NC,) recovery_indicator_d 的返回
+      l0, beta, c_h : 同 mark_driving_force
+      d_cut         : σ-mask 上限（默认 0.9；作用于 cell max d）
+      theta_rec     : recovery Dörfler bulk
+      d_hi_rec      : recovery 上限（默认 0.995；作用于 cell min d）
+    输出: (NC,) bool 掩码。
+    """
+    cm = discr.mesh.entity_measure("cell")
+    area_floor = (float(l0) / float(c_h)) ** 2 / 2.0
+    theta_D = float(beta) / 3.0
+    mask_sigma = bm.logical_and.reduce([Dcell >= theta_D,
+                                        _cell_max_d(discr) <= d_cut,
+                                        cm > area_floor])
+    mask_rec = mark_recovery(discr, eta_d, l0=l0, c_h=c_h,
+                             theta=theta_rec, d_hi=d_hi_rec)
+    return bm.logical_or(mask_sigma, mask_rec)
+
+
+# ---------------------------------------------------------------------------
+# η_T 直接作 marker（Prager–Synge，§3 Cor.5.3 reliability=1 + Remark 5.6 局部下界）
+# ---------------------------------------------------------------------------
+def mark_eta_T_indicator(discr, eta_T2, *, l0, c_h: float = 2.0,
+                         theta: float = 0.5, d_hi: float = 0.995,
+                         strategy: str = "max"):
+    """基于 η_T² = ‖ℂ_d ε(u_h^c) − σ_h‖_{𝔸_d,T}² 的元素标记。
+
+    理论支撑（论文 §3 Cor.5.3 + Remark 5.6）：
+      - 全局: ‖ε(u_h^c − u)‖_{ℂ_d} ≤ η = (Σ η_T²)^{1/2}，reliability constant = 1；
+      - 局部: η_{ω_z}² ≤ C_{κ_z} (‖ε(u_h^c − u)‖²_{ℂ_d,ω_z} + ‖σ_h − σ‖²_{𝔸_d,ω_z})，
+              patch contrast κ_{ω_z} 有界 ⇒ η_T 作 marker 满足 efficiency-up-to-osc。
+    因此 marker on η_T² 是理论上 justified 的（区别于 §4 heuristic 𝒟_τ）。
+
+    标记策略（strategy 参数）：
+      - "max"（默认, tian2024 adaptive_paper §Recovery L669 同款）: {τ: η_T²(τ) ≥ θ·max_τ η_T²(τ)}
+        在弹性阶段 η_T 空间平缓时天然收敛：max 是被少数裂尖胞主导时才会有大量胞入选。
+      - "L2" (Dörfler bulk): 累积 η² ≥ θ·total。在裂纹带高度局部化后收敛快，但在弹性阶段
+        bulk-η 均匀时会一次性挑近半数胞（SENT 4 步实测 76%）。
+    完全断裂胞（min d>d_hi）预清零。尺寸下限 h_τ>l0/c_h。
+
+    输入:
+      discr : 当前离散
+      eta_T2: (NC,) 逐元 η_T²（由 eta_from_state(u_override=u_h^c) 返回）
+      l0    : 相场长度尺度
+      c_h   : 尺寸下限系数
+      theta : 阈值参数（max: 0.3–0.5 常用；L2: 0.1–0.2 保守）
+      d_hi  : cell min d 上限
+      strategy: "max" | "L2"
+    输出: (NC,) bool 掩码。
+    """
+    cm = discr.mesh.entity_measure("cell")
+    area_floor = (float(l0) / float(c_h)) ** 2 / 2.0
+    keep = bm.logical_and(cm > area_floor, _cell_min_d(discr) <= d_hi)
+    eta_masked = bm.where(keep, eta_T2, bm.zeros_like(eta_T2))
+    if strategy == "max":
+        eta_max = float(bm.max(eta_masked))
+        if eta_max <= 0.0:
+            return bm.zeros_like(eta_masked, dtype=bool)
+        marked = eta_masked >= float(theta) * eta_max
+    elif strategy == "L2":
+        marked = Mesh.mark(eta=eta_masked, theta=theta, method="L2")
+    else:
+        raise ValueError(f"unknown strategy={strategy!r}; expected max/L2")
+    return bm.logical_and(marked, keep)

@@ -33,7 +33,8 @@ from fracturex.drivers.huzhang_phasefield_staggered import HuZhangPhaseFieldStag
 
 from fracturex.adaptivity.adaptive_staggered import (
     make_assemblers, refine_masked, driving_force_per_cell, mark_driving_force,
-    eta_from_state,
+    eta_from_state, recovery_indicator_d, mark_recovery, mark_hybrid,
+    mark_eta_T_indicator,
 )
 from fracturex.adaptivity.primal_resolve_real import solve_primal_real
 
@@ -104,6 +105,18 @@ def main():
     max_corr = _i("FRACTUREX_MAX_CORR", 8)      # 每载荷步 corrector 上限
     drop_frac = _f("FRACTUREX_DROP_FRAC", 0.4)
     k_res = _f("FRACTUREX_KRES", 1e-6)
+    # 标记器：stress(σ 驱动 heuristic, 兼容默认) / eta_T(§3 Prager–Synge, 论文首推、有理论)
+    #         recovery(tian2024) / hybrid(σ ∪ recovery, 需耦合可靠性分析) — 后二为诊断分支。
+    marker = os.environ.get("FRACTUREX_MARKER", "stress").strip().lower()
+    theta_rec = _f("FRACTUREX_THETA_REC", 0.5)      # recovery / eta_T 阈值参数
+    d_cut = _f("FRACTUREX_D_CUT", 0.9)              # σ-mask 上限（hybrid 用）
+    rec_method = os.environ.get("FRACTUREX_REC_METHOD", "area").strip().lower()
+    # eta_T marker 策略：max(默认, tian2024 同款) 或 L2(Dörfler bulk，弹性阶段会过标记)
+    eta_T_strategy = os.environ.get("FRACTUREX_ETA_T_STRATEGY", "max").strip().lower()
+    # eta_T marker 停机：相对下降不足即停。Dörfler contraction (CKNS 2008) 保证 q<1 收缩；
+    # 若一轮 corrector 后 η_new > eta_decrement · η_old，即视为 diminishing return，停止再加密。
+    # eta_decrement=0.7 默认（宽松）；越小越紧、越晚停。
+    eta_decrement = _f("FRACTUREX_ETA_DECREMENT", 0.7)
     # (ii) corrector 内中间网格用松 tol 定位标记（解会被加密丢弃，无需解准），接受态补紧 tol 终解。
     #   ⚠ 实测结论（2026-06-14 归因 run）：开 Anderson 后，corrector 的整解本就便宜
     #   （step3 2320s→63s 由 Anderson 贡献，非松 tol），松 tol 反而**微扰标记**致曲线漂移 ~1.5%
@@ -153,6 +166,8 @@ def main():
           f"theta_D={beta/3:.3f} c_h={c_h} (h<=l0/{c_h:.0f}) area_floor={area_floor:.2e} "
           f"max_corr={max_corr} k_res={k_res:.1e} solver={solver_name} "
           f"tol_coarse={tol_coarse:.1e}/tol_fine={tol_fine:.1e} anderson_depth={a_depth} "
+          f"marker={marker} theta_rec={theta_rec} d_cut={d_cut} rec_method={rec_method} "
+          f"eta_decrement={eta_decrement} "
           f"smoke={smoke} vtu={want_vtu}", flush=True)
 
     fields = ["step", "load", "nc", "dof_sigma", "D_max", "max_d", "reaction",
@@ -171,6 +186,7 @@ def main():
         # checkpoint：步首损伤（上一步收敛态）
         d_ck = bm.copy(state.d[:]); r_ck = bm.copy(state.r_hist[:])
         n_corr = 0; refine_events = 0; n_marked_total = 0
+        eta_prev = None  # eta_T marker 用于相对下降停机（每 load step 重置）
         info = None
         # (ii) corrector loop：中间网格松 tol 定位标记；接受态（无标记/触上限）再紧 tol 终解。
         while True:
@@ -183,7 +199,33 @@ def main():
             D_max = float(bm.max(Dcell)) if len(Dcell) else 0.0
             accept = s == 0 or n_corr >= max_corr
             if not accept:
-                marked = mark_driving_force(discr, Dcell, l0=l0, beta=beta, c_h=c_h)
+                if marker == "stress":
+                    marked = mark_driving_force(discr, Dcell, l0=l0, beta=beta, c_h=c_h)
+                elif marker == "eta_t" or marker == "eta_T".lower():
+                    pr = solve_primal_real(discr, case, lam=mat.lam, mu=mat.mu,
+                                           load=load, k_res=k_res)
+                    r = eta_from_state(discr, lam=mat.lam, mu=mat.mu, k_res=k_res,
+                                       u_override=pr["uh"])
+                    eta_now = float(bm.sqrt(bm.maximum(r["eta"], 0.0)))
+                    # 相对下降停机：η_new > eta_decrement · η_old ⇒ diminishing return，停 corrector
+                    if eta_prev is not None and eta_now > float(eta_decrement) * eta_prev:
+                        marked = bm.zeros(discr.mesh.number_of_cells(), dtype=bool)
+                    else:
+                        marked = mark_eta_T_indicator(discr, r["eta_T"],
+                                                      l0=l0, c_h=c_h, theta=theta_rec,
+                                                      strategy=eta_T_strategy)
+                    eta_prev = eta_now
+                elif marker == "recovery":
+                    eta_d = recovery_indicator_d(discr, method=rec_method)
+                    marked = mark_recovery(discr, eta_d, l0=l0, c_h=c_h, theta=theta_rec)
+                elif marker == "hybrid":
+                    eta_d = recovery_indicator_d(discr, method=rec_method)
+                    marked = mark_hybrid(discr, damage, Dcell, eta_d, l0=l0,
+                                         beta=beta, c_h=c_h, d_cut=d_cut,
+                                         theta_rec=theta_rec)
+                else:
+                    raise ValueError(f"unknown FRACTUREX_MARKER={marker!r}; "
+                                     "expected stress/eta_T/recovery/hybrid")
                 accept = int(bm.sum(marked)) == 0
             if accept:
                 # 接受态：在最终网格上补一次紧 tol 终解（记录物理量）。从**松解收敛态

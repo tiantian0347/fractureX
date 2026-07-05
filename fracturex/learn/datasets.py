@@ -28,6 +28,7 @@ import numpy as np
 class DatasetConfig:
     """Knobs that select which npz fields a Dataset exposes."""
     include_stress: bool = True          # T3 main / T2 ablation
+    include_stress_rec: bool = False     # T3.M3b σ_h^rec (recovered from u_h) contrast supervision
     include_history: bool = False        # plan §3.5 (b) variant
     rollout_length: Optional[int] = None # None → full sequence; else random window of length k
     augment_rotate90: bool = False
@@ -78,6 +79,20 @@ def target_stress(sample: dict) -> np.ndarray:
     if "stress" not in sample:
         return None
     return np.asarray(sample["stress"], dtype=np.float32)  # (T, 3, H, W)
+
+
+def target_stress_rec(sample: dict) -> np.ndarray:
+    """(T, 3, H, W) displacement-recovered stress σ_h^rec = g(d)·C·ε(u_h), or None.
+
+    Used by T3.M3b as the *non-equilibrated* supervision source in the
+    contrast experiment (paper_thesis §F.3 / §G): a plain L² fit to
+    σ_h^rec is expected to plateau at R̃_h ~ Θ(h^m) due to the normal
+    jumps of σ_h^rec ∉ H(div), whereas fitting to σ_h ∈ H(div,S) is
+    reducible to training noise.
+    """
+    if "stress_rec" not in sample:
+        return None
+    return np.asarray(sample["stress_rec"], dtype=np.float32)
 
 
 class PhaseFieldOperatorDataset:
@@ -139,6 +154,8 @@ class PhaseFieldOperatorDataset:
         }
         if self.cfg.include_stress and "stress" in z:
             sample["stress"] = z["stress"]
+        if self.cfg.include_stress_rec and "stress_rec" in z:
+            sample["stress_rec"] = z["stress_rec"]
         if self.cfg.include_history and "history" in z:
             sample["history"] = z["history"]
         if "reaction" in z:                      # (T, r) FE-exact reference force curve
@@ -189,6 +206,9 @@ def collate_masked(batch: list[dict]) -> dict:
     stresses = [target_stress(s) for s in batch]
     if all(s is not None for s in stresses):
         out["stress"] = torch.from_numpy(np.stack(stresses, axis=0))
+    stresses_rec = [target_stress_rec(s) for s in batch]
+    if all(s is not None for s in stresses_rec):
+        out["stress_rec"] = torch.from_numpy(np.stack(stresses_rec, axis=0))
     return out
 
 

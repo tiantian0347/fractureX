@@ -28,7 +28,12 @@ from .datasets import (
     collate_masked,
 )
 from .eval import metrics as M
-from .losses import masked_relative_l2, peak_weighted_relative_l2, stage_loss
+from .losses import (
+    equilibrium_residual_fd,
+    masked_relative_l2,
+    peak_weighted_relative_l2,
+    stage_loss,
+)
 from .models import build_model
 from .transforms import sigma_forward, sigma_inverse
 
@@ -61,6 +66,11 @@ class TrainConfig:
     # σ loss (Stage B): 'rel_l2' | 'peak_weighted' (up-weight crack-tip peak)
     sigma_loss: str = "rel_l2"
     sigma_peak_alpha: float = 4.0
+    # Supervision source for σ (Stage B/D; paper_thesis §F.3 / §G contrast):
+    #   'sigma_h'     — Hu--Zhang stress (equilibrated, ∈ H(div,S)); default.
+    #   'sigma_h_rec' — displacement-recovered stress g(d)·C·ε(u_h) (∉ H(div))
+    #                   — requires ``stress_rec`` in the dataset npz.
+    supervision_source: str = "sigma_h"
     # Loss weights (overrides plan §3.5 defaults if non-None)
     lambda_sigma: Optional[float] = None
     lambda_h1: Optional[float] = None
@@ -69,10 +79,14 @@ class TrainConfig:
     lambda_irr: Optional[float] = None
 
 
-def _make_loader(dataset_dir, split, batch_size, shuffle):
+def _make_loader(dataset_dir, split, batch_size, shuffle,
+                 include_stress_rec: bool = False):
     from torch.utils.data import DataLoader
 
-    ds = PhaseFieldOperatorDataset(dataset_dir, split=split, cfg=DatasetConfig())
+    ds = PhaseFieldOperatorDataset(
+        dataset_dir, split=split,
+        cfg=DatasetConfig(include_stress_rec=include_stress_rec),
+    )
     loader = DataLoader(
         as_torch_dataset(ds), batch_size=batch_size, shuffle=shuffle,
         collate_fn=collate_masked, num_workers=0,
@@ -99,16 +113,42 @@ def _compute_loss(pred, batch, cfg, device):
     l_d = masked_relative_l2(d_pred, y, mask)
     if sigma_pred is None:
         return stage_loss(cfg.stage, l_d=l_d), {"l_d": float(l_d.detach())}
+    # Supervision source (paper_thesis §F.3 contrast): σ_h (HZ, default) or σ_h^rec.
+    src = getattr(cfg, "supervision_source", "sigma_h")
+    if src == "sigma_h_rec":
+        if "stress_rec" not in batch:
+            raise KeyError(
+                "supervision_source='sigma_h_rec' but the dataset did not deliver "
+                "'stress_rec'; regenerate samples with the σ_h^rec key or use include_stress_rec=True."
+            )
+        target_key = "stress_rec"
+    else:
+        target_key = "stress"
     # Model predicts σ in the (possibly transformed) training space; supervise
     # against the transformed target so a heavy tail doesn't dominate L².
-    sigma_t = sigma_forward(batch["stress"].to(device),
+    sigma_t = sigma_forward(batch[target_key].to(device),
                             cfg.sigma_transform, cfg.sigma_transform_scale)
     if cfg.sigma_loss == "peak_weighted":
         l_sigma = peak_weighted_relative_l2(sigma_pred, sigma_t, mask, alpha=cfg.sigma_peak_alpha)
     else:
         l_sigma = masked_relative_l2(sigma_pred, sigma_t, mask)
     total = stage_loss(cfg.stage, l_d=l_d, l_sigma=l_sigma, lambda_sigma=cfg.lambda_sigma)
-    return total, {"l_d": float(l_d.detach()), "l_sigma": float(l_sigma.detach())}
+    comps: dict[str, float] = {"l_d": float(l_d.detach()), "l_sigma": float(l_sigma.detach())}
+    # Stage D balance regularization (paper_thesis §G.2): L_D = ... + λ · R_h².
+    # Applied on the physical σ, so we invert the training-space transform first.
+    lam_eq = getattr(cfg, "lambda_eq", None)
+    if lam_eq is not None and lam_eq > 0.0:
+        sigma_phys = sigma_inverse(sigma_pred, cfg.sigma_transform, cfg.sigma_transform_scale)
+        # Unit domain assumption for grid spacing; overridable via meta once the
+        # dataset carries explicit (dx, dy) — schema §3.
+        H = sigma_pred.shape[-2]
+        W = sigma_pred.shape[-1]
+        dx = 1.0 / max(W - 1, 1)
+        dy = 1.0 / max(H - 1, 1)
+        r_h = equilibrium_residual_fd(sigma_phys, mask, dx=dx, dy=dy)
+        total = total + float(lam_eq) * r_h * r_h
+        comps["l_eq"] = float(r_h.detach())
+    return total, comps
 
 
 def _evaluate(model, loader, stage, device,
@@ -196,12 +236,15 @@ def train(cfg: TrainConfig) -> dict:
     np.random.seed(cfg.seed)
     device = torch.device(cfg.device)
 
+    include_stress_rec = getattr(cfg, "supervision_source", "sigma_h") == "sigma_h_rec"
     train_ds, train_loader = _make_loader(
-        cfg.dataset_dir, cfg.train_split, cfg.batch_size, shuffle=True
+        cfg.dataset_dir, cfg.train_split, cfg.batch_size, shuffle=True,
+        include_stress_rec=include_stress_rec,
     )
     try:
         val_ds, val_loader = _make_loader(
-            cfg.dataset_dir, cfg.val_split, cfg.batch_size, shuffle=False
+            cfg.dataset_dir, cfg.val_split, cfg.batch_size, shuffle=False,
+            include_stress_rec=include_stress_rec,
         )
     except (ValueError, FileNotFoundError):
         val_ds, val_loader = train_ds, train_loader

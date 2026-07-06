@@ -16,8 +16,10 @@ from fealpy.backend import backend_manager as bm
 
 from fracturex.interior_penalty.cases import (
     Model0CircularHoleCase,
+    Model0SGCase,
     Model1SquareTensionCase,
     Model2ShearCase,
+    Model2SGCase,
     Model3LShapeCase,
     SentTensionMieheCase,
 )
@@ -107,6 +109,28 @@ def test_sent_tension_smoke():
     """
     case = SentTensionMieheCase(
         refine=2, load_sequence=np.linspace(0, 3e-3, 4)
+    )
+    out = case.run(maxit_per_step=4, rtol=1e-3, verbose=False)
+    _assert_outputs_sane(out, min_last_force=1e-3)
+
+
+# --------------------------------------------------------------------- SG variants
+
+def test_model0_sg_smoke():
+    """model0 SG (内圆孔 + 应变梯度) 冒烟。"""
+    case = Model0SGCase(
+        hmin=0.15, distmesh_maxit=20, ell_s=0.05,
+        load_sequence=np.linspace(0, 40e-3, 4),
+    )
+    out = case.run(maxit_per_step=4, rtol=1e-3, verbose=False)
+    _assert_outputs_sane(out, min_last_force=1.0)
+
+
+def test_model2_sg_smoke():
+    """model2 SG (剪切 + 应变梯度) 冒烟。"""
+    case = Model2SGCase(
+        refine=2, ell_s=0.05,
+        load_sequence=np.linspace(0, 3e-3, 4),
     )
     out = case.run(maxit_per_step=4, rtol=1e-3, verbose=False)
     _assert_outputs_sane(out, min_last_force=1e-3)

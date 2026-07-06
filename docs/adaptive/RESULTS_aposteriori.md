@@ -24,6 +24,49 @@
 | Phase 2 (du=1e-4) | 2026-06-18 | ✅ PASS（负结果） | 细化 du **不**让峰值收敛参照(−1.5%→+3.6%，跨参照两侧)⇒ 峰值本质路径依赖、报 ±4% 带；副产严格 η_τ 全程线性轨迹(slope≈124≈刚度)、η_τ/DG ~18–40× |
 | M3 效率 (DOF) | 2026-06-21 | ✅ PASS | 等精度对照：自适应 31406 σ-DOF 达 −1.5% 峰值精度，均匀需 nx=120 的 476883 DOF ⇒ **省 93% DOF**；均匀 nx24/48 峰值虚高 +37%/+25%（论证需自适应） |
 | Θ<1 根因诊断 | 2026-06-21 | 🐞→✅ **已修+坐实** | 根因 = `VectorDirichletBC` 误用缺非齐次提升项 (`f−=A·u_D`)，primal "truth" 能量随网格 ×√2 假发散 ⇒ Θ<1。修复后**生产 k_res=1e-6 真数：err 收敛 0.044、Θ 单调→nref4 的 1.044(→1⁺)**，η 仅比真误差大 4%。reliability+efficiency 双坐实，§7 主线全安全 |
+| SENS η_T marker | 2026-07-06 | ✅ PASS | Mode-II 剪切 40 步全跑完，peak $\lvert R_x\rvert=0.150$，NC 1152→1587；旧 M-DF 在 step 33 崩溃、$\mathcal D_{\max}=10^{51}$；理论升级消病态 |
+
+---
+
+## SENS η_T marker：Mode-II 剪切 $g^{-2}$ 病态的理论级修复（2026-07-06）
+
+配置：`FRACTUREX_MARKER=eta_T, ETA_T_STRATEGY=max, THETA_REC=0.9, ETA_DECREMENT=0.7, D_HI=0.995, du=2.5e-4, nx=24, pardiso, 40 steps`。lab 服务器 `~/tian/fracturex/results/adaptive_m3_pc_model2_eta_T/`，wall 81326.5s $\approx$ 22.6h。数据 rsync 回本机 `~/repository/results/adaptive_m3_pc_model2_eta_T/`。
+
+### 对比：$\mathcal D_{\tau,T}$-marker (旧 effstress) vs $\eta_T$-marker (本次)
+
+| 指标 | $\eta_T$ marker | $\mathcal D_{\tau,T}$ marker (effstress) |
+|---|---:|---:|
+| 完成步数 | **40 / 40** | 33（step 33 求解器崩溃）|
+| Peak $\lvert R_x\rvert$ | **0.150** at $u_x=7.5\times 10^{-3}$ | 0.234 at $u_x=6.0\times 10^{-3}$（噪声污染假峰）|
+| $\mathcal D_{\max}$ 范围 | $\mathcal O(10^0$–$10^4)$，3 个孤立尖峰 $10^6$–$10^{13}$（观察量，不驱动 marker）| $\mathcal O(10^0)\to 2.5\times 10^{51}$ |
+| NC 增长 | 1152 → 1587（+38%）| 1152 → 3292（+186%，噪声胞加密）|
+| Corrector 每步 | 1 轮（相对下降停机生效）| 1–2 轮 |
+| 软化段完成 | **是** | 否 |
+
+### 三大结论
+
+1. **$\eta_T$ marker 消除了 $g^{-2}$ 病态**：seed 邻胞 $\sigma_h$ 数值噪声不再通过 $g^{-2}=k_{\mathrm{res}}^{-2}=10^{12}$ 放大传染 marker；观察量 $\mathcal D_{\max}$ 的孤立尖峰对 refinement 无影响（marker 已换）。
+2. **旧 M-DF 的 0.234 是假峰**：$\mathcal D_{\max}$ 从 step 22 起就 $\ge 10^3$（噪声开始污染），peak 后 R 陡降是求解器崩溃前兆而非物理软化。
+3. **$\eta_T$ 得到的 0.150 峰 + 单调进软化段** 是物理合理的 Mode-II 承载路径（与 SENT tension 峰的量级一致：$|R_y|_{\max}\approx 0.62$ vs $|R_x|_{\max}\approx 0.15$，Mode-II 承载低预期）。
+
+### 诚实边界
+
+- 本 benchmark 没有 $n_x=120$ 的 Mode-II 参照（Miehe 2010 原文只报剪切 traction 曲线，不给收敛峰）——因此无 SENT 式 $\Theta$ 认证。claim 是"定性但决定性"：同 predictor-corrector 循环下 $\mathcal D_{\tau,T}\to\eta_T$ 替换消除 divergence。
+- SENS 40 步中 4 步 iters=200（staggered 未在 tol 内收敛，但不崩溃）——集中在软化段后期 (step 27, 34, 37, 39)，属常见现象，不否定主 claim。
+
+### 图与 tex 集成
+
+- 4 张 SENS 图 → `Tian/thesis/fracture_huzhang/adaptive/figures/paper_model2_*.png`：
+  - `paper_model2_marker_compare.png`：R vs $u_x$ 对比两条 marker（决定性）
+  - `paper_model2_Dmax_evolution.png`：log-scale $\mathcal D_{\max}$，红线 $10^{51}$ 尖峰 vs 蓝线 $\mathcal O(10^{0}$–$10^{4})$
+  - `paper_model2_NC_growth.png`：NC 增长对比
+  - `paper_model2_Fu_main.png`：$\eta_T$ 单独主曲线（备用）
+- 绘图脚本：`fracturex/tests/aposteriori/plot_paper_model2_Fu.py`。
+- tex `equilibrated_aposteriori.tex` §5.4 (`sec:num-model2`) 完整重写；Abstract/P1/Conclusion 同步；build 24 页 BUILD_OK 无 undefined。
+
+### 决策文档
+
+见 [DECISION_marker_theory_for_model2.md](DECISION_marker_theory_for_model2.md) §10（本次实验详细记录）。
 
 ---
 

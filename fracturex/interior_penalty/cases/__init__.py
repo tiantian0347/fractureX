@@ -10,17 +10,21 @@
     result = case.run(max_steps=5, maxit_per_step=30)
 """
 from .model0_circular_hole import Model0CircularHoleCase
+from .model0_sg import Model0SGCase
 from .model1_square_tension import Model1SquareTensionCase
 from .model1_sg import Model1SGCase
 from .model2_notch_shear import Model2ShearCase
+from .model2_sg import Model2SGCase
 from .model3_lshape import Model3LShapeCase
 from .sent_tension import SentTensionMieheCase
 
 __all__ = [
     "Model0CircularHoleCase",
+    "Model0SGCase",
     "Model1SquareTensionCase",
     "Model1SGCase",
     "Model2ShearCase",
+    "Model2SGCase",
     "Model3LShapeCase",
     "SentTensionMieheCase",
 ]

@@ -202,3 +202,7 @@ results/
 *.engine
 *.mp4
 *.pkl
+
+# Local backup files
+*.local_bak
+*.bak

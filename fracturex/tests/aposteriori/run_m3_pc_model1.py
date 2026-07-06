@@ -117,6 +117,9 @@ def main():
     # 若一轮 corrector 后 η_new > eta_decrement · η_old，即视为 diminishing return，停止再加密。
     # eta_decrement=0.7 默认（宽松）；越小越紧、越晚停。
     eta_decrement = _f("FRACTUREX_ETA_DECREMENT", 0.7)
+    # eta_T marker 上限：cell min d > d_hi 视为完全断裂胞，marker 前清零。
+    # 默认 0.995 对 SENS 过严（seed 邻胞被过滤）；欠分辨案例用 0.999。
+    d_hi = _f("FRACTUREX_D_HI", 0.995)
     # (ii) corrector 内中间网格用松 tol 定位标记（解会被加密丢弃，无需解准），接受态补紧 tol 终解。
     #   ⚠ 实测结论（2026-06-14 归因 run）：开 Anderson 后，corrector 的整解本就便宜
     #   （step3 2320s→63s 由 Anderson 贡献，非松 tol），松 tol 反而**微扰标记**致曲线漂移 ~1.5%
@@ -213,6 +216,7 @@ def main():
                     else:
                         marked = mark_eta_T_indicator(discr, r["eta_T"],
                                                       l0=l0, c_h=c_h, theta=theta_rec,
+                                                      d_hi=d_hi,
                                                       strategy=eta_T_strategy)
                     eta_prev = eta_now
                 elif marker == "recovery":

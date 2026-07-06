@@ -99,16 +99,59 @@ sweep 跑完后从 `eval_report.md` 抓这些指标做对比表：
 **equilibrium residual 应该单调下降**（Stage D 的物理约束在起作用）。若 d 或 σ 指标崩了，
 说明 λ_eq 尺度太大 / 需要 log-space。
 
-## 5. 结果（跑完后回填）
+## 5. 结果（2026-07-06 首轮 sweep 完成，**整体不可用，需重跑**）
 
-（待 sweep 完成填充；模板见 [m2_stageB_results.md §2](m2_stageB_results.md)）
+配置：m1_pilot（19 训练 / 8 测试）、`multioutput_fno`、100 epoch、batch=4、lr=1e-3。
 
-| λ_eq | rel_l2(d) | crack IoU | Hausdorff | σ rel_l2(物理) | σ peak rel_l2 | peak_load_error |
-| --- | --- | --- | --- | --- | --- | --- |
-| 0    | – | – | – | – | – | – |
-| 0.01 | – | – | – | – | – | – |
-| 0.1  | – | – | – | – | – | – |
-| 1.0  | – | – | – | – | – | – |
+**A/A' (sigma_h supervision, no arcsinh)**：
+
+| λ_eq | rel_l2(d) | crack IoU | Hausdorff | σ rel_l2 | σ_peak rel_l2 | peak_load | σ_train |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0    | 1.05 | 0.018 | 51.9 | 0.986 | 0.989 | 0.445 | 0.986 |
+| 0.01 | 1.18 | 0.024 | 51.1 | 0.988 | 0.991 | 0.443 | 0.988 |
+| 0.1  | **2.49** | 0.005 | 30.0 | 0.988 | 0.991 | 0.443 | 0.988 |
+| 1.0  | 1.41 | **0.00** | nan  | 0.988 | 0.991 | 0.449 | 0.988 |
+
+**B/B' (sigma_h_rec supervision, arcsinh)**：
+
+| λ_eq | rel_l2(d) | crack IoU | Hausdorff | σ rel_l2(物理) | σ_peak rel_l2 | peak_load | σ_train |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0    | 1.11 | 0.032 | 45.8 | 0.99 | 0.99 | 0.45 | 0.920 |
+| 0.01 | 1.22 | 0.00 | nan | **99.05** | 17.05 | **1724** | **3.54** |
+| 0.1  | 1.22 | 0.00 | nan | **99.08** | 17.05 | **1727** | **3.58** |
+| 1.0  | 1.23 | 0.00 | nan | **99.09** | 17.05 | **1727** | **3.59** |
+
+### 5.1 判读（诚实、含否定结论）
+
+1. **λ_eq=0 baseline 就已经废了，Stage D 消融失去参考**。A/A' 的 rel_l2(d)=1.05 / IoU=0.018 对比
+   [m1_results §3](m1_results.md) 里 fno Stage A 的 rel_l2=0.645 / IoU=0.148、
+   [m2_stageB §2](m2_stageB_results.md) 里 `multioutput_fno` 的 rel_l2=0.655 / IoU=0.177 —— 同数据集、
+   同 backbone，**damage baseline 差了一倍**。主要嫌疑：epochs 100 vs pilot 用的 300；
+   其次是本轮 `train.py` / `datasets.py` 的 Stage D 改动可能引入了对旧路径的 regression。
+   在 λ_eq=0 对不上历史 baseline 之前，λ_eq 消融读数无效。
+2. **A/A' λ_eq↑ → damage 单调恶化**（1.05→2.49→1.41），σ train ≈ test ≈ 0.987，
+   说明 σ head 根本没在学，λ_eq 的梯度只是在搅乱 damage head。与 §4 预期"σ 略升、
+   R̃_h 单调下降"完全相反。
+3. **B/B' λ_eq=0.01 就炸**：`sigma_relative_l2_train=3.54`——**训练集就已经跑飞**，不是过拟合，
+   是优化到坏 basin。且 0.01 / 0.1 / 1.0 三档几乎同一个坏解（σ rel_l2 都 ~99），
+   说明 0.01 已经完全主导，λ_eq 粒度太粗。§4 末尾"若 σ 崩了 → λ_eq 尺度太大 / 需 log-space"
+   的预警实测坐实。
+4. B/B' λ_eq=0 baseline 也差（rel_l2 1.11 / IoU 0.032），说明 rec 组的问题不只是 λ_eq——
+   `stress_rec` supervision + fno 在 19 样本上本身就不 work，需要单独 σ_h vs σ_h^rec
+   backbone 消融，不能混进 Stage D 一起看。
+
+### 5.2 postmortem（下一轮要修的三件事）
+
+- **修 baseline 再谈消融**：λ_eq=0 那点必须复现 m2_stageB §2 的数字。先把 epochs 100→300，
+  或换回 pilot §3.3 的 arcsinh + `multioutput_unet` 组合，确认本轮 train.py 改动没引 regression。
+- **λ_eq 需要无量纲重标尺**：当前 `L_eq = ||R_h||²` 走物理 σ，量纲远大于 `L_d + λ_σ L_σ`。
+  改成 `λ_eq · ||R_h||² / (||σ_h||² + ε)` 无量纲相对残差，或从 λ_eq ∈ {1e-6, 1e-4, 1e-2}
+  重扫；本轮 {0.01, 0.1, 1.0} 三档都在饱和区，读不出趋势。
+- **rec 组残差在 arcsinh 空间算**：不要反 arcsinh 再算 R_h，直接在 arcsinh 空间做，
+  与 σ supervision loss 同空间，避开 §2 里 10⁴× 裂尖 pathology 通过 `sinh` 引爆。
+
+产物路径：`results/learn/m3b_hz_sweep/sweep_summary.json`、
+`results/learn/m3b_rec_sweep/sweep_summary.json`，每点 `eval_report.md` 齐。
 
 ## 6. 下一步
 

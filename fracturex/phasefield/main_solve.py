@@ -15,7 +15,14 @@ from fealpy.decorator import barycentric
 from fealpy.fem import BilinearForm, LinearForm
 from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 from fealpy.fem import LinearElasticIntegrator, ScalarDiffusionIntegrator, ScalarMassIntegrator, ScalarSourceIntegrator
-from fealpy.fem import ScalarNeumannBCIntegrator, VectorNeumannBCIntegrator
+from fealpy.fem import ScalarNeumannBCIntegrator
+try:
+    from fealpy.fem import VectorNeumannBCIntegrator  # newer fealpy
+except ImportError:
+    try:
+        from fealpy.old.fem import VectorNeumannBCIntegrator  # legacy fealpy
+    except ImportError:
+        VectorNeumannBCIntegrator = None  # unused unless Neumann BC path is hit
 
 # 自动微分模块
 from fealpy.fem import NonlinearForm
@@ -907,6 +914,8 @@ class MainSolve:
             qn = bcdata.get('neumann_q')
             if qn is None:
                 qn = self.q
+            if VectorNeumannBCIntegrator is None:
+                raise ImportError("VectorNeumannBCIntegrator missing in fealpy.fem / fealpy.old.fem")
             vn = VectorNeumannBCIntegrator(bcdata['gN'], threshold=bcdata.get('threshold'), q=int(qn))
             vn.ftype = self.space.ftype
             spaces = (self.space,) * GD

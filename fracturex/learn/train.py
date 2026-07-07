@@ -284,16 +284,20 @@ def train(cfg: TrainConfig) -> dict:
     for epoch in range(cfg.epochs):
         model.train()
         ep_loss, n = 0.0, 0
+        ep_comps: dict[str, float] = {}
         for batch in train_loader:
             pred = model(batch["x"].to(device))
-            loss, _ = _compute_loss(pred, batch, cfg, device)
+            loss, comps = _compute_loss(pred, batch, cfg, device)
             opt.zero_grad()
             loss.backward()
             opt.step()
             bs = batch["x"].shape[0]
             ep_loss += float(loss.detach()) * bs
+            for k, v in comps.items():
+                ep_comps[k] = ep_comps.get(k, 0.0) + v * bs
             n += bs
         train_loss = ep_loss / max(n, 1)
+        ep_comps = {k: v / max(n, 1) for k, v in ep_comps.items()}
 
         model.eval()
         with torch.no_grad():
@@ -305,15 +309,25 @@ def train(cfg: TrainConfig) -> dict:
                 vn += bs
             val_loss = vl / max(vn, 1)
 
-        metrics_rows.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss})
+        row = {"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss}
+        row.update({f"train_{k}": v for k, v in ep_comps.items()})
+        metrics_rows.append(row)
 
     # Save only the final model — per-epoch checkpoints are ~64 MB each and
     # bloat the disk (300 epochs × N models). The metric curves live in
     # metrics.csv; reload model_final.pt for diagnostics / inference.
     torch.save(model.state_dict(), out_dir / "checkpoints" / "model_final.pt")
 
+    # Dynamic fieldnames — Stage D adds train_l_eq / train_l_eq_norm / train_sigma_ref.
+    fieldnames = ["epoch", "train_loss", "val_loss"]
+    extra_fields = []
+    for row in metrics_rows:
+        for k in row:
+            if k not in fieldnames and k not in extra_fields:
+                extra_fields.append(k)
+    fieldnames += extra_fields
     with (out_dir / "metrics.csv").open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["epoch", "train_loss", "val_loss"])
+        w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(metrics_rows)
 

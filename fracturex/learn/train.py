@@ -29,6 +29,7 @@ from .datasets import (
 )
 from .eval import metrics as M
 from .losses import (
+    _align_mask,
     equilibrium_residual_fd,
     masked_relative_l2,
     peak_weighted_relative_l2,
@@ -134,20 +135,38 @@ def _compute_loss(pred, batch, cfg, device):
         l_sigma = masked_relative_l2(sigma_pred, sigma_t, mask)
     total = stage_loss(cfg.stage, l_d=l_d, l_sigma=l_sigma, lambda_sigma=cfg.lambda_sigma)
     comps: dict[str, float] = {"l_d": float(l_d.detach()), "l_sigma": float(l_sigma.detach())}
-    # Stage D balance regularization (paper_thesis §G.2): L_D = ... + λ · R_h².
-    # Applied on the physical σ, so we invert the training-space transform first.
+    # Stage D balance regularization (paper_thesis §G.2): L_D = ... + λ · R̃_h².
+    # Applied on the physical σ (invert training-space transform first).
+    # R̃_h is the *dimensionless* residual R_h / (‖σ_ref‖ / L). Without this
+    # rescale R_h carries units [stress/length] and dwarfs the O(1) data losses
+    # → λ=0.01 already blows up the optimizer (see m3b_stageD_status §5.1).
     lam_eq = getattr(cfg, "lambda_eq", None)
     if lam_eq is not None and lam_eq > 0.0:
+        import torch as _torch  # local import to keep top-level lean
         sigma_phys = sigma_inverse(sigma_pred, cfg.sigma_transform, cfg.sigma_transform_scale)
-        # Unit domain assumption for grid spacing; overridable via meta once the
-        # dataset carries explicit (dx, dy) — schema §3.
         H = sigma_pred.shape[-2]
         W = sigma_pred.shape[-1]
+        # Unit domain assumption for grid spacing; overridable via meta once the
+        # dataset carries explicit (dx, dy) — schema §3.
         dx = 1.0 / max(W - 1, 1)
         dy = 1.0 / max(H - 1, 1)
         r_h = equilibrium_residual_fd(sigma_phys, mask, dx=dx, dy=dy)
-        total = total + float(lam_eq) * r_h * r_h
+        # Reference stress magnitude from HZ target (batch-level, detached — this is
+        # a normalization constant, not part of the training signal).
+        sigma_target = batch["stress"].to(device)
+        with _torch.no_grad():
+            m_align = _align_mask(mask, sigma_target[..., 0, :, :])
+            sigma_sq = (sigma_target ** 2).sum(dim=-3)  # sum over 3 stress channels
+            sigma_ref = _torch.sqrt(
+                (sigma_sq * m_align).sum() / (m_align.sum() * 3.0 + 1e-12)
+            )
+            L_char = 1.0  # unit domain
+            scale = sigma_ref / L_char + 1e-8
+        r_h_norm = r_h / scale
+        total = total + float(lam_eq) * r_h_norm * r_h_norm
         comps["l_eq"] = float(r_h.detach())
+        comps["l_eq_norm"] = float(r_h_norm.detach())
+        comps["sigma_ref"] = float(sigma_ref.detach())
     return total, comps
 
 

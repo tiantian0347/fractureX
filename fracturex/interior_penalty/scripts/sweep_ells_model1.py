@@ -84,7 +84,7 @@ def plot(result: dict, prefix: str = "/tmp/model1_ells"):
                 label=f"ℓ_s={ell_s:.3f} (ℓ_0=0.0133)")
     ax.set_xlabel("displacement")
     ax.set_ylabel("force")
-    ax.set_title("model1: strain-gradient size effect (ℓ_s sweep)")
+    ax.set_title("Notched-square SENT tension: elastic length-scale size effect (ℓ_s sweep)")
     ax.grid(True)
     ax.legend(fontsize=9)
     fig.tight_layout()
@@ -123,7 +123,7 @@ def plot_normalized(result: dict, l0: float, prefix: str = "/tmp/model1_ells"):
     ax1.plot(x, peak_f, "o-", color="C0")
     ax1.set_xlabel(r"$\ell_s / \ell_0$")
     ax1.set_ylabel("peak force")
-    ax1.set_title(r"Peak force vs $\ell_s / \ell_0$ (model1, $\ell_0=0.0133$)")
+    ax1.set_title(r"Peak force vs $\ell_s / \ell_0$ (SENT tension, $\ell_0=0.0133$)")
     ax1.grid(True)
     # 相对 ell_s=0 的 stiffening 百分比
     baseline = peak_f[0]

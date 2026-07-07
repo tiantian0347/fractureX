@@ -21,6 +21,13 @@ from fealpy.backend import backend_manager as bm
 bm.set_backend("numpy")
 
 
+_DISPLAY_NAMES = {
+    "model0": "Circular-hole benchmark",
+    "model1": "Notched-square SENT tension",
+    "model2": "Double-notched shear benchmark",
+}
+
+
 def _get_case_config(name: str):
     """按 case name 返回 (case_class, base_kwargs, l0)。"""
     if name == "model0":
@@ -83,7 +90,8 @@ def plot(result: dict, prefix: str):
         ax.plot(disp, force[i], "-o", ms=3, label=f"ℓ_s={ell_s:.3f}")
     ax.set_xlabel("displacement")
     ax.set_ylabel("force")
-    ax.set_title(f"{name}: strain-gradient size effect (ℓ_0={l0})")
+    display = _DISPLAY_NAMES.get(name, name)
+    ax.set_title(f"{display}: elastic length-scale size effect (ℓ_0={l0})")
     ax.grid(True)
     ax.legend(fontsize=9)
     fig.tight_layout()
@@ -97,7 +105,7 @@ def plot(result: dict, prefix: str):
     ax1.plot(x, result["peak_force"], "o-", color="C0")
     ax1.set_xlabel(r"$\ell_s / \ell_0$")
     ax1.set_ylabel("peak force")
-    ax1.set_title(rf"{name}: Peak force vs $\ell_s/\ell_0$ ($\ell_0={l0}$)")
+    ax1.set_title(rf"{display}: peak force vs $\ell_s/\ell_0$ ($\ell_0={l0}$)")
     ax1.grid(True)
     baseline = result["peak_force"][0]
     for xi, fi in zip(x, result["peak_force"]):
@@ -109,7 +117,7 @@ def plot(result: dict, prefix: str):
     ax2.plot(x, result["peak_disp"], "s-", color="C1")
     ax2.set_xlabel(r"$\ell_s / \ell_0$")
     ax2.set_ylabel("peak displacement")
-    ax2.set_title(rf"{name}: Peak-force disp vs $\ell_s/\ell_0$")
+    ax2.set_title(rf"{display}: peak-force displacement vs $\ell_s/\ell_0$")
     ax2.grid(True)
     fig.tight_layout()
     fname = f"{prefix}_peak_normalized.png"

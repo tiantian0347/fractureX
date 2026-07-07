@@ -96,7 +96,7 @@ def plot(result: dict, prefix: str = "/tmp/model1_gamma"):
         ax.plot(disp, force[i], "-o", ms=3, label=f"γ={gamma:.0f}")
     ax.set_xlabel("displacement")
     ax.set_ylabel("force")
-    ax.set_title("model1: penalty γ sensitivity")
+    ax.set_title("Notched-square SENT tension: penalty γ sensitivity")
     ax.grid(True)
     ax.legend(fontsize=9)
     fig.tight_layout()

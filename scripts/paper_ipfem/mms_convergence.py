@@ -153,17 +153,19 @@ def study_biharmonic(out_dir: Path, ps: list[int], maxit: int,
 # ---------------------------------------------------------------------------
 
 def study_sg_elasticity(out_dir: Path, ps: list[int], nx_list: list[int],
-                        ell_s_list: list[float], gamma: float) -> None:
+                        ell_s_list: list[float],
+                        gamma_by_p: dict[int, float]) -> None:
     print("== (B) Length-scale-augmented elasticity MMS (d=0) ==", flush=True)
     rows: list[dict] = []
     for ell_s in ell_s_list:
         h_by_p, l2_by_p, h1_by_p = {}, {}, {}
         for p in ps:
+            gamma_p = gamma_by_p[p]
             hs, l2s, h1s = [], [], []
             for nx in nx_list:
                 t0 = time.time()
                 uh, tspace, space, mesh = solve_sg_elastic(
-                    nx=nx, p_u=p, ell_s=ell_s, gamma=gamma
+                    nx=nx, p_u=p, ell_s=ell_s, gamma=gamma_p
                 )
                 dt = time.time() - t0
                 cm = np.asarray(mesh.entity_measure("cell"))
@@ -173,7 +175,7 @@ def study_sg_elasticity(out_dir: Path, ps: list[int], nx_list: list[int],
                 hs.append(h)
                 l2s.append(l2e)
                 h1s.append(h1e)
-                print(f"  ell_s={ell_s:.3f} p={p} nx={nx}: "
+                print(f"  ell_s={ell_s:.3f} p={p} (γ={gamma_p}) nx={nx}: "
                       f"h={h:.4f} L2={l2e:.3e} H1={h1e:.3e} ({dt:.1f}s)",
                       flush=True)
             hs = np.array(hs); l2s = np.array(l2s); h1s = np.array(h1s)
@@ -222,7 +224,13 @@ def main() -> int:
                         default=[0.0, 0.05, 0.1],
                         help="SG study: length-scale sweep")
     parser.add_argument("--gamma", type=float, default=5.0,
-                        help="C0-IP penalty parameter")
+                        help="C0-IP penalty parameter for the biharmonic study "
+                             "and default fallback for the SG study")
+    parser.add_argument("--sg-gamma-p2", type=float, default=5.0,
+                        help="SG study γ for p_u=2 (matches fracture experiments)")
+    parser.add_argument("--sg-gamma-p3", type=float, default=10.0,
+                        help="SG study γ for p_u=3 (matches degree-adaptive "
+                             "fracture experiments)")
     parser.add_argument("--out", type=str, default=None,
                         help="output directory (default $FRACTUREX_RESULTS_ROOT/paper_ipfem)")
     parser.add_argument("--skip-biharmonic", action="store_true")
@@ -250,8 +258,10 @@ def main() -> int:
         if not sg_ps:
             print("[warn] SG study needs p in {2,3}; skipping.", flush=True)
         else:
+            gamma_by_p = {2: args.sg_gamma_p2, 3: args.sg_gamma_p3}
+            print(f"[info] SG study γ by p: {gamma_by_p}", flush=True)
             study_sg_elasticity(out_dir, sg_ps, args.sg_nx, args.ell_s,
-                                args.gamma)
+                                gamma_by_p)
 
     print(f"[done] total {time.time()-t_all:.1f}s", flush=True)
     return 0

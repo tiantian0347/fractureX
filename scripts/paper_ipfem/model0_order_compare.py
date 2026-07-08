@@ -90,9 +90,14 @@ def run_second_order(mesh: TriangleMesh, loads: np.ndarray,
 
 def run_fourth_order(mesh: TriangleMesh, loads: np.ndarray,
                      material_kwargs: dict, p_phase: int,
-                     p_disp: int, gamma: float, maxit: int,
+                     p_disp: int | None, gamma: float, maxit: int,
                      rtol: float) -> np.ndarray:
-    """4th-order via IPFEM. Returns residual force per step (same length as loads)."""
+    """4th-order via IPFEM. Returns residual force per step (same length as loads).
+
+    p_disp=None → match p_phase (§5.1 convention: p_disp = p_phase = p).
+    """
+    if p_disp is None:
+        p_disp = p_phase
     case = Model0CircularHoleCase(
         E=material_kwargs["E"], nu=material_kwargs["nu"],
         Gc=material_kwargs["Gc"], l0=material_kwargs["l0"],
@@ -162,13 +167,13 @@ def main() -> int:
     for p in args.p:
         if not args.skip_fourth:
             gamma_p = gamma_by_p.get(p, args.gamma)
-            print(f"[run] 4th-order p_phase={p} p_disp=1 γ={gamma_p}",
+            print(f"[run] 4th-order p_phase={p} p_disp={p} γ={gamma_p}",
                   flush=True)
             t = time.time()
             f4 = run_fourth_order(
                 mesh, loads,
                 material_kwargs=dict(**material, hmin=args.hmin),
-                p_phase=p, p_disp=1,
+                p_phase=p, p_disp=p,
                 gamma=gamma_p, maxit=args.maxit, rtol=args.rtol,
             )
             print(f"  4th p={p} done in {time.time()-t:.1f}s peak={f4.max():.3e}",

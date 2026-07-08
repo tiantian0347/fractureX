@@ -107,15 +107,17 @@ def _loglog_plot(png_path: Path, h_by_p: dict, err_by_p: dict,
 # ---------------------------------------------------------------------------
 
 def study_biharmonic(out_dir: Path, ps: list[int], maxit: int,
-                     nx0: int, gamma: float) -> None:
+                     nx0: int, gamma_by_p: dict[int, float]) -> None:
     print("== (A) Scalar C0-IP biharmonic MMS ==", flush=True)
+    print(f"[info] biharmonic γ by p: {gamma_by_p}", flush=True)
     pde = sin_sq_pde()
     rows: list[dict] = []
     h_by_p, l2_by_p, h1_by_p, h2_by_p = {}, {}, {}, {}
     for p in ps:
+        gamma_p = gamma_by_p[p]
         t0 = time.time()
         h, eL2, eH1, eH2 = convergence_study(
-            pde, p=p, maxit=maxit, nx0=nx0, gamma=gamma
+            pde, p=p, maxit=maxit, nx0=nx0, gamma=gamma_p
         )
         dt = time.time() - t0
         h_by_p[p] = h
@@ -132,8 +134,9 @@ def study_biharmonic(out_dir: Path, ps: list[int], maxit: int,
                 "errH1": float(eH1[i]), "orderH1": float(ord_h1[i]),
                 "errH2_broken": float(eH2[i]), "orderH2": float(ord_h2[i]),
             })
-        print(f"  p={p} finished in {dt:.1f}s: final H2 err={eH2[-1]:.3e}"
-              f", rate~{ord_h2[-1]:.2f}", flush=True)
+        print(f"  p={p} (γ={gamma_p}) finished in {dt:.1f}s: "
+              f"final H2 err={eH2[-1]:.3e}, rate~{ord_h2[-1]:.2f}",
+              flush=True)
 
     _write_csv(out_dir / "biharmonic_mms.csv", rows)
     _loglog_plot(
@@ -223,9 +226,12 @@ def main() -> int:
     parser.add_argument("--ell-s", type=float, nargs="+",
                         default=[0.0, 0.05, 0.1],
                         help="SG study: length-scale sweep")
-    parser.add_argument("--gamma", type=float, default=5.0,
-                        help="C0-IP penalty parameter for the biharmonic study "
-                             "and default fallback for the SG study")
+    parser.add_argument("--bih-gamma-p2", type=float, default=5.0,
+                        help="biharmonic study γ for p=2 (fracture experiments)")
+    parser.add_argument("--bih-gamma-p3", type=float, default=10.0,
+                        help="biharmonic study γ for p=3 (fracture experiments)")
+    parser.add_argument("--bih-gamma-p4", type=float, default=20.0,
+                        help="biharmonic study γ for p=4 (fracture experiments)")
     parser.add_argument("--sg-gamma-p2", type=float, default=5.0,
                         help="SG study γ for p_u=2 (matches fracture experiments)")
     parser.add_argument("--sg-gamma-p3", type=float, default=10.0,
@@ -250,7 +256,14 @@ def main() -> int:
 
     t_all = time.time()
     if not args.skip_biharmonic:
-        study_biharmonic(out_dir, args.p, args.maxit, args.nx0, args.gamma)
+        bih_gamma_by_p = {2: args.bih_gamma_p2, 3: args.bih_gamma_p3,
+                          4: args.bih_gamma_p4}
+        # for any p outside {2,3,4}, fall back to the highest known γ
+        max_bih_gamma = max(bih_gamma_by_p.values())
+        for p in args.p:
+            bih_gamma_by_p.setdefault(p, max_bih_gamma)
+        study_biharmonic(out_dir, args.p, args.maxit, args.nx0,
+                         bih_gamma_by_p)
     if not args.skip_sg:
         # SG solve_sg_elastic currently supports p=2,3 in existing tests; keep
         # separate to allow finer control from CLI.

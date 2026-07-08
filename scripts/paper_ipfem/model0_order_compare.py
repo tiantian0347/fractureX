@@ -115,7 +115,14 @@ def main() -> int:
     parser.add_argument("--p", type=int, nargs="+", default=[2, 3],
                         help="polynomial degrees to compare")
     parser.add_argument("--hmin", type=float, default=0.05)
-    parser.add_argument("--gamma", type=float, default=5.0)
+    parser.add_argument("--gamma", type=float, default=5.0,
+                        help="fallback γ for the 4th-order side if degree-adaptive is not set")
+    parser.add_argument("--gamma-p2", type=float, default=5.0,
+                        help="4th-order side γ for p=2 (matches §5.1 fracture experiments)")
+    parser.add_argument("--gamma-p3", type=float, default=10.0,
+                        help="4th-order side γ for p=3 (matches §5.1 fracture experiments)")
+    parser.add_argument("--gamma-p4", type=float, default=20.0,
+                        help="4th-order side γ for p=4 (matches §5.1 fracture experiments)")
     parser.add_argument("--maxit", type=int, default=30)
     parser.add_argument("--rtol", type=float, default=1e-4)
     parser.add_argument("--E", type=float, default=200.0)
@@ -149,15 +156,20 @@ def main() -> int:
     rows: list[dict] = []
     curves: dict[tuple[str, int], np.ndarray] = {}
 
+    gamma_by_p = {2: args.gamma_p2, 3: args.gamma_p3, 4: args.gamma_p4}
+    print(f"[info] 4th-order γ by p: {gamma_by_p}", flush=True)
+
     for p in args.p:
         if not args.skip_fourth:
-            print(f"[run] 4th-order p_phase={p} p_disp=1", flush=True)
+            gamma_p = gamma_by_p.get(p, args.gamma)
+            print(f"[run] 4th-order p_phase={p} p_disp=1 γ={gamma_p}",
+                  flush=True)
             t = time.time()
             f4 = run_fourth_order(
                 mesh, loads,
                 material_kwargs=dict(**material, hmin=args.hmin),
                 p_phase=p, p_disp=1,
-                gamma=args.gamma, maxit=args.maxit, rtol=args.rtol,
+                gamma=gamma_p, maxit=args.maxit, rtol=args.rtol,
             )
             print(f"  4th p={p} done in {time.time()-t:.1f}s peak={f4.max():.3e}",
                   flush=True)

@@ -194,3 +194,11 @@ scratch/
 # Run outputs and large dumps under results/ are never committed.
 # Local files are kept on disk; export manually when needed.
 results/
+
+# Model weights / large binaries — never commit anywhere in the repo
+*.pth
+*.pt
+*.npy
+*.engine
+*.mp4
+*.pkl

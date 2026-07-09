@@ -99,7 +99,13 @@ sweep 跑完后从 `eval_report.md` 抓这些指标做对比表：
 **equilibrium residual 应该单调下降**（Stage D 的物理约束在起作用）。若 d 或 σ 指标崩了，
 说明 λ_eq 尺度太大 / 需要 log-space。
 
-## 5. 结果（2026-07-06 首轮 sweep 完成，**整体不可用，需重跑**）
+## 5. 结果
+
+> **两轮**：§5.0–§5.2 是 **v1 首轮（2026-07-06，整体不可用）**；§5.3 是
+> **v3 修复重跑（2026-07-08，可用）**——按 §5.2 postmortem 修了 baseline 配置
+> + 无量纲 λ_eq 重标尺，结论看 **§5.3**。
+
+### 5.0 v1 首轮（2026-07-06，**整体不可用，需重跑**）
 
 配置：m1_pilot（19 训练 / 8 测试）、`multioutput_fno`、100 epoch、batch=4、lr=1e-3。
 
@@ -152,6 +158,56 @@ sweep 跑完后从 `eval_report.md` 抓这些指标做对比表：
 
 产物路径：`results/learn/m3b_hz_sweep/sweep_summary.json`、
 `results/learn/m3b_rec_sweep/sweep_summary.json`，每点 `eval_report.md` 齐。
+
+### 5.3 v3 修复重跑（2026-07-08，**可用**）
+
+按 §5.2 三条 postmortem 落地后重跑 A/A'（B/B' 待后续）：
+
+- **修 baseline**：`multioutput_unet` + `--sigma-transform arcsinh` + **300 epoch**
+  （对齐 [m2_stageB §3.3](m2_stageB_results.md) pilot 最优配置；`run_m3b_lambda_eq_sweep.py`
+  默认已改为 unet/300/arcsinh）。
+- **无量纲 λ_eq**：`train.py::_compute_loss` 的 Stage D 项改成
+  `total += λ_eq · (R_h / (σ_ref/L))²`，σ_ref = HZ 目标 σ 的 masked RMS（detached 常数）。
+  见 [train.py](../../fracturex/learn/train.py) §Stage D balance regularization。
+- **R̃_h 落 metrics.csv**：每 epoch 记 `train_l_eq`, `train_l_eq_norm`, `train_sigma_ref`。
+
+**A/A' (sigma_h supervision, arcsinh, 300ep)**，held-out test=8：
+
+| λ_eq | rel_l2(d) | crack IoU | Hausdorff | σ rel_l2 | σ_peak rel_l2 | peak_load | σ_train |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **0** | **0.515** | **0.382** | **19.8** | 0.981 | 0.985 | 0.393 | 0.866 |
+| 0.01 | 0.603 | 0.224 | 21.4 | 0.985 | 0.989 | 0.440 | 0.888 |
+| 0.1  | 0.801 | 0.003 | 54.9 | 0.988 | 0.991 | 0.525 | 0.906 |
+| 1.0  | 0.808 | 0.000 | nan  | 0.989 | 0.992 | 0.536 | 0.910 |
+
+**R̃_h 收敛（`train_l_eq_norm`，epoch 0 → 299）**，图见 `rh_descent.png`：
+
+| λ_eq | R̃_h 起 | R̃_h 终 |
+| --- | --- | --- |
+| 0.01 | 21.6 | **1.22** |
+| 0.1  | 19.6 | **0.295** |
+| 1.0  | 20.1 | **0.171** |
+
+**判读（诚实，含否定结论）**：
+
+1. **两条修复都生效**：(a) baseline λ_eq=0 复现了 pilot（rel_l2(d)=0.515 vs m2_stageB §3.3
+   的 0.509，IoU 0.382 vs 0.429），消融**有了参考**；(b) 无量纲重标尺后 σ_train 全程
+   0.87→0.91，**不再有 v1 那种 3.5/99 爆飞**——§5.2 第二条"量纲"诊断坐实并解决。
+2. **R̃_h 单调下降、λ_eq 越大终值越低**（1.22 / 0.295 / 0.171）——Stage D 物理约束
+   **确实在压平衡残差**，σ_h ∈ H(div,S) 可平衡，符合 §6"descent 分支"预期。这是 §F.3 的正面料。
+3. **但 19 样本下 λ_eq 净有害**：damage 随 λ_eq **单调恶化**（IoU 0.382→0.224→0.003→0），
+   σ 指标几乎不动（head 没在学，σ rel_l2 恒 ~0.98）。即 **R̃_h 的梯度只是在搅乱 damage head，
+   平衡增益 < 数据拟合代价**。与 §4"σ 略升、R̃_h 下降"的预期在 R̃_h 侧吻合、在 σ 侧不吻合
+   （σ 在 pilot 数据量下压根没学出，见 m2_stageB §3.2）。
+4. **结论**：Stage D 正则**机制正确**（R̃_h descent 可复现），但要看到"物理约束换来 σ/泛化提升"
+   的净收益，得先有一个 **σ 真的学出来的 baseline**（m2_stageB §6：S 档 ~1k 样本 σ rel_l2
+   0.98→0.33）。在 19 样本 pilot 上做 λ_eq 消融只能得到"正则伤 damage"的否定结论。
+
+**下一步**：把这套修好的配置（unet/arcsinh/300ep/无量纲 λ_eq）搬到 **S 档 ~1152 样本**上
+重扫 λ_eq，才是能读出"平衡正则净收益"的场景；pilot 只用于确认机制 + 出 R̃_h descent 图。
+
+产物路径：`results/learn/m3b_hz_sweep_v3_full/{sweep_summary.json, rh_descent.png}`，
+每点 `{config.json, metrics.csv, eval_report.md, checkpoints/model_final.pt}`。
 
 ## 6. 下一步
 

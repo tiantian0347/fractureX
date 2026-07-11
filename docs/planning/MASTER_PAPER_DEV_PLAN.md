@@ -1,4 +1,6 @@
-# fracturex 论文 + 开发 主计划（2026-07-10 v1.0）
+# fracturex 论文 + 开发 主计划（2026-07-11 v1.1）
+
+> **v1.1 更新（2026-07-11）**：**新增第 5 个近期投稿候选 T9 / 论文 F（FractureX 框架/软件论文）**——把 D12 里新加的相场 AMG 预条件 + HZ 矩阵并行组装抽出来，与标准 Lagrange / IP-FEM 一并写成 FractureX 框架论文（**不并入 D12**，否则与 D12 matrix-free 主线冲突、稀释 aux-space 头条）。**脊梁 = 一套解耦架构承载三种离散范式**（标准 Lagrange `MainSolve` / HZ 混合 `huzhang_*` / C⁰-IP 4 阶 `interior_penalty`，共用 fealpy backend + cases 基座）；**首次正式存档 FractureX**（ICCES2025 仅摘要+报告无论文稿）。**期刊首选 CiCP**（与底座引擎 FEALPy v3 同刊，`10.4208/cicp.OA-2025-0327`）。**边界**：框架论文引 D12/T6a/田博论讲方法，自己只讲实现+性能+统一。详见 `docs/planning/T9_FRAMEWORK_PAPER_PLAN.md`。**动作**：§1 表加 T9 行、§3 清单加 F 行。
 
 > **v1.0 更新（2026-07-10）**：**ipfem (T6a) 插队到投稿队首**——`ipfem_paper.tex` 已从 v0.6 盘点的 1187 行扩到 **2345 行**，计划里当作核心 delta 的 **T6a.pre.A1（应变梯度耦合，Aifantis $O(\ell_s^2)$ 分量式）已全程落地**（§2.2 length-scale regularization + §3.2/§4.6 离散与误差分析扩展），**A3（penalty γ 敏感性 §5.4）、A4（Conclusion 已桥接 equilibrated estimator → T2）** 亦完成，另加计划外的 **§5.5 manufactured-solution 收敛验证**。→ 博论重合风险解除，ipfem **是当前唯一不卡服务器算例的稿子，本地即可收官**。**动作**：T6a 从 Phase 3 / 2027-06 提前到 **2026-07 立即投**（Comput. Mech./IJNME）；§1 表 T6a 行 ETA/状态改写、§3 清单投稿日改 2026-07、§4.3 勾掉 A1/A3/A4。**近期真实投稿顺序 = ipfem（现在）→ A（只欠本地 scp+图表，1–2 周）→ D12/B（卡算例，8 月）**。**仍欠**：A2（2 vs 4 阶直接对比，tex §2299 明写留 future work）、B5（SENT tension benchmark）——不阻塞本轮送审，作 rebuttal 储备。
 
@@ -93,6 +95,7 @@
 | **T2** | 论文 A | A tex 已成稿（`equilibrated_aposteriori.tex` 907 行含 Conclusion）→ 补 SENT shear 图表 + 已 sketch 的 equilibrating correction / spectral split majorant / marker efficiency 下界收尾 | 🟢 tex 骨架 100%，理论侧 A-2/3/4 已 sketch；SENT tension + CNT red-green + shear 数据齐 | T0 无关；只欠本地图表 | **CMAME/SINUM 主推** | **1–2 月（v0.8 提档）** |
 | **T1** | 论文 D | D12 tex 已成稿（`phasefield_huzhang.tex` 3148 行含 Conclusion + Appendix）→ 补 Outlook 自认欠账 + §13 sweep 表 + 收稿 | 🟡 tex 骨架 100%，欠 SENT shear 完整 aux-vs-direct + 局部化 mesh-independence + shear 局部化 iteration 一栏 | T0（h2/h3/model1 pipeline 出货 + shear aux 起跑） | **SISC/CMAME 短稿** | 2–3 月 |
 | **T3** | 论文 B | HZ-supervised 算子学习 Stage D + 对照表 + 数据重生 | 🟢 主定理锁定 2026-06-02，欠 `equilibrium_residual_l2` stub 实现 | T1/T2 无关，可并行 | **JCP/CMAME** | 5–6 月 |
+| **T9** | 论文 F | FractureX 框架论文：一套解耦架构承载三种离散范式（标准 Lagrange / HZ 混合 / C⁰-IP 4 阶）+ 并行组装 + 双块最优求解器 | 🟢 代码/文档骨架齐；欠 scaling benchmark（本地快出，不卡服务器） | 引 D12/T6a/田博论方法；预研无阻塞 | **CiCP（与 FEALPy v3 同刊）** | 详见 `T9_FRAMEWORK_PAPER_PLAN.md`；≈2027 Q1（benchmark 后） |
 | **T5** | 论文 D+ | 多水平/两层 Schwarz 预条件（博士论文第 6 章 + conf 胡齐芽） | 🟢 D12 Outlook 自己点名"contrast-adapted, interface-resolving coarse space"；paper_aux 数据可直接复用 | T1 tex 送审后启动 | D 论文续作 / SIMAX-NLAA | 8–12 月 |
 | **T4** | 论文 A+ | Hu-Ma 扩展 H-Z 空间 + NVB 处理 L-shape（博士论文第 3 章 + conf 马睿线 2） | 🔵 fealpy 需新增顶点分裂逻辑；工程量最重 | T2 送审后接入 | A 论文附加章 / 独立短文 | 12–14 月 |
 | **T6a** | 论文 C1 | 4 阶 PFM + 应变梯度 **on 标准/IP-FEM**（博论 IP-FEM 章直接延伸） | 🟢 **tex 2345 行成稿**，应变梯度/penalty/aposteriori 桥接/manufactured-solution 全落地；不卡算例 | 无（本地即可投） | Comput. Mech./IJNME | **立即投（2026-07，v1.0 插队队首）** |
@@ -280,6 +283,7 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 | 1 | **A** | Equilibrated a posteriori error estimation and σ-driven adaptivity for Hu-Zhang mixed phase-field fracture | CMAME / SINUM | 无常数超圆界；osc(f)=0 干净；超过郭雯 2024 的 CPU/mesh 节省 | **2026-07（v0.8 提档）** |
 | 2 | **D12** | Auxiliary-space preconditioning for Hu-Zhang mixed phase-field fracture: uniqueness of convergence in the fully-localized regime | SISC / CMAME | 难 regime 唯一收敛；引龚博论 Ch 7 为理论根基 | 2026-09 |
 | 3 | **B** | Balance-preserving neural operators for phase-field fracture via Hu-Zhang supervision | JCP / CMAME | 平衡监督 = 结构最优；R̃_h 平台 vs 下降曲线；诚实边界 T1/D1 | 2027-01 |
+| 3′ | **F (T9)** | FractureX: a decoupled framework for phase-field fracture with three discretization paradigms | **CiCP** / CAMWA | 首次存档 FractureX；三离散同底座（Lagrange / HZ / C⁰-IP 4 阶）；并行组装 + 双块最优求解器 | 并行推进，≈2027 Q1（scaling benchmark 后） |
 | 4 | **D+** | Non-nested coarse spaces and two-level Schwarz preconditioning for Hu-Zhang phase-field fracture in the localized regime | SIMAX / NLAA | 龚博论 Ch 6 多水平 + 胡齐芽 GEP-coarse；D12 自己 Outlook 点名的续作 | 2027-03 |
 | 5 | **A+** | Extended Hu-Zhang element with vertex-tangent relaxation for adaptive elasticity at reentrant corners | Math. Comp. / M2AN | 合并 Hu-Ma 2020 + 龚博论 Ch 3 任意维奇异点代数定义 | 2027-08（v0.5 后移 1 档给 T6a 让路） |
 | 6 | **T6a** | Fourth-order phase-field fracture with strain-gradient elasticity via interior-penalty FEM | Comput. Mech. / IJNME | 博论 IP-FEM 章直接延伸；mesh budget 放松 + 尺寸效应；应变梯度 delta 已入正文 | **2026-07（v1.0 提前，稿已齐，插队队首）** |

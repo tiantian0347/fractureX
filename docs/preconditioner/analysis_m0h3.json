@@ -1,0 +1,80 @@
+{
+  "tag": "m0h3",
+  "n": 22486,
+  "nnz": 252826,
+  "max_d": 1.0,
+  "load": 0.125,
+  "max_H": NaN,
+  "step": 30,
+  "symmetry_maxabs": 5.551115123125783e-17,
+  "diag_min": 0.019609686794855724,
+  "diag_max": 5.205719616899149,
+  "diag_contrast": 265.46673954347824,
+  "row_nnz_mean": 11.243707195588366,
+  "spectrum_method": "sparse_extremal",
+  "lam_min": 0.0019463607618832796,
+  "lam_max": 6.285454614231216,
+  "kappa_A": 3229.3368923803578,
+  "kappa_jacobi": 123.47997780989694,
+  "lam_min_jac": 0.022385348628208377,
+  "lam_max_jac": 2.764142351877977,
+  "amg_error": "ArpackNoConvergence('ARPACK error -1: No convergence (224861 iterations, 0/1 eigenvectors converged) [ARPACK error -14: DNAUPD  did not find any eigenvalues to sufficient accuracy.]')",
+  "bench": [
+    {
+      "label": "CG none",
+      "solver": "CG",
+      "iters": 568,
+      "info": 0,
+      "time_s": 0.12859375006519258,
+      "relerr": 2.897952007214482e-11
+    },
+    {
+      "label": "GMRES none",
+      "solver": "GMRES",
+      "iters": 737,
+      "info": 0,
+      "time_s": 0.4882119579706341,
+      "relerr": 1.675449650073653e-10
+    },
+    {
+      "label": "CG Jacobi",
+      "solver": "CG",
+      "iters": 131,
+      "info": 0,
+      "time_s": 0.03135870804544538,
+      "relerr": 2.930897475398286e-11
+    },
+    {
+      "label": "CG ILU",
+      "solver": "CG",
+      "iters": 4,
+      "info": 0,
+      "time_s": 0.00412829197011888,
+      "relerr": 2.429442406920966e-11
+    },
+    {
+      "label": "CG AMG-SA",
+      "solver": "CG",
+      "iters": 18,
+      "info": 0,
+      "time_s": 0.027936707949265838,
+      "relerr": 1.198468517351852e-11
+    },
+    {
+      "label": "CG AMG-RS",
+      "solver": "CG",
+      "iters": 17,
+      "info": 0,
+      "time_s": 0.03479991701897234,
+      "relerr": 2.9239048115748926e-12
+    },
+    {
+      "label": "AMG-SA standalone",
+      "solver": "Vcycle",
+      "iters": 53,
+      "info": 0,
+      "time_s": 0.06152729201130569,
+      "relerr": 1.6971556636419917e-11
+    }
+  ]
+}

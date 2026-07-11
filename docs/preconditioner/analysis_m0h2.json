@@ -1,0 +1,83 @@
+{
+  "tag": "m0h2",
+  "n": 5956,
+  "nnz": 65428,
+  "max_d": 1.0,
+  "load": 0.125,
+  "max_H": NaN,
+  "step": 30,
+  "symmetry_maxabs": 2.220446049250313e-16,
+  "diag_min": 0.019776000217247337,
+  "diag_max": 5.059026858593655,
+  "diag_contrast": 255.8164847804513,
+  "row_nnz_mean": 10.985224983210209,
+  "spectrum_method": "dense",
+  "lam_min": 0.006130831181379155,
+  "lam_max": 6.114057213835972,
+  "kappa_A": 997.2639978092807,
+  "kappa_jacobi": 34.910220744596046,
+  "lam_min_jac": 0.07952093468704509,
+  "lam_max_jac": 2.776093383741349,
+  "kappa_amg": 2.2557997127033538,
+  "amg_levels": 4,
+  "amg_grid_complexity": 1.0360980523841505,
+  "amg_op_complexity": 1.036727394999083,
+  "bench": [
+    {
+      "label": "CG none",
+      "solver": "CG",
+      "iters": 275,
+      "info": 0,
+      "time_s": 0.022012875066138804,
+      "relerr": 3.695873292045907e-11
+    },
+    {
+      "label": "GMRES none",
+      "solver": "GMRES",
+      "iters": 327,
+      "info": 0,
+      "time_s": 0.11055862496141344,
+      "relerr": 1.3431970371378684e-10
+    },
+    {
+      "label": "CG Jacobi",
+      "solver": "CG",
+      "iters": 68,
+      "info": 0,
+      "time_s": 0.006318749976344407,
+      "relerr": 1.8968137571590085e-11
+    },
+    {
+      "label": "CG ILU",
+      "solver": "CG",
+      "iters": 4,
+      "info": 0,
+      "time_s": 0.0010819999733939767,
+      "relerr": 2.1512000945467013e-13
+    },
+    {
+      "label": "CG AMG-SA",
+      "solver": "CG",
+      "iters": 15,
+      "info": 0,
+      "time_s": 0.007553208968602121,
+      "relerr": 6.455836669859442e-12
+    },
+    {
+      "label": "CG AMG-RS",
+      "solver": "CG",
+      "iters": 17,
+      "info": 0,
+      "time_s": 0.011097499984316528,
+      "relerr": 2.205861604163723e-12
+    },
+    {
+      "label": "AMG-SA standalone",
+      "solver": "Vcycle",
+      "iters": 37,
+      "info": 0,
+      "time_s": 0.013626042054966092,
+      "relerr": 4.007046110797079e-12
+    }
+  ]
+}

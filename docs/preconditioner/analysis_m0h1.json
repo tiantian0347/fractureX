@@ -1,0 +1,83 @@
+{
+  "tag": "m0h1",
+  "n": 1384,
+  "nnz": 14490,
+  "max_d": 0.9924568024058016,
+  "load": 0.125,
+  "max_H": NaN,
+  "step": 30,
+  "symmetry_maxabs": 2.7755575615628914e-17,
+  "diag_min": 0.021892900486878863,
+  "diag_max": 4.43839313796072,
+  "diag_contrast": 202.73207474819498,
+  "row_nnz_mean": 10.469653179190752,
+  "spectrum_method": "dense",
+  "lam_min": 0.013150603083820623,
+  "lam_max": 5.369944270570035,
+  "kappa_A": 408.34205369461387,
+  "kappa_jacobi": 13.423276783937988,
+  "lam_min_jac": 0.20385003601376672,
+  "lam_max_jac": 2.7363354558285176,
+  "kappa_amg": 1.7959726376021996,
+  "amg_levels": 3,
+  "amg_grid_complexity": 1.0419075144508672,
+  "amg_op_complexity": 1.0378191856452725,
+  "bench": [
+    {
+      "label": "CG none",
+      "solver": "CG",
+      "iters": 141,
+      "info": 0,
+      "time_s": 0.004784499993547797,
+      "relerr": 5.58493553527656e-11
+    },
+    {
+      "label": "GMRES none",
+      "solver": "GMRES",
+      "iters": 118,
+      "info": 0,
+      "time_s": 0.01987183396704495,
+      "relerr": 1.6491372072379902e-10
+    },
+    {
+      "label": "CG Jacobi",
+      "solver": "CG",
+      "iters": 39,
+      "info": 0,
+      "time_s": 0.0016012080013751984,
+      "relerr": 4.494244065113814e-11
+    },
+    {
+      "label": "CG ILU",
+      "solver": "CG",
+      "iters": 3,
+      "info": 0,
+      "time_s": 0.00023600005079060793,
+      "relerr": 1.0958953488287267e-11
+    },
+    {
+      "label": "CG AMG-SA",
+      "solver": "CG",
+      "iters": 12,
+      "info": 0,
+      "time_s": 0.0021367500303313136,
+      "relerr": 9.007627768399567e-12
+    },
+    {
+      "label": "CG AMG-RS",
+      "solver": "CG",
+      "iters": 13,
+      "info": 0,
+      "time_s": 0.00325670896563679,
+      "relerr": 3.794021207581941e-12
+    },
+    {
+      "label": "AMG-SA standalone",
+      "solver": "Vcycle",
+      "iters": 26,
+      "info": 0,
+      "time_s": 0.003120000008493662,
+      "relerr": 1.0098554462816889e-11
+    }
+  ]
+}

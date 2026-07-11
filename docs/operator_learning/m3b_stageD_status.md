@@ -209,6 +209,49 @@ sweep 跑完后从 `eval_report.md` 抓这些指标做对比表：
 产物路径：`results/learn/m3b_hz_sweep_v3_full/{sweep_summary.json, rh_descent.png}`，
 每点 `{config.json, metrics.csv, eval_report.md, checkpoints/model_final.pt}`。
 
+### 5.4 B/B' rec 组（2026-07-11，**完成**）— 补齐 §F.3 4×4 矩阵
+
+同 §5.3 修好的配置（`multioutput_unet` + arcsinh + 300ep + 无量纲 λ_eq），
+但监督换成 **σ_h^rec**（`supervision_source='sigma_h_rec'`，残差在 arcsinh 空间算，见 §5.2 第三条），
+m1_pilot（19 训练 / 8 测试）：
+
+**B/B' (sigma_h_rec supervision, arcsinh, 300ep)**，held-out test=8：
+
+| λ_eq | rel_l2(d) | crack IoU | Hausdorff | σ rel_l2 | σ_peak rel_l2 | peak_load | σ_train |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| **0** | 0.559 | 0.352 | 21.0 | 0.987 | 0.990 | 0.519 | 0.900 |
+| 0.01 | 0.588 | 0.253 | 20.6 | 0.990 | 0.993 | 0.543 | 0.921 |
+| 0.1  | 0.796 | 0.016 | 53.5 | 0.991 | 0.993 | 0.539 | 0.925 |
+| 1.0  | 0.810 | 0.000 | nan  | 0.996 | 0.994 | 0.722 | 0.968 |
+
+**§F.3 4×4 矩阵（{HZ, rec} × {λ_eq}）— R̃_h 终值（`train_l_eq_norm` @ epoch 299）**：
+
+| supervision | λ_eq=0.01 | λ_eq=0.1 | λ_eq=1.0 |
+| --- | --- | --- | --- |
+| **HZ (σ_h)**    | 1.22 | 0.295 | 0.171 |
+| **rec (σ_h^rec)** | 0.679 | 0.264 | 0.154 |
+
+**判读（诚实，含否定结论）**：
+
+1. **"plateau vs descent" 假设被证伪（在 pilot 尺度）**：§6 预期 rec 组 R̃_h 应 plateau 在
+   Θ(h^m)（法向跳跃阻止 → 0），HZ 组降到噪声。实测 **rec R̃_h 和 HZ 一样单调降到 O(0.1)，
+   甚至更低**（0.679/0.264/0.154 vs HZ 1.22/0.295/0.171）——**没有 plateau**。
+2. **原因**：R_h 是在 **网络预测的 σ** 上算 divergence，不是在真 σ_h^rec 上算。网络在 19 样本下
+   把 σ 压平（§5.3 判读 3：σ head 根本没学出，σ rel_l2 恒 ~0.99），**平滑预测的 divergence
+   天然小** → R̃_h 能降。σ_h^rec 的 10⁴× 裂尖法向跳跃 pathology **压根没进到网络输出里**，
+   所以 §F.3 想暴露的"rec 不可平衡"对照 **在 σ 没学出来的 pilot 上看不到**。
+3. **damage 侧与 HZ 同构**：λ_eq↑ → damage 单调恶化（IoU 0.352→0.253→0.016→0），
+   rec baseline（λ_eq=0）也和 HZ baseline 一个量级（rel_l2 0.559 vs 0.515，IoU 0.352 vs 0.382）——
+   即 rec vs HZ 监督在 pilot 上 **damage 没有可区分差异**，σ 也都没学出。
+4. **结论**：4×4 矩阵在 pilot 上填满了，但**只能给否定结论**——plateau 对照要成立，
+   前提同 §5.3 结论 4：得先有 **σ 真学出来的 baseline**（S 档），
+   让 σ_h^rec 的裂尖跳跃真进到网络输出，R_h 才可能 plateau。**pilot 尺度下 HZ 与 rec 无法区分**。
+
+产物路径：`results/learn/m3b_rec_sweep/sigma_h_rec_leq{0,0p01,0p1,1}/`，
+每点 `{config.json, metrics.csv, eval_report.md, checkpoints/model_final.pt}`。
+（注：per-point 并行启动导致 `sweep_summary.json` 被互相覆盖，只剩 leq1 一行；4 点读数取自各
+`eval_report.md`。）
+
 ## 6. 下一步
 
 ### M3b.4 已完成 ✅

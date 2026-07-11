@@ -1,4 +1,6 @@
-# fracturex 论文 + 开发 主计划（2026-07-05 v0.9）
+# fracturex 论文 + 开发 主计划（2026-07-10 v1.0）
+
+> **v1.0 更新（2026-07-10）**：**ipfem (T6a) 插队到投稿队首**——`ipfem_paper.tex` 已从 v0.6 盘点的 1187 行扩到 **2345 行**，计划里当作核心 delta 的 **T6a.pre.A1（应变梯度耦合，Aifantis $O(\ell_s^2)$ 分量式）已全程落地**（§2.2 length-scale regularization + §3.2/§4.6 离散与误差分析扩展），**A3（penalty γ 敏感性 §5.4）、A4（Conclusion 已桥接 equilibrated estimator → T2）** 亦完成，另加计划外的 **§5.5 manufactured-solution 收敛验证**。→ 博论重合风险解除，ipfem **是当前唯一不卡服务器算例的稿子，本地即可收官**。**动作**：T6a 从 Phase 3 / 2027-06 提前到 **2026-07 立即投**（Comput. Mech./IJNME）；§1 表 T6a 行 ETA/状态改写、§3 清单投稿日改 2026-07、§4.3 勾掉 A1/A3/A4。**近期真实投稿顺序 = ipfem（现在）→ A（只欠本地 scp+图表，1–2 周）→ D12/B（卡算例，8 月）**。**仍欠**：A2（2 vs 4 阶直接对比，tex §2299 明写留 future work）、B5（SENT tension benchmark）——不阻塞本轮送审，作 rebuttal 储备。
 
 > **v0.9 更新（2026-07-05）**：**A 送审关键路径落到执行层 + 二投候选双路并行**——A 的瓶颈是 scp + 后处理一步，理论侧 A-2/3/4 从 remark 提到 §body（spectral majorant 拎成独立子节，避免 reviewer 觉得藏在 remark 里）；A 走 CMAME、arXiv 同日挂占坑。第二篇不押死 D12：**路径 α (D12)** 立刻起 shear aux **h1**（比 h2/h3 快，3–4 天过 peak 够 aux-vs-direct），**路径 β (B/T3)** M3b.4 服务器改 writer 立即起（不阻塞任何在跑 job）；两路平行 2 周，谁先齐谁投。§2 Phase 1 加执行层清单。
 
@@ -93,7 +95,7 @@
 | **T3** | 论文 B | HZ-supervised 算子学习 Stage D + 对照表 + 数据重生 | 🟢 主定理锁定 2026-06-02，欠 `equilibrium_residual_l2` stub 实现 | T1/T2 无关，可并行 | **JCP/CMAME** | 5–6 月 |
 | **T5** | 论文 D+ | 多水平/两层 Schwarz 预条件（博士论文第 6 章 + conf 胡齐芽） | 🟢 D12 Outlook 自己点名"contrast-adapted, interface-resolving coarse space"；paper_aux 数据可直接复用 | T1 tex 送审后启动 | D 论文续作 / SIMAX-NLAA | 8–12 月 |
 | **T4** | 论文 A+ | Hu-Ma 扩展 H-Z 空间 + NVB 处理 L-shape（博士论文第 3 章 + conf 马睿线 2） | 🔵 fealpy 需新增顶点分裂逻辑；工程量最重 | T2 送审后接入 | A 论文附加章 / 独立短文 | 12–14 月 |
-| **T6a** | 论文 C1 | 4 阶 PFM + 应变梯度 **on 标准/IP-FEM**（博论 IP-FEM 章直接延伸） | 🟢 博论已验可行；数值扩展 + 收敛率补齐即成稿 | T2 无关；预研阶段无阻塞 | Comput. Mech./IJNME | **8–12 月**（v0.5 新增，safe win） |
+| **T6a** | 论文 C1 | 4 阶 PFM + 应变梯度 **on 标准/IP-FEM**（博论 IP-FEM 章直接延伸） | 🟢 **tex 2345 行成稿**，应变梯度/penalty/aposteriori 桥接/manufactured-solution 全落地；不卡算例 | 无（本地即可投） | Comput. Mech./IJNME | **立即投（2026-07，v1.0 插队队首）** |
 | **T6b** | 论文 C2 | 4 阶 PFM + 应变梯度 **on Hu-Zhang mixed**（离散升级 + inf-sup 重证） | 🟢 卖点与 T5 正交（mesh budget vs niter）；inf-sup 非现成推论 | T2 送审后接入代码；预研阶段无阻塞 | Comput. Mech./IJNME | **12–16 月**（v0.5 后置，novel） |
 | **T7** | 理论 | 仿射不变 Lipschitz + NEPIN 用到 fracturex staggered（博士论文第 8–10 章 + conf §3 葛志昊） | 🔵 未开工，理论文 | T2/T3 完成 | SINUM/M2AN | 15–20 月 |
 | **T8** | 论文 E | 可微 HZ-PFM + AuTO 拓扑韧化 | 🔵 需 JAX 端到端 | T3 完成 + jax backend | ML4Science / PNAS 短篇 | 20–24 月 |
@@ -280,7 +282,7 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 | 3 | **B** | Balance-preserving neural operators for phase-field fracture via Hu-Zhang supervision | JCP / CMAME | 平衡监督 = 结构最优；R̃_h 平台 vs 下降曲线；诚实边界 T1/D1 | 2027-01 |
 | 4 | **D+** | Non-nested coarse spaces and two-level Schwarz preconditioning for Hu-Zhang phase-field fracture in the localized regime | SIMAX / NLAA | 龚博论 Ch 6 多水平 + 胡齐芽 GEP-coarse；D12 自己 Outlook 点名的续作 | 2027-03 |
 | 5 | **A+** | Extended Hu-Zhang element with vertex-tangent relaxation for adaptive elasticity at reentrant corners | Math. Comp. / M2AN | 合并 Hu-Ma 2020 + 龚博论 Ch 3 任意维奇异点代数定义 | 2027-08（v0.5 后移 1 档给 T6a 让路） |
-| 6 | **T6a** | Fourth-order phase-field fracture with strain-gradient elasticity via interior-penalty FEM | Comput. Mech. / IJNME | 博论 IP-FEM 章直接延伸；mesh budget 放松 + 尺寸效应；safe win 前置占坑 | **2027-06**（v0.5 新增） |
+| 6 | **T6a** | Fourth-order phase-field fracture with strain-gradient elasticity via interior-penalty FEM | Comput. Mech. / IJNME | 博论 IP-FEM 章直接延伸；mesh budget 放松 + 尺寸效应；应变梯度 delta 已入正文 | **2026-07（v1.0 提前，稿已齐，插队队首）** |
 | 7 | **T7** | Affine-invariant analysis of staggered Newton for Hu-Zhang phase-field fracture | SINUM / M2AN | 龚博论 Ch 8–10 NEPIN 框架用到相场 staggered，补严格能量下降证明 | 2027-09 |
 | 8 | **T6b** | Fourth-order phase-field fracture in Hu-Zhang mixed setting: inf-sup stability and equilibrated aposteriori | Comput. Mech. / IJNME / M2AN | σ_h ∈ H(div,S) + ∇²d 耦合 inf-sup 重证；接 T2 estimator；对 T6a 的 novel 升级 | **2027-12**（v0.5 新增） |
 | 9 | **E** | Differentiable Hu-Zhang phase-field for topology-toughening design | ML4Science / PNAS | JAX 端到端 + SH-com 最小模型 | 2028 |
@@ -317,11 +319,11 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 - [ ] T4.1 fealpy 复现 Hu-Ma §5.2 rotated L-shape（A 送审后启动）
 - [ ] T4.2 corner relaxation 装配模块升级（对接 `architecture/huzhang_corner_relaxation_design.md`）
 - [ ] T4.3 扩展 H-Z 空间嵌回 fracturex model2 + L-shape
-- [ ] **T6a.pre.A1** [核心 delta] `ipfem_paper.tex` §Model 加应变梯度耦合项 + §Discretization 加 IP 处理与稳定性（Aifantis + Ali 2024，v0.6 重排）
-- [ ] **T6a.pre.A2** `ipfem_paper.tex` 加"同 mesh 同 p 下 2 阶 vs 4 阶直接对比"章节 + 表（承接 Conclusion.③）
-- [ ] **T6a.pre.A3** `ipfem_paper.tex` 加 penalty γ 敏感性系统研究章节 + 表（承接 Conclusion.②）
-- [ ] **T6a.pre.A4** `ipfem_paper.tex` Conclusion 加 aposteriori-adaptive 展望段，桥接 T2 (A) equilibrated estimator（承接 Conclusion.⑤，T6a → T6b 桥梁）
-- [ ] **T6a.pre.B5** SENT tension（Miehe/Ambati 标准）新增算例，先在 fealpy_old 跑
+- [x] **T6a.pre.A1** [核心 delta] `ipfem_paper.tex` §2.2 应变梯度耦合项 + §3.2/§4.6 离散/误差分析扩展（Aifantis $O(\ell_s^2)$ 分量式，✅ 2026-07-10 落地）
+- [ ] **T6a.pre.A2** `ipfem_paper.tex` 加"同 mesh 同 p 下 2 阶 vs 4 阶直接对比"章节 + 表（承接 Conclusion.③）——⚠️ 未做，tex §2299 明写留 future work；rebuttal 储备，不阻塞送审
+- [x] **T6a.pre.A3** `ipfem_paper.tex` §5.4 penalty γ 敏感性系统研究章节 + 表（承接 Conclusion.②，✅ 2026-07-10 落地）
+- [x] **T6a.pre.A4** `ipfem_paper.tex` Conclusion 已加 aposteriori-adaptive 展望段桥接 T2 equilibrated estimator（✅ 2026-07-10 落地；另加计划外 §5.5 manufactured-solution 收敛验证）
+- [ ] **T6a.pre.B5** SENT tension（Miehe/Ambati 标准）新增算例，先在 fealpy_old 跑——⚠️ 未做（现有算例：rigid inclusion + notch + size-effect + manufactured）；rebuttal 储备，不阻塞送审
 - [ ] **T6a.pre.C6** fealpy3 里补齐 C⁰-IP + 4 阶 PFM 实现（现在 fealpy_old）——T6b 前置依赖
 - [ ] **T6b.pre.1** Hu-Zhang mixed 4 阶变分形式草稿：σ_h ∈ H(div,S) + ∇²d 耦合
 - [ ] **T6b.pre.2** inf-sup 稳定性草稿（4 阶下重证，非 D12/A 推论）
@@ -413,28 +415,28 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 
 ---
 
-## 附 A：T6a tex 现状盘点（`Tian/thesis/ip_fracture/ipfem_paper.tex`，v0.6 新增）
+## 附 A：T6a tex 现状盘点（`Tian/thesis/ip_fracture/ipfem_paper.tex`，v0.6 新增 / **v1.0 已更新为投稿态**）
 
-**tex 骨架**（1187 行）：
+**tex 骨架**（**2345 行**，v0.6 时 1187 行；v1.0 大部 gap 已闭合）：
 
-| 章节 | 现状 | v0.6 gap |
+| 章节 | 现状 | 剩余 gap（v1.0） |
 |---|---|---|
 | §1 Introduction | ✅ 完整 | — |
-| §2 Mathematical model（4 阶 PFM + hybrid split） | ✅ 完整 | **A1** 缺应变梯度耦合项（核心 delta） |
-| §3 Discretization and solution strategy（C⁰-IP + staggered） | ✅ 完整 | **A1** 缺应变梯度对应 IP 处理；**A3** penalty γ 直接选 5/10/20 未论证 |
-| §4 Error analysis（stability + coercivity + a priori $h^{p-1}$） | ✅ 完整 | — |
-| §5 Numerical experiments（circular hole + notch） | ✅ p × h 二维扫描全；六图齐 | **A2** 缺 2 阶 vs 4 阶直接对比章；**B5** 缺 SENT tension benchmark |
-| §6 Conclusion | ✅ 骨架 | **A4** 缺 aposteriori-adaptive 展望桥接 T2 |
+| §2 Mathematical model（4 阶 PFM + hybrid split + §2.2 length-scale） | ✅ **A1 应变梯度耦合已入正文** | — |
+| §3 Discretization and solution strategy（C⁰-IP + staggered + §3.2 length-scale 扩展） | ✅ **A1 对应 IP 处理已补** | — |
+| §4 Error analysis（stability + coercivity + a priori $h^{p-1}$ + §4.6 length-scale 扩展） | ✅ 完整 | — |
+| §5 Numerical experiments（rigid inclusion + notch + §5.3 size-effect + §5.4 penalty + §5.5 manufactured-solution） | ✅ **A3 penalty 敏感性已补**；manufactured-solution 加分项 | ⚠️ **A2** 缺 2 vs 4 阶直接对比（§2299 明写 future work）；**B5** 缺 SENT tension |
+| §6 Conclusion | ✅ **A4 aposteriori 展望桥接 T2 已加** | — |
 
 **Conclusion 自认五条 open extension 的处理**：
 
-| 序号 | 内容 | v0.6 处理 |
+| 序号 | 内容 | 状态（v1.0） |
 |---|---|---|
 | ① | 参考解精细化（更细 mesh 或 benchmark） | ⏭️ 跳过（现有自参考够用） |
-| ② | penalty γ 敏感性 | ✅ **A3 补** |
-| ③ | 同 mesh 同 p 下 2 阶 vs 4 阶 | ✅ **A2 补** |
+| ② | penalty γ 敏感性 | ✅ **A3 已补（§5.4）** |
+| ③ | 同 mesh 同 p 下 2 阶 vs 4 阶 | ⚠️ **A2 未做**——tex §2299 留 future work，rebuttal 储备 |
 | ④ | 3D + solver scalability | ⏭️ v2 或跳过（工程量大） |
-| ⑤ | aposteriori-adaptive | ✅ **A4 桥接**——正好接 T2 送审后 estimator，作 T6a → T6b 桥梁 |
+| ⑤ | aposteriori-adaptive | ✅ **A4 已桥接（Conclusion 提 equilibrated estimator → T2）** |
 
 **结果目录**（`ipfem_fp_results/`）：
 - `ipfem_fp_model0/` — circular hole，p=2,3,4 × 多 h，disp_node + results.txt 齐

@@ -29,7 +29,22 @@
 
 三者**共用** `fealpy.backend`（NumPy↔PyTorch 可切）+ 共用 `cases/`（model0/model2/square_tension…）网格与算例基座。**"三种离散跑在同一底座上"把"解耦架构"这个软件贡献从'嘴上说'变成'摆出来看'**——并行组装 + 双块求解器是其中的性能亮点，不是全部卖点。
 
-**边界规则（3 篇方法论文）**：框架论文引三篇方法论文讲方法、自己只讲实现+性能+统一。标准→田博论；HZ→D12；IP→T6a。三篇管"方法+理论+数值"，T9 管"一个平台统一实现+跑得快"，零重叠。
+#### 1.1.1 能力矩阵（2026-07-11 二次补，脊梁再加宽）
+
+三离散只是第一根轴。用户核实平台**同时具备高次 + 多种自适应 + 2D/3D**，脊梁升级为**四维能力矩阵**，一张表把"同一底座撑起多少组合"摆出来：
+
+| 轴 | 取值 | 代码坐实 |
+|---|---|---|
+| **离散范式** | 标准 Lagrange / HZ 混合 / C⁰-IP 4 阶 | `main_solve.py` / `huzhang_phasefield_staggered.py` / `ipfem_phasefield_solver.py` |
+| **多项式次数 p** | 高次可调 | 标准 `p`（default 1）；IP `p_disp/p_phase`；HZ 元次可选 |
+| **自适应** | RG（red-green）/ NVB（newest-vertex-bisection）+ 粗化 | `mesh/halfedge_mesh.py`（`refine_triangle_rg` 604 / `refine_triangle_nvb` 801 / coarsen） |
+| **维数** | 2D（三离散全）/ 3D（标准） | `cases/phase_field/model3d.py`（标准 3D） |
+
+**演示矩阵（挑代表格，不追求笛卡尔全填）**：标准×{model0/1/2, L-shape, 3D}、HZ×{model0/2, L-shape}、C⁰-IP×{L-shape, notch 4 阶}；高次 p 至少标准+IP 各出一档；自适应 RG/NVB 各一条 SENT/L-shape 收敛曲线。
+
+> ⚠️ **自适应边界（硬红线）**：`adaptivity/equilibrated_estimator.py` = **A 线（T2）**的均衡估计子机器。框架论文里自适应**只能"演示能跑 + 网格图 + DOF-vs-error 曲线"**，**方法一律引 A/T2 + 田博论 recovery-based AFEM，绝不 claim 估计子理论/可靠性有效性证明**（那是 A 的头条）。RG/NVB 的 refine/coarsen 本身是平台设施，可正常讲实现。
+
+**边界规则（3 篇方法论文）**：框架论文引三篇方法论文讲方法、自己只讲实现+性能+统一。标准→田博论；HZ→D12；IP→T6a；**自适应估计子→A/T2**。四条方法线管"方法+理论+数值"，T9 管"一个平台统一实现+跑得快"，零重叠。
 
 ---
 
@@ -57,12 +72,19 @@
 计时钩子有，但**没有成体系的 benchmark**：组装墙钟 vs 线程数 / vs 网格规模 / 缓存命中加速比 —— 软件/性能论文的命脉曲线**现在是空的**。
 
 - ✅ **好消息**：组装 benchmark 是**本地几分钟~几十分钟就能跑完**的短实验，不卡服务器，不阻塞 D12/A。这篇的实验反而是四篇里最快出的。
-- 待补实验清单（草案）：
+- 待补实验清单（草案，2026-07-11 定稿）：
   1. **strong scaling**：固定网格，组装墙钟 vs `FRACTUREX_ASSEMBLY_NPROC`（1→N 核）
   2. **weak scaling / 规模曲线**：组装墙钟 vs 网格 DOF（多档 h）
-  3. **缓存命中加速比**：d-无关几何内核缓存 命中 vs 冷启，跨 staggered 步复用收益
-  4. **standard vs effective-stress** 两本构分支组装成本对照
-  5. **求解器侧**：相场 SA-AMG 迭代数（D12 已有 12/15/18，可复用/引用）+ ILU-vs-AMG（`ilu_vs_amg.py` 已有）
+  3. **p-version 轴（新增，"高次"引入）**：组装墙钟 vs 多项式次数 p（标准 `p`、IP `p_disp/p_phase` 各扫一档），量高次单元的组装成本增长
+  4. **缓存命中加速比**：d-无关几何内核缓存 命中 vs 冷启，跨 staggered 步复用收益
+  5. **standard vs effective-stress** 两本构分支组装成本对照
+  6. **求解器侧**：相场 SA-AMG 迭代数（D12 已有 12/15/18，可复用/引用）+ ILU-vs-AMG（`ilu_vs_amg.py` 已有）
+
+- **算例矩阵（用户 2026-07-11 授权定死）**：
+  - 标准 Lagrange：`model0` / `model1` / `model2` + **L-shape**（`phase_field/Lshape_cyclic.py`）+ **3D**（`phase_field/model3d.py`）
+  - C⁰-IP：`model0/1/2` + **L-shape**（IP 侧）
+  - HZ 混合：`model0` / `model2`（+ 可选 `damage_model/fracture_huzhang_Lshape_example.py`）
+  - 3D 仅标准有限元跑；L-shape 仅标准 + IP 跑（HZ L-shape 视时间可选）
 
 ---
 
@@ -128,7 +150,10 @@
 ## 9. 待办 / 下一步
 
 - [x] **期刊拍板**（§5）—— ✅ 首选 **CiCP**（与 FEALPy v3 同刊），待跟老师核实一句定稿
-- [ ] scaling benchmark 脚本设计 + 跑数（§3 清单五项）
+- [x] **scaling benchmark 脚本**（柱一 = HZ 组装器）—— ✅ 写成并本地冒烟通过：`fracturex/tests/hz_assembly_scaling_benchmark.py`，四轴 strong/size/pver/formulation 全跑通，孤立 `assemble()` 计时（不跑 staggered），出 JSON + 表。**下一步 = 换细网格档正式跑数**（小网格并行增益吃在线程开销里，见下）
+  - ⚠️ 两个 API 硬约束（踩过坑）：**① HZ 元 p≥3**（u 空间次数 = p−1；p=2 触 fealpy `div_basis` 角点 dof bug）；**② 计时前必须 `damage.on_build(discr, view, case)`**，否则 `_gfun=None`（driver 的 `initialize()` 干这活，孤立组装要自己补）。
+  - ⚠️ 诚实观察：strong-scaling 在 784-cell 小网格只有 ~1.1×——`TM'MTM` 列块并行 matmul 的收益要**细网格大 DOF** 才显现，正式图必须跑细档 `hmin`。
+- [ ] **三离散 p-version 横扫脚本**（标准 Lagrange / C⁰-IP）—— 各求解器 API 不同，另起第二脚本（HZ 脚本头已注明）
 - [ ] 架构文档 `huzhang_phasefield_architecture.en.md` → 论文体例重组
 - [ ] D12 Intro 是否补一句相场块说明（属 D12 收稿，见 MASTER §建议1，另议）
 - [x] 把 T9/F 登记进 `MASTER_PAPER_DEV_PLAN.md` §1 总表 + §3 论文清单 + MEMORY 索引（✅ 2026-07-11）
@@ -144,6 +169,8 @@
 - 相场组装器：`fracturex/fracturex/assemblers/phasefield_assembler.py`
 - aux-space fast solver：`fracturex/fracturex/utilfuc/huzhang_fast_solver.py`
 - 架构文档：`fracturex/docs/architecture/huzhang_phasefield_architecture.en.md`
+- **scaling benchmark 脚本（柱一，已成）**：`fracturex/fracturex/tests/hz_assembly_scaling_benchmark.py`（结果落 `results/benchmarks/hz_assembly/`）
+- 计时 harness 模板（脚本据此写）：`fracturex/fracturex/tests/phasefield_model0_huzhang.py`（`_install_assembly_timer`）
 - ILU-vs-AMG：`fracturex/docs/preconditioner/scripts/ilu_vs_amg.py`
 - ICCES 报告：`tiantian0347.github.io/content/publication/2025-fracturex-icces.md`
 - **FEALPy v3 平台论文（底座引擎，同刊参照）**：Zheng, Wei* et al., *FEALPy v3: A Cross-platform Intelligent Numerical Simulation Engine*, Communications in Computational Physics, DOI `10.4208/cicp.OA-2025-0327`

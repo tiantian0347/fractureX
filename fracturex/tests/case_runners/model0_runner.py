@@ -154,10 +154,10 @@ def run_model0_one(args: Model0RunArgs) -> Path:
     )
 
     elastic_assembler = HuZhangElasticAssembler(
-        discr, case, damage, formulation="standard", assembly_parallel=False
+        discr, case, damage, formulation="standard"
     )
     phase_assembler = PhaseFieldAssembler(
-        discr, case, damage, debug=False, assembly_parallel=False
+        discr, case, damage, debug=False
     )
 
     recorder = RunRecorder(

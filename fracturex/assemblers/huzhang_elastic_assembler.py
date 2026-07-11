@@ -357,7 +357,7 @@ class HuZhangElasticAssembler:
         self.damage = damage
         self.q = q  # 若 None，integrator 内部用默认
         self.formulation = str(formulation).lower()
-        self.assembly_parallel = _env_flag("FRACTUREX_ASSEMBLY_PARALLEL", False) if assembly_parallel is None else bool(assembly_parallel)
+        self.assembly_parallel = _env_flag("FRACTUREX_ASSEMBLY_PARALLEL", True) if assembly_parallel is None else bool(assembly_parallel)
         self.assembly_nproc = (
             _env_int("FRACTUREX_ASSEMBLY_NPROC", _default_assembly_nproc())
             if assembly_nproc is None

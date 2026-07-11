@@ -175,7 +175,9 @@ def main():
 
     fields = ["step", "load", "nc", "dof_sigma", "D_max", "max_d", "reaction",
               "iters", "converged", "n_corr", "refine_events", "n_marked_total",
-              "t_step_s", "rss_now_mb", "rss_peak_mb", "eta_tau", "eta_dg"]
+              "t_step_s", "rss_now_mb", "rss_peak_mb", "eta_tau", "eta_dg",
+              "t_elastic_assemble_s", "t_elastic_solve_s",
+              "t_phase_assemble_s", "t_phase_solve_s"]
     fh = open(csv_path, "w", newline="")
     writer = csv.DictWriter(fh, fieldnames=fields); writer.writeheader()
 
@@ -300,12 +302,18 @@ def main():
                    converged=bool(info.converged), n_corr=n_corr,
                    refine_events=refine_events, n_marked_total=n_marked_total,
                    t_step_s=t_step, rss_now_mb=_rss_now_mb(), rss_peak_mb=_rss_peak_mb(),
-                   eta_tau=eta_tau, eta_dg=eta_dg)
+                   eta_tau=eta_tau, eta_dg=eta_dg,
+                   t_elastic_assemble_s=float(info.meta.get("t_elastic_assemble_s", float("nan"))),
+                   t_elastic_solve_s=float(info.meta.get("t_elastic_solve_s", float("nan"))),
+                   t_phase_assemble_s=float(info.meta.get("t_phase_assemble_s", float("nan"))),
+                   t_phase_solve_s=float(info.meta.get("t_phase_solve_s", float("nan"))))
         writer.writerow(row); fh.flush(); n_done += 1
         cert_str = f" η_τ={eta_tau:.3e}(DG {eta_dg:.2e})" if cert_every > 0 and (s % cert_every == 0) else ""
         print(f"[PC] step={s:02d} load={load:.3e} nc={nc} dofσ={row['dof_sigma']} "
               f"𝒟max={D_max:.2f} max_d={max_d:.3f} R={R:.3e} iters={info.iters} "
               f"corr={n_corr} refev={refine_events} t={t_step:.1f}s "
+              f"tEA={row['t_elastic_assemble_s']:.1f} tES={row['t_elastic_solve_s']:.1f} "
+              f"tPA={row['t_phase_assemble_s']:.1f} tPS={row['t_phase_solve_s']:.1f} "
               f"rss={row['rss_now_mb']:.0f}/{row['rss_peak_mb']:.0f}MB{cert_str}", flush=True)
 
         if use_failure_stop and peak_R > 0 and s >= 2 and R < drop_frac * peak_R and max_d > 0.95:

@@ -68,11 +68,12 @@ def eta_from_state(discr, *, lam: float, mu: float, k_res: float = 1e-6,
     return {"eta": ind["eta"], "eta_T": ind["eta_T"], "cen": cen}
 
 
-def make_assemblers(discr, case, damage, *, parallel: bool = False
+def make_assemblers(discr, case, damage, *, parallel: Optional[bool] = None
                     ) -> Tuple[HuZhangElasticAssembler, PhaseFieldAssembler]:
     """在（重建后的）discr 上新建弹性/相场装配器，丢弃旧的空间相关缓存。
 
-    输入: discr/case/damage；parallel 是否并行装配。
+    输入: discr/case/damage；parallel 是否并行装配（None 时用装配器默认，即并行，
+          可用环境变量 FRACTUREX_ASSEMBLY_PARALLEL=0 强制串行）。
     输出: (elastic_assembler, phase_assembler)，均绑定到传入的 discr。
     """
     el = HuZhangElasticAssembler(discr, case, damage,

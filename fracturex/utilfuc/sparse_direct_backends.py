@@ -60,9 +60,11 @@ def solve_direct_mumps(A: Any, rhs: Any) -> np.ndarray:
             "MUMPS requires the `python-mumps` distribution (import name `mumps`). "
             "See https://pypi.org/project/python-mumps/ (conda-forge recommended)."
         ) from exc
+    import os
+    ordering = os.getenv("FRACTUREX_MUMPS_ORDERING", "amd").strip().lower()
     Acsc = _matrix_to_scipy_csr(A).tocsc()
     b = np.asarray(rhs, dtype=np.float64).reshape(-1)
     ctx = mumps.Context()
-    ctx.analyze(Acsc, ordering="pord")
+    ctx.analyze(Acsc, ordering=ordering)
     ctx.factor(Acsc)
     return np.asarray(ctx.solve(b), dtype=np.float64).reshape(-1)

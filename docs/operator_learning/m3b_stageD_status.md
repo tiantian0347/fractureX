@@ -259,25 +259,55 @@ m1_pilot（19 训练 / 8 测试）：
 `scripts/datasets/add_stress_rec.py` — server 上后台跑 27 样本批量生成
 （2026-07-05 13:37，nohup，log `/tmp/add_stress_rec.log`）。
 
-### M3b.5 B/B' 组（待 A/A' 完 + 批量完 之后跑）
+### M3b.5 B/B' 组 已完成 ✅（2026-07-11，结果见 §5.4）
 
 ```bash
-# 单独 B 组（σ_h^rec supervision，λ_eq=0 baseline）
 python scripts/datasets/run_m3b_lambda_eq_sweep.py \\
   --dataset-dir results/datasets/m1_pilot \\
   --out-dir     results/learn/m3b_rec_sweep \\
-  --supervision sigma_h_rec \\
-  --sigma-transform arcsinh \\   # 压缩裂尖 10⁴× 重尾
-  --epochs 100 --lambda-eq 0 0.01 0.1 1.0
+  --supervision sigma_h_rec --sigma-transform arcsinh \\
+  --epochs 300 --lambda-eq 0 0.01 0.1 1.0
 ```
+
+### M3b.6 A 组（S 档 ~1152 样本 λ_eq 净收益）— **进行中，遇 pipeline 瓶颈**
+
+目标：把 §5.3 修好的配置搬到 **m2_S（806 训练 / 346 测试）**，才是能读出"平衡正则净收益"
+的场景（pilot 上 σ 没学出，λ_eq 只伤 damage，见 §5.3 结论 4）。
+
+```bash
+# out=results/learn/m3b_S_hz_sweep，σ_h / arcsinh / 120ep / batch16
+OMP_NUM_THREADS=1 python scripts/datasets/run_m3b_lambda_eq_sweep.py \\
+  --dataset-dir results/datasets/m2_S \\
+  --out-dir     results/learn/m3b_S_hz_sweep \\
+  --supervision sigma_h --sigma-transform arcsinh \\
+  --epochs 120 --batch-size 16 --lambda-eq 0 0.01 0.1 1.0
+```
+
+**遇到的 pipeline 瓶颈（2026-07-12 定位 + 修复）**：
+
+- **现象**：S 档 job 在纯 CPU（无 GPU）上 duty ≈ 5%（0.05 核/job），换线程数
+  （OMP 32→1）**完全无效**，14h 一个点都没跑完。
+- **排除的假因**：cgroup CPU quota / CFS throttle（`cpu.max` 未设）、磁盘 I/O 等待
+  （State 40/40 = R，本地 ext4 非 NFS）、DataLoader worker 数（`num_workers=0` 但瓶颈不在此）。
+- **真因**：`datasets.py::__getitem__` 每次访问都 `np.load` 一个 `.npz`（zip 归档），
+  **单线程 GIL-bound 解压**。`num_workers=0` 下把 ~T·N·epochs ≈ 97k 次 zip 解压
+  串到训练线程里，把 conv forward/backward 饿死（py-spy 反复抓在 `zipfile._read1` /
+  `numpy._read_array_header`）。
+- **修复**：`PhaseFieldOperatorDataset` 加 `self._cache`，`__getitem__` 首次解压后
+  memoize 整个 sample dict，后续 epoch 命中 RAM（读路径无 per-access 随机，缓存安全；
+  m2_S 全展开 << 2TB 内存）。**待提交 git → server pull → 重跑 A**。
 
 ### 后续实验设计（paper §F.3 / §G）
 
 "plateau vs descent" 图（R̃_h vs epoch）：
-- HZ (A/A') 组 R̃_h 应下降到训练噪声（σ_h ∈ H(div,S) 可平衡）
-- σ_h^rec (B/B') 组 R̃_h 应 plateau 在 Θ(h^m)（法向跳跃阻止 R̃_h → 0）
+- 原假设：HZ (A/A') 组 R̃_h 降到训练噪声（σ_h ∈ H(div,S) 可平衡）；
+  σ_h^rec (B/B') 组 R̃_h plateau 在 Θ(h^m)（法向跳跃阻止 R̃_h → 0）。
+- **pilot 实测（§5.4）：假设在 pilot 尺度被证伪** —— rec 组 R̃_h 与 HZ 一样单调下降，
+  无 plateau。因 R_h 在**网络预测的 σ** 上算，19 样本下 σ 没学出（被压平），σ_h^rec 的裂尖
+  法向跳跃根本没进网络输出。**要观察到 plateau，前提是 σ 真学出来的 S 档 baseline**
+  （M3b.6，待缓存修复后重跑）。
 
 指标产出：
 - 每个 sweep 点 `sweep_summary.json` 里的 `sigma_relative_l2`, `sigma_peak_relative_l2`
-- 4×4 矩阵（{HZ, rec} × {λ_eq=0, 0.01, 0.1, 1.0}）
-- R̃_h 收敛曲线对比图（附录 F.3 主图）
+- 4×4 矩阵（{HZ, rec} × {λ_eq=0, 0.01, 0.1, 1.0}）✅ pilot 已填（§5.3 HZ + §5.4 rec）
+- R̃_h 收敛曲线对比图（附录 F.3 主图）—— **待 S 档 A 组跑完后出 HZ-vs-rec 对比**

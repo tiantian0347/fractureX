@@ -457,7 +457,9 @@ class PhaseFieldAssembler:
         self.damage = damage
         self.q = q
         self.debug = bool(debug)
-        env_parallel = str(os.getenv("FRACTUREX_ASSEMBLY_PARALLEL", "1")).strip().lower() in ("1", "true", "yes", "on")
+        # Serial default (D14 crossover probe): parallel phase assembly is 3–22× slower
+        # on tPA (p=1 damage, tiny per-cell work). Override with FRACTUREX_ASSEMBLY_PARALLEL=1.
+        env_parallel = str(os.getenv("FRACTUREX_ASSEMBLY_PARALLEL", "0")).strip().lower() in ("1", "true", "yes", "on")
         self.assembly_parallel = env_parallel if assembly_parallel is None else bool(assembly_parallel)
         env_nproc = os.getenv("FRACTUREX_ASSEMBLY_NPROC")
         try:

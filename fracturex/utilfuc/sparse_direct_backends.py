@@ -52,6 +52,14 @@ def solve_direct_mumps(A: Any, rhs: Any) -> np.ndarray:
     Returns
     -------
     ndarray, shape (n,)
+
+    Notes
+    -----
+    Ordering default is ``amd`` (env ``FRACTUREX_MUMPS_ORDERING`` overrides).
+    Bench (model2 nx=24 post-crack HZ p=3, n=33171, quiet machine, 2026-07-11):
+    amd 59s ≈ auto 63s < metis 70s ≪ pord 114s ≈ scotch 154s ≈ pardiso 112s.
+    The old hardcoded ``pord`` was ~1.9× slower than ``amd`` at identical
+    residual — worst practical choice. See D14 §3.
     """
     try:
         import mumps  # type: ignore[import-untyped]
@@ -60,9 +68,11 @@ def solve_direct_mumps(A: Any, rhs: Any) -> np.ndarray:
             "MUMPS requires the `python-mumps` distribution (import name `mumps`). "
             "See https://pypi.org/project/python-mumps/ (conda-forge recommended)."
         ) from exc
+    import os
+    ordering = os.getenv("FRACTUREX_MUMPS_ORDERING", "amd").strip().lower()
     Acsc = _matrix_to_scipy_csr(A).tocsc()
     b = np.asarray(rhs, dtype=np.float64).reshape(-1)
     ctx = mumps.Context()
-    ctx.analyze(Acsc, ordering="pord")
+    ctx.analyze(Acsc, ordering=ordering)
     ctx.factor(Acsc)
     return np.asarray(ctx.solve(b), dtype=np.float64).reshape(-1)

@@ -87,8 +87,22 @@ def _make_elastic_solver(name):
     return HuZhangPhaseFieldStaggeredDriver.linear_solver(m), m
 
 
+def _warn_mkl_oversubscription():
+    """Advisory: uncapped BLAS threads × parallel assembly workers thrash on the
+    small HZ solves (D14: tES↑2.8×, tEA↑4× at nx=24). Threads must be set before
+    Python starts, so this only warns — set MKL_NUM_THREADS/OMP_NUM_THREADS=8."""
+    mkl = os.environ.get("MKL_NUM_THREADS"); omp = os.environ.get("OMP_NUM_THREADS")
+    try: mkl_n = int(mkl) if mkl else None
+    except ValueError: mkl_n = None
+    if mkl_n is None or mkl_n > 16:
+        print(f"[warn] MKL_NUM_THREADS={mkl!r} OMP_NUM_THREADS={omp!r}: unset or >16 → "
+              f"BLAS oversubscription risk (D14 §3). Recommend "
+              f"`MKL_NUM_THREADS=8 OMP_NUM_THREADS=8`.", flush=True)
+
+
 def main():
     bm.set_backend("numpy")
+    _warn_mkl_oversubscription()
     # Anderson 默认开（depth=5）：归因实测它把临界步 staggered 收敛、墙钟 6.98h→1.13h(6×)、
     # 且峰值更贴参照（v2 无 Anderson +2.8% → -1.5%）。显式 FRACTUREX_ANDERSON_DEPTH=0 可关。
     os.environ.setdefault("FRACTUREX_ANDERSON_DEPTH", "5")
@@ -128,6 +142,12 @@ def main():
     tol_coarse = _f("FRACTUREX_TOL_COARSE", tol_fine)
     # (a) 严格 Θ 认证：每 cert_every 个接受步做一次连续 primal 重解 + η_τ（0=关，默认关，贵）。
     cert_every = _i("FRACTUREX_CERTIFY_EVERY", 0)
+    # 断点续跑：RESTART_NPZ 含 node/cell/d（vtu 转换而来），从 RESTART_STEP 起算载荷。
+    # 与 in-run 加密后流程同构：恢复 (mesh,d)，H=None 由 solve 重建；r_hist 相场路径不读，置 0。
+    # PEAK_R0 给 failure-stop 播种历史峰值（续跑段的局部峰值可能低于前段真峰）。
+    restart_npz = os.environ.get("FRACTUREX_RESTART_NPZ", "").strip()
+    start_step = _i("FRACTUREX_RESTART_STEP", 0)
+    peak_R0 = _f("FRACTUREX_PEAK_R0", 0.0)
     outdir = os.environ.get("FRACTUREX_OUTDIR",
                             "results/adaptive_m3_pc_model2" if is_model2
                             else "results/adaptive_m3_pc_model1")
@@ -146,8 +166,26 @@ def main():
     print(f"[cfg-case] {'model2(shear x-stretch)' if is_model2 else 'square(model1 tension)'} "
           f"reaction_dir={case.reaction_direction()}", flush=True)
     mesh = case.make_mesh()
+    _restart_d = None
+    if restart_npz:
+        from fealpy.mesh import TriangleMesh
+        dat = np.load(restart_npz)
+        node = bm.asarray(np.asarray(dat["node"], dtype=np.float64))
+        cell = bm.asarray(np.asarray(dat["cell"], dtype=np.int64))
+        _restart_d = np.asarray(dat["d"], dtype=np.float64).reshape(-1)
+        mesh = TriangleMesh(node, cell)
+        case.mesh = mesh
+        case._mark_boundary_sets(mesh)
+        print(f"[restart] npz={restart_npz} NN={len(node)} NC={len(cell)} "
+              f"start_step={start_step} peak_R0={peak_R0:.3e}", flush=True)
     discr = HuZhangDiscretization(case=case, p=3, damage_p=1,
                                   use_relaxation=True).build(mesh=mesh)
+    if _restart_d is not None:
+        if len(_restart_d) != len(discr.state.d[:]):
+            raise ValueError(f"restart d 长度 {len(_restart_d)} != 节点数 "
+                             f"{len(discr.state.d[:])}（damage_p=1 应等于 NN）")
+        discr.state.d[:] = bm.clip(bm.asarray(_restart_d), 0.0, 1.0)
+        discr.state.r_hist[:] = 0.0
     damage = PhaseFieldDamageModel(density_type="AT2", degradation_type="quadratic",
                                    split="hybrid", eps_g=k_res)
     el_asm, ph_asm = make_assemblers(discr, case, damage)
@@ -182,9 +220,9 @@ def main():
     writer = csv.DictWriter(fh, fieldnames=fields); writer.writeheader()
 
     t0_all = time.perf_counter()
-    peak_R = 0.0
+    peak_R = peak_R0
     n_done = 0
-    for s in range(max_steps):
+    for s in range(start_step, max_steps):
         load = float(s * du)
         t_s0 = time.perf_counter()
         state = discr.state

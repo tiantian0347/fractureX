@@ -12,7 +12,7 @@
 |---|---|---|
 | **定位** | ✅ **软件/框架论文** | 不走"性能优化方法"路线（那要补 MPI/GPU，工作量翻几倍） |
 | **范围** | ✅ **宽版 = 整个 FractureX 平台完整框架** | **脊梁 = 一套解耦架构承载三种离散范式**（标准 Lagrange / HZ 混合 / C⁰-IP 4 阶）；窄版（只并行组装+相场 AMG 两柱）浪费"首次存档"身位，两柱降级为性能亮点 |
-| **期刊** | 🟢 **CiCP（首选，与 FEALPy v3 同刊）** | FEALPy v3 底座引擎发在 CiCP（`10.4208/cicp.OA-2025-0327`，Wei 通讯 + 田甜共著）；老师所提最可能落点。备选 CAMWA/CPC，见 §5 |
+| **期刊** | 🟢 **Advances in Engineering Software（AES）** | ~~CiCP~~ **已出局**（用户 2026-07-11 决定不投）。AES = 工程软件平台向、IF 稍高，平台论文对口；并列第一梯队 CAMWA；备选 CPC/FEAD，见 §5 |
 | **与 ICCES 会议稿关系** | ✅ **独立新写** | ICCES2025 **只投了摘要 + 作报告，无正式论文稿**（DOI `10.32604/icces.2025.011175`）；照例引一句作 "prior presentation" 透明声明即可，无版权/重叠问题 |
 
 **"宽版 + 首次存档"的核心 novelty 抓手**：FractureX 此前没有任何存档描述，这是**第一篇完整介绍该框架**的论文，novelty 不必只靠两根柱子撑。
@@ -97,19 +97,21 @@
 
 ---
 
-## 5. 期刊候选（待定，§1 点 2 未决）
+## 5. 期刊候选（2026-07-11 定：CiCP 出局 → 主投 AES）
 
-按"框架 + 三离散 + 性能 + 算例"画像的契合度排序：
+按"框架 + 三离散 + 性能 + 算例 + 无 HPC"画像的契合度排序：
 
 | 排名 | 期刊 | 体例 | 节奏 | IF/分量 | 适配 |
 |---|---|---|---|---|---|
-| **①** | **Communications in Computational Physics (CiCP)** | 方法+软件+物理应用 | 中 | 中 | **首选，几乎确定是老师提的**——FEALPy v3（本框架底座引擎，Wei 通讯 + 田甜共著）正发在 CiCP（DOI `10.4208/cicp.OA-2025-0327`）；FractureX 建于 FEALPy 之上，同门同刊最顺、审稿人熟悉背景 |
-| ② | **Computers & Math. with Applications (CAMWA)** | 方法+软件+算例，中 | 中 | 中高 | 备选——国内计算数学组框架论文常见去处 |
-| ③ | **Computer Physics Communications (CPC)** | 长，要 program summary | 慢 | 重、IF 高 | 要存档性/program library 时 |
-| ④ | **Journal of Computational Science (JOCS)** | 计算框架向，中 | 中 | 中 | 折中候选 |
-| ⑤ | **SoftwareX** | 短、强制开源 | 快 | 轻 | 图快时 |
+| **①** | **Advances in Engineering Software (AES)** | 工程软件平台向，全长 | 中 | 中高 | ✅ **主投**——明确"工程软件开发"向，平台论文对口，无 program-summary 负担 |
+| ② | **Computers & Math. with Applications (CAMWA)** | 方法+软件+算例，全长 | 中 | 中高 | 并列第一梯队——计算数学组框架论文常见去处，改动最小 |
+| ③ | **Computer Physics Communications (CPC)** | 长，要 program summary + 代码入库 | 慢 | 重、IF 高 | "首次存档"最契合，但体例最重 |
+| ④ | **Finite Elements in Analysis & Design (FEAD)** | FE 方法+软件+算例 | 中 | 中 | 三离散 FE 底座对味 |
+| ⑤ | ~~CiCP~~ | ~~方法+软件+物理~~ | — | — | ❌ **出局**（用户决定不投）；FEALPy v3 同刊背景不再作卖点 |
+| — | SoftwareX / JOSS | 短、强制开源 | 快 | 轻 | 短体例浪费"首次存档"身位，不作主投 |
 
-**决策**：✅ **首选 CiCP（与 FEALPy v3 同刊）**——底座引擎同刊，是老师此前所提的最可能落点。回头跟老师核实一句即定稿。
+**决策**：✅ **主投 AES（Advances in Engineering Software）**——CiCP 已弃；AES 平台论文对口、无 Program Summary 负担。CAMWA 并列备胎，CPC 留给想要最强存档性时。
+
 
 ---
 
@@ -153,7 +155,8 @@
 - [x] **scaling benchmark 脚本**（柱一 = HZ 组装器）—— ✅ 写成并本地冒烟通过：`fracturex/tests/hz_assembly_scaling_benchmark.py`，四轴 strong/size/pver/formulation 全跑通，孤立 `assemble()` 计时（不跑 staggered），出 JSON + 表。**下一步 = 换细网格档正式跑数**（小网格并行增益吃在线程开销里，见下）
   - ⚠️ 两个 API 硬约束（踩过坑）：**① HZ 元 p≥3**（u 空间次数 = p−1；p=2 触 fealpy `div_basis` 角点 dof bug）；**② 计时前必须 `damage.on_build(discr, view, case)`**，否则 `_gfun=None`（driver 的 `initialize()` 干这活，孤立组装要自己补）。
   - ⚠️ 诚实观察：strong-scaling 在 784-cell 小网格只有 ~1.1×——`TM'MTM` 列块并行 matmul 的收益要**细网格大 DOF** 才显现，正式图必须跑细档 `hmin`。
-- [ ] **三离散 p-version 横扫脚本**（标准 Lagrange / C⁰-IP）—— 各求解器 API 不同，另起第二脚本（HZ 脚本头已注明）
+- [x] **三离散 p-version 横扫脚本**（标准 Lagrange / C⁰-IP）—— ✅ 写成并冒烟通过：`fracturex/tests/discretization_pversion_benchmark.py`。共享单位方结构网格，孤立组装计时三核：**standard-elastic**（`MainSolve` 位移刚度 vs p_disp）/ **ip-elastic**（IP 同款位移刚度 vs p_disp，对照）/ **ip-phase4th**（`IPFEMPhaseFieldSolver._assemble_phase_lhs`：biharmonic + 内罚 4 阶核 vs p_phase）。9 行 p=1-3 / 2-4 全跑通，4 阶核增长最快（warm 0.012→0.073s，p2→4）。
+  - ⚠️ 踩坑：**① 标准要先 `ms._method='lfem'` 再 `initialize_settings(p)`**（`_method` 平时在 `solve()` 里才设）；**② IP `_assemble_phase_lhs` 前要 `solver.H=0.0`**（历史场，u=0 时本为 0，newton 里由 pfcm 先算）。位移刚度组装标准/IP 同款（`LinearElasticIntegrator voigt`），复刻求解器里那 3 行即忠实。
 - [ ] 架构文档 `huzhang_phasefield_architecture.en.md` → 论文体例重组
 - [ ] D12 Intro 是否补一句相场块说明（属 D12 收稿，见 MASTER §建议1，另议）
 - [x] 把 T9/F 登记进 `MASTER_PAPER_DEV_PLAN.md` §1 总表 + §3 论文清单 + MEMORY 索引（✅ 2026-07-11）
@@ -170,6 +173,7 @@
 - aux-space fast solver：`fracturex/fracturex/utilfuc/huzhang_fast_solver.py`
 - 架构文档：`fracturex/docs/architecture/huzhang_phasefield_architecture.en.md`
 - **scaling benchmark 脚本（柱一，已成）**：`fracturex/fracturex/tests/hz_assembly_scaling_benchmark.py`（结果落 `results/benchmarks/hz_assembly/`）
+- **三离散 p-version 脚本（已成）**：`fracturex/fracturex/tests/discretization_pversion_benchmark.py`（结果落 `results/benchmarks/pversion/`）
 - 计时 harness 模板（脚本据此写）：`fracturex/fracturex/tests/phasefield_model0_huzhang.py`（`_install_assembly_timer`）
 - ILU-vs-AMG：`fracturex/docs/preconditioner/scripts/ilu_vs_amg.py`
 - ICCES 报告：`tiantian0347.github.io/content/publication/2025-fracturex-icces.md`

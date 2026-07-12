@@ -137,11 +137,20 @@ class PhaseFieldOperatorDataset:
             raise ValueError(
                 f"no usable samples for split={split!r} under {self.dataset_dir}"
             )
+        # `.npz` is a zip archive; np.load re-inflates it (single-threaded,
+        # GIL-bound) on every access. With num_workers=0 that puts ~T·N·epochs
+        # zip-decompressions on the training thread and starves the conv loop
+        # (measured ~5% duty). Memoize the built sample dict so each npz is
+        # decompressed exactly once; the fully-expanded split fits in RAM.
+        self._cache: dict[int, dict] = {}
 
     def __len__(self) -> int:
         return len(self.sample_ids)
 
     def __getitem__(self, idx: int) -> dict:
+        cached = self._cache.get(idx)
+        if cached is not None:
+            return cached
         z = np.load(self._npz[idx], allow_pickle=False)
         with self._meta[idx].open() as f:
             meta = json.load(f)
@@ -160,6 +169,7 @@ class PhaseFieldOperatorDataset:
             sample["history"] = z["history"]
         if "reaction" in z:                      # (T, r) FE-exact reference force curve
             sample["reaction"] = z["reaction"]
+        self._cache[idx] = sample
         return sample
 
     # -- introspection used by the training side --

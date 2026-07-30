@@ -46,7 +46,7 @@ def compliance_lame_coeffs(lam: float, mu: float):
 
 
 def solve_degraded_huzhang(mesh, p: int, pde, *, lam: float, mu: float, k_res: float,
-                           isD_bd: Callable):
+                           isD_bd: Callable, q: int | None = None):
     """解退化 Hu–Zhang 混合系统，返回平衡应力 σ_h 与混合位移 u_h（DG）。
 
     输入:
@@ -56,6 +56,7 @@ def solve_degraded_huzhang(mesh, p: int, pde, *, lam: float, mu: float, k_res: f
                damage(p)->(...,)（DegradedElasticMMS 实例）
       lam,mu : Lamé；k_res: 残余刚度 (>0)
       isD_bd : 边重心 bc:(NEb,2)->bool，标记 Dirichlet（位移）边
+      q      : 单元求积阶（默认 p+3）；柔度块含 g(d)^{-1}，升高 q 可检查 assembly 敏感性
     输出 dict:
       sigmah : Hu–Zhang 应力 FE function（平衡，Voigt (xx,xy,yy)）
       uh     : 混合位移 FE function（DG）
@@ -63,6 +64,7 @@ def solve_degraded_huzhang(mesh, p: int, pde, *, lam: float, mu: float, k_res: f
     """
     lambda0, lambda1 = compliance_lame_coeffs(lam, mu)
     isNedge = build_isNedge_from_isD(mesh, isD_bd)
+    q_use = int(p + 3 if q is None else q)
 
     space0 = HuZhangFESpace2d(mesh, p=p, use_relaxation=True, bd_stress=isNedge)
     space_d = LagrangeFESpace(mesh, p=p - 1, ctype='D')
@@ -82,9 +84,9 @@ def solve_degraded_huzhang(mesh, p: int, pde, *, lam: float, mu: float, k_res: f
 
     bform1 = BilinearForm(space0)
     bform1.add_integrator(HuZhangStressIntegrator(
-        coef=coef_ginv, lambda0=lambda0, lambda1=lambda1))
+        coef=coef_ginv, q=q_use, lambda0=lambda0, lambda1=lambda1))
     bform2 = BilinearForm((space1, space0))
-    bform2.add_integrator(HuZhangMixIntegrator())
+    bform2.add_integrator(HuZhangMixIntegrator(q=q_use))
 
     M = bform1.assembly().to_scipy().tocsr()
     B = bform2.assembly().to_scipy().tocsr()
@@ -99,7 +101,7 @@ def solve_degraded_huzhang(mesh, p: int, pde, *, lam: float, mu: float, k_res: f
     @cartesian
     def source(x, index=None):
         return pde.source(x)
-    lform.add_integrator(VectorSourceIntegrator(source=source))
+    lform.add_integrator(VectorSourceIntegrator(source=source, q=q_use))
     b = lform.assembly()
 
     HBC = HuzhangBoundaryCondition(space=space0)

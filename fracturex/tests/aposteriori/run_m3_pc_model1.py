@@ -34,7 +34,7 @@ from fracturex.drivers.huzhang_phasefield_staggered import HuZhangPhaseFieldStag
 from fracturex.adaptivity.adaptive_staggered import (
     make_assemblers, refine_masked, driving_force_per_cell, mark_driving_force,
     eta_from_state, recovery_indicator_d, mark_recovery, mark_hybrid,
-    mark_eta_T_indicator,
+    mark_eta_T_indicator, mark_df_lowdamage, seed_straddle_mask,
 )
 from fracturex.adaptivity.primal_resolve_real import solve_primal_real
 
@@ -119,8 +119,9 @@ def main():
     max_corr = _i("FRACTUREX_MAX_CORR", 8)      # 每载荷步 corrector 上限
     drop_frac = _f("FRACTUREX_DROP_FRAC", 0.4)
     k_res = _f("FRACTUREX_KRES", 1e-6)
-    # 标记器：stress(σ 驱动 heuristic, 兼容默认) / eta_T(§3 Prager–Synge, 论文首推、有理论)
-    #         recovery(tian2024) / hybrid(σ ∪ recovery, 需耦合可靠性分析) — 后二为诊断分支。
+    # 标记器：stress(σ 驱动 heuristic, 兼容默认) / eta_T(§3 Prager–Synge, 认证型但事后型，
+    #         SENS 上裂尖前方饥饿 ⇒ 钉扎，见 DECISION §12) / eta_T_df(η_T ∪ 低损伤区 D-预测,
+    #         SENS 修复方案) / recovery(tian2024) / hybrid(σ ∪ recovery) — 后二为诊断分支。
     marker = os.environ.get("FRACTUREX_MARKER", "stress").strip().lower()
     theta_rec = _f("FRACTUREX_THETA_REC", 0.5)      # recovery / eta_T 阈值参数
     d_cut = _f("FRACTUREX_D_CUT", 0.9)              # σ-mask 上限（hybrid 用）
@@ -134,6 +135,12 @@ def main():
     # eta_T marker 上限：cell min d > d_hi 视为完全断裂胞，marker 前清零。
     # 默认 0.995 对 SENS 过严（seed 邻胞被过滤）；欠分辨案例用 0.999。
     d_hi = _f("FRACTUREX_D_HI", 0.995)
+    # recovery marker 过程区下界：cell max d > d_lo 才标记（排除 d≡0 远场的 graded-mesh
+    # 过渡环抖动，DECISION §12.7）。默认 0 = 只要有任意非零损伤顶点即可标记。
+    d_lo = _f("FRACTUREX_D_LO", 0.0)
+    # eta_T_df 混合 marker 的 D-预测子掩码上限：cell max d ≤ d_cap 才允许 D 标记。
+    # 0.5 ⇒ g≥0.25，ψ⁺ 放大 ≤16×，g⁻² 爆炸结构性不可能；勿放宽到 0.9（effstress 崩溃复盘）。
+    d_cap = _f("FRACTUREX_D_CAP", 0.5)
     # (ii) corrector 内中间网格用松 tol 定位标记（解会被加密丢弃，无需解准），接受态补紧 tol 终解。
     #   ⚠ 实测结论（2026-06-14 归因 run）：开 Anderson 后，corrector 的整解本就便宜
     #   （step3 2320s→63s 由 Anderson 贡献，非松 tol），松 tol 反而**微扰标记**致曲线漂移 ~1.5%
@@ -166,6 +173,38 @@ def main():
     print(f"[cfg-case] {'model2(shear x-stretch)' if is_model2 else 'square(model1 tension)'} "
           f"reaction_dir={case.reaction_direction()}", flush=True)
     mesh = case.make_mesh()
+    # 种子带几何预加密（默认关）：把 precrack 段 y=crack_y, x∈[0,crack_length] 周围
+    # ±seed_halfwidth·l0 的胞 bisect 到 h≤l0/c_h，**在载荷推进前一次性完成**（纯网格操作，无解）。
+    # 动机：recovery/η_τ^d marker 会在静态 seed 的 d=1→0 陡跳上反复触发 Dörfler 标记，
+    # 每 corrector 轮一次全解 ⇒ step-1 卡死（2026-07-14 复盘）。预加密把 seed 交给
+    # 几何而非 marker，size-floor 过滤随后使 marker 只跟踪移动前锋。precrack 按节点坐标施加，
+    # 天然随加密继承（_on_precrack）；加密后须重标边界集（同 restart 分支）。
+    seed_pre = _i("FRACTUREX_SEED_PREREFINE", 0)
+    # seed_hw 无论是否预加密都定义（recovery marker 的 seed 排除掩码复用同半宽）。
+    seed_hw = _f("FRACTUREX_SEED_HALFWIDTH", 0.75) * l0   # 带半宽（默认 0.75·l0，刚够覆盖 seed 行）
+    if seed_pre and restart_npz == "":
+        cy = float(case.crack_y); cx1 = float(case.crack_length)
+        area_stop = (l0 / c_h) ** 2 / 2.0
+        nlev = 0
+        while True:
+            cmv = mesh.entity_measure("cell")
+            # 用单元顶点 y/x 范围判"是否跨越 seed 线"（straddle），而非重心邻近：
+            # 粗网格上单元高度 ≫ 带半宽时，重心判据会整行漏标（nx=8 复盘）。
+            ncoord = mesh.entity("node")[mesh.entity("cell")]  # (NC,3,2)
+            ymin = bm.min(ncoord[..., 1], axis=1); ymax = bm.max(ncoord[..., 1], axis=1)
+            xmin = bm.min(ncoord[..., 0], axis=1)
+            in_band = (ymax >= cy - seed_hw) & (ymin <= cy + seed_hw) & (xmin <= cx1 + seed_hw)
+            mk = in_band & (cmv > area_stop)
+            if int(bm.sum(mk)) == 0:
+                break
+            mesh.bisect(mk)
+            nlev += 1
+            if nlev > 12:
+                break
+        case.mesh = mesh
+        case._mark_boundary_sets(mesh)
+        print(f"[seed-prerefine] halfwidth={seed_hw:.4e} levels={nlev} "
+              f"NC={mesh.number_of_cells()} area_stop={area_stop:.2e}", flush=True)
     _restart_d = None
     if restart_npz:
         from fealpy.mesh import TriangleMesh
@@ -237,9 +276,13 @@ def main():
             # 从步首损伤重解本载荷（H 由 solve 重建/累积）；中间解用松 tol。
             state.d[:] = d_ck; state.r_hist[:] = r_ck
             driver.tol = tol_coarse
+            t_corr0 = time.perf_counter()
             info = driver.solve_one_step(step=s, load=load)
             Dcell = driving_force_per_cell(discr, damage)
             D_max = float(bm.max(Dcell)) if len(Dcell) else 0.0
+            print(f"[corr] step={s:02d} corr={n_corr} nc={discr.mesh.number_of_cells()} "
+                  f"max_d={float(info.max_d):.3f} 𝒟max={D_max:.2f} "
+                  f"t_solve={time.perf_counter()-t_corr0:.1f}s", flush=True)
             accept = s == 0 or n_corr >= max_corr
             if not accept:
                 if marker == "stress":
@@ -259,9 +302,29 @@ def main():
                                                       d_hi=d_hi,
                                                       strategy=eta_T_strategy)
                     eta_prev = eta_now
+                elif marker == "eta_t_df":
+                    # 混合：D-预测（低损伤区 d≤d_cap，自限型，不受 CKNS 停机约束）
+                    #      ∪ η_T 认证（θ_max 准则 + 相对下降停机）
+                    marked_df = mark_df_lowdamage(discr, Dcell, l0=l0, beta=beta,
+                                                  c_h=c_h, d_cap=d_cap)
+                    pr = solve_primal_real(discr, case, lam=mat.lam, mu=mat.mu,
+                                           load=load, k_res=k_res)
+                    r = eta_from_state(discr, lam=mat.lam, mu=mat.mu, k_res=k_res,
+                                       u_override=pr["uh"])
+                    eta_now = float(bm.sqrt(bm.maximum(r["eta"], 0.0)))
+                    if eta_prev is not None and eta_now > float(eta_decrement) * eta_prev:
+                        marked_eta = bm.zeros(discr.mesh.number_of_cells(), dtype=bool)
+                    else:
+                        marked_eta = mark_eta_T_indicator(discr, r["eta_T"],
+                                                          l0=l0, c_h=c_h, theta=theta_rec,
+                                                          d_hi=d_hi,
+                                                          strategy=eta_T_strategy)
+                    eta_prev = eta_now
+                    marked = bm.logical_or(marked_df, marked_eta)
                 elif marker == "recovery":
                     eta_d = recovery_indicator_d(discr, method=rec_method)
-                    marked = mark_recovery(discr, eta_d, l0=l0, c_h=c_h, theta=theta_rec)
+                    marked = mark_recovery(discr, eta_d, l0=l0, c_h=c_h,
+                                           theta=theta_rec, d_hi=d_hi, d_lo=d_lo)
                 elif marker == "hybrid":
                     eta_d = recovery_indicator_d(discr, method=rec_method)
                     marked = mark_hybrid(discr, damage, Dcell, eta_d, l0=l0,
@@ -269,8 +332,11 @@ def main():
                                          theta_rec=theta_rec)
                 else:
                     raise ValueError(f"unknown FRACTUREX_MARKER={marker!r}; "
-                                     "expected stress/eta_T/recovery/hybrid")
-                accept = int(bm.sum(marked)) == 0
+                                     "expected stress/eta_T/eta_T_df/recovery/hybrid")
+                n_mk = int(bm.sum(marked))
+                print(f"[mark] step={s:02d} corr={n_corr} marked={n_mk}/"
+                      f"{discr.mesh.number_of_cells()}", flush=True)
+                accept = n_mk == 0
             if accept:
                 # 接受态：在最终网格上补一次紧 tol 终解（记录物理量）。从**松解收敛态
                 # 暖启动**续到 tol_fine（同网格+同载荷的 staggered 不动点唯一，暖续即同解、更快）；

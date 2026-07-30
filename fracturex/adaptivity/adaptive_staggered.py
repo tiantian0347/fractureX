@@ -208,6 +208,21 @@ def recovery_indicator_d(discr, *, method: str = "area"):
     return RecoveryAlg().recovery_estimate(discr.state.d, method=method)
 
 
+def seed_straddle_mask(mesh, *, crack_y, crack_length, halfwidth):
+    """(NC,) bool：单元顶点 y/x 范围跨越静态 seed 线 y=crack_y, x∈[0,crack_length] 的胞。
+
+    几何判据（与解无关）：顶点 y 范围覆盖 [crack_y±halfwidth] 且最小 x ≤ crack_length+halfwidth。
+    用于 recovery marker 的 seed 永久排除（DECISION §12.6）：seed 是固定 d=1→0 跳变，
+    recovery 误差不随加密下降，若不排除会 Dörfler 永久抖动。halfwidth 取 seed 预加密同值
+    （默认 0.75·l0），保证覆盖已被几何解析的整条 seed 带。每次网格变动后须重算（NC 变）。
+    """
+    ncoord = mesh.entity("node")[mesh.entity("cell")]  # (NC,nv,2)
+    ymin = bm.min(ncoord[..., 1], axis=1); ymax = bm.max(ncoord[..., 1], axis=1)
+    xmin = bm.min(ncoord[..., 0], axis=1)
+    cy = float(crack_y); cx1 = float(crack_length); hw = float(halfwidth)
+    return (ymax >= cy - hw) & (ymin <= cy + hw) & (xmin <= cx1 + hw)
+
+
 def _cell_max_d(discr):
     """逐元最大节点 d：用于 σ-mask 的 d_cut 过滤（"任一 q 点 d>d_cut 即视为已饱和"）。返回 (NC,)。"""
     d = discr.state.d[:]
@@ -226,23 +241,37 @@ def _cell_min_d(discr):
 
 
 def mark_recovery(discr, eta_d, *, l0, c_h: float = 2.0, theta: float = 0.5,
-                  d_hi: float = 0.995):
-    """基于 η_τ^d 的 Dörfler L² 标记，尺寸下限 h_τ>l0/c_h，且跳过完全断裂胞（min_d>d_hi）。
+                  d_hi: float = 0.995, d_lo: float = 0.0, seed_exclude=None):
+    """基于 η_τ^d 的 Dörfler L² 标记，限定**过程区** 0<d<1，尺寸下限 h_τ>l0/c_h。
 
-    过滤放在 Dörfler **之前**：先把已完全断裂胞（min d>d_hi，所有顶点都已坏）的 η 清零，再算
-    L² 累积；否则 seed 内部（若 eta 非零）会挤占 bulk 配额，把过渡带真正想细分的胞漏掉。
+    过滤放在 Dörfler **之前**：先把不合格胞的 η 清零再算 L² 累积；否则它们挤占 bulk 配额，
+    把过渡带真正想细分的胞漏掉。过滤有三层：
+      - size floor : cm>area_floor（h_τ>l0/c_h，加密停机）
+      - 上界 d_hi  : cell min d ≤ d_hi（排除完全断裂胞，所有顶点都已坏）
+      - 下界 d_lo  : cell max d > d_lo（排除完全 intact 远场 d≡0）——**关键**：
+                   ZZ-recovery 在 graded mesh 的粗细过渡环上天然非零（与场是否光滑无关），
+                   而 seed 预加密带外圈的过渡环恰在 d≡0 远场；不设下界会在此环上 Dörfler
+                   永久抖动、每轮外移一圈无穷回归（DECISION §12.7 证伪 seed 排除后的正解）。
+                   限定过程区 0<max_d ⇒ 只标记损伤演化带（含推进裂尖前方薄 d>0 层），
+                   过渡环留在 d≡0 远场被排除。
     输入:
       discr : 当前离散
       eta_d : (NC,) 来自 recovery_indicator_d 的逐元误差²
       l0    : 相场长度尺度
       c_h   : h_τ≤l0/c_h 停加密
       theta : Dörfler bulk 比例（0.5 与 model0 rg 一致）
-      d_hi  : 逐元 min d 上限；>d_hi 视为完全断裂，Dörfler 前清零
+      d_hi  : 逐元 min d 上限；>d_hi 视为完全断裂
+      d_lo  : 逐元 max d 下限；≤d_lo 视为 intact 远场，排除（默认 0 = 只要有任意非零损伤顶点）
+      seed_exclude : 可选 (NC,) bool；True 的胞排除（静态 seed 几何掩码，与 d_lo 冗余保险）
     输出: (NC,) bool 掩码。
     """
     cm = discr.mesh.entity_measure("cell")
     area_floor = (float(l0) / float(c_h)) ** 2 / 2.0
-    keep = bm.logical_and(cm > area_floor, _cell_min_d(discr) <= d_hi)
+    keep = bm.logical_and.reduce([cm > area_floor,
+                                  _cell_min_d(discr) <= d_hi,
+                                  _cell_max_d(discr) > float(d_lo)])
+    if seed_exclude is not None:
+        keep = bm.logical_and(keep, bm.logical_not(seed_exclude))
     eta_masked = bm.where(keep, eta_d, bm.zeros_like(eta_d))
     marked = Mesh.mark(eta=eta_masked, theta=theta, method="L2")
     return bm.logical_and(marked, keep)
@@ -278,6 +307,27 @@ def mark_hybrid(discr, damage, Dcell, eta_d, *, l0,
     mask_rec = mark_recovery(discr, eta_d, l0=l0, c_h=c_h,
                              theta=theta_rec, d_hi=d_hi_rec)
     return bm.logical_or(mask_sigma, mask_rec)
+
+
+def mark_df_lowdamage(discr, Dcell, *, l0, beta: float = 0.6, c_h: float = 2.0,
+                      d_cap: float = 0.5):
+    """低损伤区限定的 M-DF 预测标记：{τ: 𝒟_τ≥β/3, cell max d ≤ d_cap, h_τ>l0/c_h}。
+
+    g⁻² 病态的根源是 seed/裂纹带内 ε~g⁻¹σ ⇒ ψ⁺(ε)~g⁻²·½σ:ℂ⁻¹σ（隐含在 from_u 的 H 里，
+    与 effstress 公式等价）。d_cap=0.9 时 g(0.9)=1e-2 ⇒ 放大 1e4，Mode-II 过渡带失守
+    （SENS effstress 崩溃复盘）。d_cap=0.5 ⇒ g=0.25，ψ 放大上界 16×——结构上不可能爆炸。
+    代价：过渡带 (d_cap, 1) 不再由 D 覆盖，由 η_T 子掩码接管（η_T 在该带 O(g)、可靠）。
+    输入:
+      Dcell : (NC,) driving_force_per_cell 的返回
+      d_cap : cell max d 上限（默认 0.5；须 ≪ 0.9）
+    输出: (NC,) bool 掩码。自限型：D≥β/3 的前锋胞达 h≤l0/c_h 后停。
+    """
+    theta_D = float(beta) / 3.0
+    cm = discr.mesh.entity_measure("cell")
+    area_floor = (float(l0) / float(c_h)) ** 2 / 2.0
+    return bm.logical_and.reduce([Dcell >= theta_D,
+                                  _cell_max_d(discr) <= float(d_cap),
+                                  cm > area_floor])
 
 
 # ---------------------------------------------------------------------------

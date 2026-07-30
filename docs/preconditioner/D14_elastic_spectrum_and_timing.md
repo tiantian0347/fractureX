@@ -179,6 +179,8 @@
 
 micro-bench(b)复现(a)的 tEA 串:并比(nx64 2.0× vs run 1.9×),故为可信代理;瓶颈是 `_assemble_M_block_cached` 里的 `bmm_einsum`(RSS 9.2GB @nx160,基本单线程),并行按胞 chunk 该 einsum 但线程开销/缓存争用反噬。
 
+**为何并行更慢(根因)**:串行走缓存内核(`_assemble_M_block_cached`)——单次全局 `einsum` 一把批量收缩全部 NC 胞(BLAS 近最优),几何内核复用、每步只重算 `1/g(d)`+`bincount`,是**内存带宽受限**非算力受限,加线程抢同一总线只增争用不增吞吐;并行路径(`_assemble_M_block_parallel`)则每块重入 FEALPy 内核重算基函数再 `concatenate`+`coo→csr` 合并去重,是重复计算+合并开销+带宽争用的叠加。故惩罚随块变大被摊薄(4.0→1.57×)但**永不 crossover**,真提速须优化 einsum 本身(降内存峰值/换收缩顺序)而非加线程。
+
 - **并行组装��实测全区间(nx=24/48/64/160,直到 51200 胞 / ~850k dof)每档都更慢**;相场 p=1 尤甚(tPA 比 3–22×,大网格趋平)。
 - 惩罚随规模递减(tEA 4.0→1.57×)但**始终不 crossover**;**nx=160 即 paper_aux 生产分辨率,串行仍胜 1.57×** → **§5 的并行默认回退为串行已在生产尺度证实**。`FRACTUREX_ASSEMBLY_PARALLEL=1` 仍可强开。
 

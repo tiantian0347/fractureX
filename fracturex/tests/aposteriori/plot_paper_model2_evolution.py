@@ -4,7 +4,7 @@ Outputs (default: Tian/thesis/fracture_huzhang/adaptive/figures/):
   paper_model2_evolution_4panel.png
 
 Reads (under $FRACTUREX_RESULTS, default ~/repository/results):
-  adaptive_m3_pc_model2_eta_T/vtu/step_{000,020,030,039}.vtu
+  adaptive_m3_pc_model2_eta_T_nx48/vtu/step_{000,020,028,039}.vtu
 
 Style matches model0_evolution_4panel.png: damage overlay white->deep red,
 mesh in thin black lines, four panels sharing colorbar.
@@ -27,13 +27,13 @@ OUTDIR = os.environ.get(
     "FRACTUREX_FIGDIR",
     os.path.expanduser(
         "~/repository/Tian/thesis/fracture_huzhang/adaptive/figures"))
-VTU_DIR = os.path.join(ROOT, "adaptive_m3_pc_model2_eta_T/vtu")
+VTU_DIR = os.path.join(ROOT, "adaptive_m3_pc_model2_eta_T_nx48/vtu")
 
 # (step, u_x, label)
 PANELS = [
     (0,  0.0000,     r"step $0$: initial state, $u_x{=}0$"),
     (20, 5.000e-3,   r"step $20$: elastic ascent, $u_x{=}5.0{\times}10^{-3}$"),
-    (30, 7.500e-3,   r"step $30$: peak load, $u_x{=}7.5{\times}10^{-3}$"),
+    (28, 7.000e-3,   r"step $28$: peak load, $u_x{=}7.0{\times}10^{-3}$"),
     (39, 9.750e-3,   r"step $39$: softening, $u_x{=}9.75{\times}10^{-3}$"),
 ]
 

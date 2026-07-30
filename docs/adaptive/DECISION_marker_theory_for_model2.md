@@ -211,7 +211,12 @@ SENT 实测让我们（1）确认了 max 准则 + $\theta_{\max}=0.9$ 是正确�
 弹性阶段一步标 70%+ 胞，$\theta_{\max}=0.9$ 只标 top 1-2%；（2）确认了 CKNS 相对下降 $q=0.7$ 停机
 能让 corrector 自然收敛，替代 "$\mathcal D_\tau\ge\theta_D$" 的阈值型自然停机。
 
-## 10. SENS 数值验证（2026-07-06）
+## 10. SENS 数值验证（2026-07-06，nx=24——**已被 §10.1 nx=48 取代**）
+
+> ⚠ **2026-07-10 复盘：本节 run 欠分辨**。nx=24 + c_h=2 + d_hi=0.995 三因素叠加：
+> h_min=0.0074 > ℓ0/2=0.0066 永远够不到；d_hi=0.995 把 seed 邻胞过滤掉 59/100；
+> marker 近乎失活。峰值 0.150 未收敛（nx=48 得 0.196，高 30%），损伤带弥散、
+> 无清晰斜向下裂纹。**"消除 g⁻² 病态"的定性结论仍成立**；定量数字以 §10.1 为准。
 
 配置：`FRACTUREX_MARKER=eta_T, ETA_T_STRATEGY=max, THETA_REC=0.9, ETA_DECREMENT=0.7, D_HI=0.995, du=2.5e-4, nx=24, pardiso`（lab 服务器 `~/tian/fracturex/results/adaptive_m3_pc_model2_eta_T/`；40 步 wall 81326.5s $\approx$ 22.6h）。
 
@@ -236,8 +241,190 @@ SENT 实测让我们（1）确认了 max 准则 + $\theta_{\max}=0.9$ 是正确�
 - 4 张 SENS 图入 `Tian/thesis/fracture_huzhang/adaptive/figures/`：`paper_model2_Fu_main.png`（未用）、`paper_model2_marker_compare.png`、`paper_model2_Dmax_evolution.png`、`paper_model2_NC_growth.png`。
 - 绘图脚本：`fracturex/tests/aposteriori/plot_paper_model2_Fu.py`。
 - Build: 24 页, BUILD_OK, 0 undefined refs/cites/overfull。
+- **2026-07-07/09 用户复审后回撤**：§5.4 改为 diagnostic 定位（只报 $\mathcal D_{\tau,T}$ 病态 + Dmax 图），
+  完整 Mode-II 定量研究 "will be reported separately"——因 nx=24 数据欠分辨（见 §10.1）。
 
-## 11. Bibliography（进入 `equilibrated_aposteriori.tex`）
+## 10.1 SENS 数值验证 v2（2026-07-12，nx=48 分辨达标——**当前有效数据**）
+
+触发：用户指出 nx=24 结果"网格明显不够密"、"视觉上不是斜向下的裂纹"。修正配置：
+`nx=48, C_H=4.0（h≤ℓ0/4）, D_HI=0.999, THETA_REC=0.9, ETA_DECREMENT=0.7, du=2.5e-4, pardiso`
+（lab `results/adaptive_m3_pc_model2_eta_T_nx48/`；40 步 wall 319205.6s ≈ 88.7h）。
+
+| 指标 | nx=48（本次） | nx=24（§10，欠分辨） |
+|---|---:|---:|
+| Peak $\lvert R_x\rvert$ | **0.1957** at $u_x=7.0\times 10^{-3}$ | 0.150 at $7.5\times 10^{-3}$（低 23%）|
+| 裂纹路径 | **斜向下**：seed 尖端 (0.5,0.5) → (0.65,0.30)，符合 Miehe Mode-II 形态 | 弥散带，无清晰路径 |
+| 裂缝带网格 | median h=0.0052 ≤ ℓ0/2；min h=0.0037 ≈ ℓ0/4 | h_min=0.0074 > ℓ0/2 |
+| NC 增长 | 4608 → 5567（+21%）| 1152 → 1587（+38%）|
+| $\mathcal D_{\max}$ | ≤ 3.3×10⁴ 有界、无爆炸 | 孤立尖峰至 10¹³ |
+| Corrector 每步 | 1 轮（CKNS 停机生效）| 1 轮 |
+| 软化段 | **仅早期**：峰后 R 在 0.177–0.195 平台震荡，40 步时裂纹未贯穿（y 至 0.30）| 假"软化"（欠分辨伪像）|
+
+**结论**：g⁻² 病态消除的定性结论在分辨达标网格上继续成立；峰值 0.196 + 斜向下路径物理合理。
+**软化段未完**：40 步只到裂纹半程。已启动**断点续跑**至 60 步
+（`results/adaptive_m3_pc_model2_eta_T_nx48_cont/`，restart 机制见下）。
+
+**断点续跑机制（2026-07-12 新增）**：`run_m3_pc_model1.py` 支持
+`FRACTUREX_RESTART_NPZ/RESTART_STEP/PEAK_R0`；npz 由 `vtu_to_restart_npz.py` 从 vtu 转换
+（node/cell/d）。原理：与 in-run 加密后流程同构——恢复 (mesh, d)，H=None 由 solve 重建；
+r_hist 相场路径不读、置 0。smoke 验证（model2 nx=8 4 步，step2 重启）：R/NC/dofσ/iters
+与整跑逐位一致。续跑首步重解 step 39 作连续性检查（应复现 R≈0.1914）。
+
+## 12. 复审裁定（2026-07-10）：η_T-only marker 在 SENS 上**失效**——事后型钉扎
+
+> 触发：用户复审 "eta_T 的结果看起来不太对，DT 的结果看起来反而更对一些"。
+> 对照 **paper_direct_full 参照**（`results/phasefield/model2_notch_x_stretch/paper_direct_full/epsg_1e-06/reaction_curve.csv`，
+> nx=160 均匀 NC=51200, p=3, du=1e-4, 200 步，用户已验证）后确认：**用户判断正确**。
+
+### 12.1 参照曲线裁定（去重 restart 重叠段后）
+
+参照真峰值 $|R_x|=0.421$ at $u_x=1.033\times 10^{-2}$，之后陡降至 ~0.23 平台。对比：
+
+| $u_x$ | ref (nx=160) | $\mathcal D_{\tau,T}$ nx=24 | $\eta_T$ nx=48 |
+|---:|---:|---:|---:|
+| 4e-3 | 0.176 | 0.159 (−10%) | 0.125 (**−29%**) |
+| 6e-3 | 0.259 | 0.234 (−10%) | 0.178 (−31%) |
+| 7e-3 | 0.300 | （崩溃前兆） | 0.196 (−35%，§10.1 的"峰"是伪像) |
+| 9.75e-3 | 0.404 | — | 0.191 (**−53%**) |
+
+- $\mathcal D_{\tau,T}$ 整个上升段贴参照 −10%（此段它尚未加密，即均匀 nx=24），直到 g⁻² 崩溃；
+  其 0.234 也非真峰，是崩溃起点。
+- $\eta_T$ nx=48 从 $u\approx 10^{-3}$ 起系统性偏软 ~30%；§10.1 的 0.196 "峰" 与后续"软化平台"
+  **整段是钉扎伪像**——参照在该处仍在近直线上升，真峰在 1.033e-2。§10.1 的定量结论全部作废，
+  仅"无 $\mathcal D_{\max}$ 爆炸"仍成立。
+
+### 12.2 根因：η_T 是事后型（reactive），裂尖前方饥饿
+
+$\eta_T$ 度量**当前**损伤组态下的弹性误差（集中在已损伤团），max 准则 θ=0.9 + CKNS 每步 1 轮
+把标记预算全耗在团上。实测（nx=48 run @ u=7.5e-3）：裂尖前方扇区 **0% 单元达到 h≤ℓ0/2**
+（全部 h=0.0208≈1.4ℓ0）；对照 DT run 前方 h=0.0074≈ℓ0/2。前锋在欠分辨网格上弥散、钉扎、
+人为增韧，损伤团向上分叉（与 Miehe/Ambati 文献的斜向下清晰路径不符）。
+这不是分辨率或调参问题，是 marker 的**结构性缺陷**：认证型指示子 ≠ 预测型标记器。
+
+### 12.3 g⁻² 病态的正确理解（修正 §2 表格的一处误导）
+
+`state.H` 一直由 `from_u` 计算（`update_history_on_quadrature`: ψ⁺(ε(u_h))，无显式 g⁻² 除法），
+但裂纹带内 ε~g⁻¹σ ⇒ ψ⁺(ε)~g⁻²·½σ:ℂ⁻¹σ——**g⁻² 隐含在应变里，from_u 与 effstress 公式等价**。
+"换 H 来源"不解决病态；唯一结构性隔离是**限制 D 标记于低损伤区**：cell max d ≤ d_cap=0.5
+⇒ g≥0.25，ψ⁺ 放大上界 16×，爆炸结构性不可能（d_cap=0.9 时 g=10⁻² ⇒ 放大 10⁴，Mode-II 过渡带失守）。
+
+### 12.4 修复决策（用户已确认）：marker := η_T ∪ D-低损伤预测（`eta_T_df`）
+
+$$\mathcal M = \underbrace{\{\eta_T^2 \ge \theta_{\max}\max\eta_T^2,\ \min_v d\le d_{\mathrm{hi}}\}}_{\text{认证型，CKNS 停机}}\ \cup\ \underbrace{\{\mathcal D_\tau\ge\beta/3,\ \max_v d\le d_{\mathrm{cap}}{=}0.5\}}_{\text{预测型，自限（h≤ℓ0/c_h 停）}}\quad(\text{均含 } h_\tau>l_0/c_h)$$
+
+- 实现：`adaptive_staggered.mark_df_lowdamage` + runner `FRACTUREX_MARKER=eta_T_df`，`FRACTUREX_D_CAP`(0.5)。
+- D-子掩码不受 CKNS 相对下降停机约束（阈值型 + 尺寸下限自限）；η_T 子掩码沿用 §4.1。
+- 论文叙事：η_T 保留认证/停机角色（Cor.5.3 + Lemma 局部下界不动）；预测子掩码作为
+  "damage-front safeguard" 进 §4，坦白 η_T 单独作 marker 在移动裂纹前锋上的事后性局限。
+- 处置：lab 续跑（步 39→59，延续错误轨迹）已终止；§10.1 数据降级为反例。
+- 验证：SENS smoke → SENT 40 步（对 §9 不退化）→ SENS nx=48 重跑对 paper_direct_full 参照
+  （目标：上升段贴参照 ≤10%，真峰 ~0.42@1.03e-2 量级复现，斜向下裂纹路径）。
+
+## 12.5 复审裁定（2026-07-14）：`eta_T_df` 对参照**同样失效**——+D 低损伤子掩码不足以喂饱前锋
+
+> 触发：执行 §12.4 验证计划的 SENS nx=48 跑（`results/adaptive_m3_pc_model2_eta_T_df_nx48`，
+> marker=eta_t_df, du=2.5e-4, pardiso, 33 步）。**跑完不发散**（内部一致）——但对 paper_direct_full
+> 参照比对**从 u≈3e-3 起崩到 −40%、u=8e-3 时 −77%**，且 R 在 u=6e-3 见顶 0.131 后**回落**
+> （假软化），NC 仅 4608→5798（**+26%**，未跟踪前锋）。与 §12.2 η_T-only 的前锋饥饿是**同一病**。
+
+| $u_x$ | R (eta_t_df) | R (ref nx=160) | dev |
+|---:|---:|---:|---:|
+| 1e-3 | 0.0425 | 0.0445 | −4% |
+| 3e-3 | 0.0811 | 0.1327 | **−39%** |
+| 6e-3 | 0.131 | 0.259 | **−49%**（此后 R 回落=假软化）|
+| 8e-3 | 0.077 | 0.349 | **−77%** |
+
+**裁定**：§12.4 的 `eta_T_df` 决策**作废**。"D 低损伤预测子掩码"（d_cap=0.5, 𝒟≥β/3）在
+Mode-II 前锋**触发太晚/太少**：裂尖前方 d 仍低、σ 集中带尚未把 𝒟 顶过 β/3，等 𝒟 够时前锋已过、
+d 已越 d_cap 被过滤——两头够不着，NC 只 +26%。**η_T ∪ D-lowdamage 二者都缺前锋预视**。
+
+**根因再确认（§12.2 结论加强）**：SENS 需要的是**移动前锋预加密**（process-zone lookahead），
+而 η_T（事后型，度量当前损伤组态弹性误差）与 D-lowdamage（阈值型，等 σ 集中）都**不预视前锋**。
+唯一天然预视的是 **recovery 型 η_τ^d = ‖R_h∇d − ∇d‖**：∇d 在推进的裂尖前方大 ⇒ 提前加密
+（tian2024 已验证）。其唯一缺陷是在**静态 seed**（固定 d=1→0 跳变，recovery 误差不随加密下降）上
+反复触发 Dörfler（nx=8 本地实测：corr 每轮 marked 单调涨 221→340→423，max_d≡1、𝒟max≈0，
+纯 seed 抖动，永不收敛）。seed 几何预加密不解决——只把抖动移到粗细过渡环上。
+
+### 12.6 新修复决策（2026-07-14）：recovery marker + **静态 seed 排除掩码**
+
+$$\mathcal M = \{\,\eta_{\tau}^{d,2} \ge \theta\max_\tau \eta_\tau^{d,2}\ \text{(Dörfler-L²)},\ \ h_\tau>l_0/c_h,\ \ \min_v d\le d_{\mathrm{hi}},\ \ \tau\notin\mathcal S_{\mathrm{seed}}\,\}$$
+
+其中 $\mathcal S_{\mathrm{seed}}$ = 跨越已知 seed 线（$y=\text{crack\_y},\ x\in[0,\text{crack\_length}]$）
+的单元集（几何判据，与解无关），由 seed 几何预加密一次性解析、此后永久排除出 recovery 标记集。
+- 动机：recovery 是唯一有前锋预视的 driver（§12.5）；其唯一病是静态 seed 抖动；seed 是**已知几何**，
+  用几何掩码结构性剔除，比任何 d 阈值过滤都干净（seed 边胞 min_d=0 躲过 d_hi 过滤，正是抖动源）。
+- 实现：`adaptive_staggered.mark_recovery` 加 `seed_exclude`(NC bool) 参数；runner 从
+  case.crack_y/crack_length 构造 straddle 掩码传入；配合 `FRACTUREX_SEED_PREREFINE=1` 先解析 seed 带。
+- 验证：nx=8 本地 smoke（秒级解，验 corrector 收敛、不抖 seed）→ nx=48 lab 对参照
+  （目标：上升段 ≤10%、真峰 ~0.42@1.03e-2、NC 显著增长跟踪斜向下前锋）。
+
+### 12.7 seed 排除掩码**证伪**（2026-07-14）——抖动源不是 seed，是网格梯度过渡环
+
+nx=8 本地实测 + 直接 plumbing 测试推翻 §12.6 假设：
+
+- **plumbing（合成均匀 η_τ^d，theta=0.5）**：`mark_recovery` 加/不加 seed_exclude 标记数
+  **完全相同**（589 vs 589），尽管 seed 掩码覆盖 3144/4324（73%）胞。⇒ 被标记的胞**根本不在
+  seed 带内**（seed 带胞已被 size-floor `cm>area_floor` 过滤，因预加密后它们最小）。
+- **corrector 抖动实测（recovery，含/不含 seed_exclude 逐位一致）**：step1 每轮 marked
+  221→340→…单调涨，全程 max_d≡1.000、𝒟max≈0（无物理演化），NC 4324→4660→5282…不收敛。
+
+**真根因（probe 实测修正，2026-07-14）**：被标记的 221 胞**不是** d≡0 远场过渡环，而是
+**静态 seed 的 AT2 损伤 halo**——max_d 分布 0.10–0.34、min_d 0.008–0.12，163/221 落在
+|y−0.5|<2·l0 内、仅 2 个在裂尖前方(x>0.5)。u=1e-4 时**尚无移动前锋**，recovery 信号几乎全是
+静态 seed 周围 d 从 1 衰减到 0 的 halo（宽 ~2·l0）。seed 预加密（halfwidth 0.75·l0）只解析了
+d≳0.5 的核，halo 尾巴(d=0.01–0.34)留在细带外的粗胞上 ⇒ recovery 正确地要加密它们 ⇒
+细/粗界面沿 halo 外爬 ⇒ "抖动"。**d_lo 阈值无法分离**：抖动胞(d=0.01–0.34)与真实低损伤前锋
+占同一 d 区间，d_lo=0.2 只把 221→159；d_lo=0.5 全清空。加宽预加密带到 2.5·l0（NC 4324→12584）
+也只把 marked 221→170——halo 更宽、过渡带更多，治标不治本。
+
+**nx=8 是病态 proxy**：base 胞 0.125，解析 l0=0.015 需 ~11 级 bisect ⇒ 极端 graded mesh、
+巨大过渡区、halo 严重欠分辨。nx=48（base 胞 0.021 ≈ 1.4 l0）只需 2–3 级达 l0/4，grading 温和、
+静态 halo 近乎被 base+轻预加密解析 ⇒ recovery 在其上误差小、会聚焦于真正欠分辨的**演化前锋**。
+**⇒ 停止在 nx=8 调参（最坏情形），process-zone recovery 的真实检验必须在 nx=48 上跑。**
+另注：max_corr=8 封顶 ⇒ 抖动不会真挂死（eta_t_df nx=48 跑完 33 步为证），是**质量**问题
+（标了噪声胞）非 hang。nx=48 温和 grading 下过渡环抖动可能小到 max_corr 内给出合理网格。
+
+**当前裁定**：已连续证伪 4 个 marker——η_T-only（前锋饥饿 −53%）、eta_t_df（前锋饥饿 −77%）、
+recovery-alone（过渡环抖动，不收敛）、recovery+seed排除（同抖动）。**问题分两类**：
+(A) 认证/阈值型（η_T, D）→ 前锋预视不足、太软；(B) recovery 型 → graded-mesh 过渡环抖动。
+下一步**不再试第 5 个 marker 变体**，需与用户确认方向（见会话）。候选：
+(a) recovery 限定于**过程区**（0<max_d<1 的演化带，排除 d≡0 远场与 d≡1 断裂区）——但会牺牲
+   d≡0 的前锋预视，需权衡；
+(b) 回到 M-DF 应力驱动（model1 SENT 已验证有前锋预视），用 from_u 的 H（§12.3 已证与
+   effstress 等价、g⁻² 隐含但 d_cap 可控），plain beta 触发；
+(c) 直接放弃 SENS 的严格参照复现，改用中等**全局**加密（nx≥96）作 anchor（贵但无 marker 病）。
+
+### §12.8 process-zone recovery（d_lo 下界）在 nx=48 证伪（第 5 个 marker 作废）
+
+> 触发：用户经 AskUserQuestion 选定"recovery 限定过程区"方向后（§12.7 (a)），
+> 在 lab 跑 `results/rec_pz_nx48_nopre`（marker=recovery, nx=48, du=2.5e-4, c_h=4,
+> theta_rec=0.5, **d_lo=0.05**, 无 seed 预加密, pardiso）。
+
+**结果：FAIL（不收敛，与 nx=8 同病）。** 决定性信号出现在 **step 1**（load=2.5e-4,
+𝒟max=0.04 —— 纯弹性、裂纹尚未起裂）：
+- marked 逐 corrector **上升**：corr0=41 → corr1=52（应 →0）；
+- 同一 NC（4608→4690）re-solve 代价爆炸 **226s → 844s**，staggered iters 2 → 12。
+
+**根因（nx=8→nx=48 一致，最终确认）**：整个弹性上升段没有移动前锋可追。域内唯一非零 ∇d
+是**静态 seed 的 AT2 损伤晕**（d 沿 ~2·l0 从 1 衰减到 0，环绕预裂纹）。该晕的 d 值落在
+[0.05, 1]，故 `d_lo` **排不掉它**——按此判据晕本身就是"过程区"。Dörfler bulk 每轮固定抓
+误差质量的一个比例 ⇒ 反复重标同一处欠解析 seed 晕；加密缓慢减小该误差 ⇒ 抖动，
+每 corrector 烧 ~800s 在非裂纹区。
+
+**recovery 作 driver 的结构性缺陷**：它无法区分**静态** seed 晕（由 l0 固定、只需解析一次）
+与**移动**前锋（需持续追踪）。任何 recovery 变体在弹性段都会去追 seed 晕。唯一能让 recovery
+可用的架构：**预先把 seed 晕解析一次**（seed 预加密），使 recovery 在载荷步中于此处看到零误差、
+只标真正的移动前锋。§12.6 曾因 hw=1.5·l0 预加密把 NC 吹到 8924（662s/solve）搁置，但更紧的带
+（hw=0.75·l0、仅到 l0/c_h）可能以可接受 NC 解析该晕——待验。
+
+**当前裁定（§12.7 加强）**：已连续证伪 **5 个** marker——η_T-only、eta_t_df、recovery-alone、
+recovery+seed排除、**process-zone recovery(d_lo)**。前四类根因见 §12.7；第 5 个证明 d_lo 判据
+无法把静态 seed 晕排出"过程区"。不再盲试第 6 个变体；候选收敛为两条：
+(a′) **seed 紧带预加密 + recovery**（把静态晕解析掉，让 recovery 只见移动前锋）——recovery
+    唯一可行架构，成本待验（hw=0.75·l0 是否 << §12.6 的 NC 8924）；
+(c) 放弃严格参照复现，改用中等**全局**加密（nx≥96）作 anchor（贵但无 marker 病）。
+
+## 13. Bibliography（进入 `equilibrated_aposteriori.tex`）
 
 标准 AFEM 收敛与停机理论的引用一律通过 [refs.bib](../../Tian/thesis/fracture_huzhang/adaptive/refs.bib) 提供：
 

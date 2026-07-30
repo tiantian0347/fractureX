@@ -7,8 +7,8 @@ Outputs (default: Tian/thesis/fracture_huzhang/adaptive/figures/):
   paper_model2_Dmax_evolution.png -- D_max observable (log scale)
 
 Reads (under $FRACTUREX_RESULTS, default ~/repository/results):
-  adaptive_m3_pc_model2_eta_T/history.csv        (eta_T marker, 40 steps)
-  adaptive_m3_pc_model2_effstress/history.csv    (D_tau,T marker, diverged)
+  adaptive_m3_pc_model2_eta_T_nx48/history.csv   (eta_T marker, 48x48 initial)
+  adaptive_m3_pc_model2_effstress/history.csv    (D_tau,T marker, 24x24, diverged)
 
 Run:
   python fracturex/tests/aposteriori/plot_paper_model2_Fu.py
@@ -29,7 +29,7 @@ OUTDIR = os.environ.get(
     "FRACTUREX_FIGDIR",
     os.path.expanduser(
         "~/repository/Tian/thesis/fracture_huzhang/adaptive/figures"))
-ETA_T = os.path.join(ROOT, "adaptive_m3_pc_model2_eta_T/history.csv")
+ETA_T = os.path.join(ROOT, "adaptive_m3_pc_model2_eta_T_nx48/history.csv")
 D_TAU = os.path.join(ROOT, "adaptive_m3_pc_model2_effstress/history.csv")
 
 COL_ETA = "#1f3a68"
@@ -108,12 +108,12 @@ def main():
     # ---------- Fig B: marker comparison eta_T vs D_tau,T ----------
     fig, ax = plt.subplots(figsize=(5.6, 4.0))
     ax.plot(dtau["load"], dtau["R"], "s--", color=COL_DTAU, ms=3.2, lw=1.2,
-            label=(rf"$\mathcal{{D}}_{{\tau,T}}$ marker "
+            label=(rf"$\mathcal{{D}}_{{\tau,T}}$ marker, $24{{\times}}24$ init. "
                    rf"(diverges at step {fail_step_dtau}, "
                    rf"$u_x{{=}}{fail_load_dtau:.2e}$)"))
     ax.plot(eta["load"], eta["R"], "o-", color=COL_ETA, ms=3.5, lw=1.4,
-            label=(rf"$\eta_T$ marker "
-                   rf"(completes 40 steps, peak $={p_eta[1]:.3f}$)"))
+            label=(rf"$\eta_T$ marker, $48{{\times}}48$ init. "
+                   rf"(completes all steps, peak $={p_eta[1]:.3f}$)"))
     ax.axvline(x=fail_load_dtau, color=COL_DTAU, ls=":", lw=0.8, alpha=0.6)
     ax.scatter([p_dtau[0]], [p_dtau[1]], s=30, color=COL_DTAU, zorder=5,
                marker="s")
@@ -132,12 +132,13 @@ def main():
     # ---------- Fig C: NC growth ----------
     fig, ax = plt.subplots(figsize=(5.6, 3.4))
     ax.plot(dtau["load"], dtau["NC"], "s--", color=COL_DTAU, ms=3.2, lw=1.2,
-            label=(rf"$\mathcal{{D}}_{{\tau,T}}$ marker "
-                   rf"({dtau['NC'][0]}$\to${dtau['NC'][-1]} in "
-                   rf"{fail_step_dtau} steps)"))
+            label=(rf"$\mathcal{{D}}_{{\tau,T}}$ marker, $24{{\times}}24$ init. "
+                   rf"({dtau['NC'][0]}$\to${dtau['NC'][-1]}, "
+                   rf"$+{100*(dtau['NC'][-1]/dtau['NC'][0]-1):.0f}\%$)"))
     ax.plot(eta["load"], eta["NC"], "o-", color=COL_ETA, ms=3.5, lw=1.4,
-            label=(rf"$\eta_T$ marker "
-                   rf"({eta['NC'][0]}$\to${eta['NC'][-1]} in 40 steps)"))
+            label=(rf"$\eta_T$ marker, $48{{\times}}48$ init. "
+                   rf"({eta['NC'][0]}$\to${eta['NC'][-1]}, "
+                   rf"$+{100*(eta['NC'][-1]/eta['NC'][0]-1):.0f}\%$)"))
     ax.set_xlabel(r"prescribed shear displacement $u_x$")
     ax.set_ylabel(r"number of triangles $\mathrm{NC}$")
     ax.grid(alpha=0.25, lw=0.5)
@@ -171,7 +172,7 @@ def main():
     plt.close(fig)
 
     print(f"[plot] eta_T   peak={p_eta[1]:.4f} at u_x={p_eta[0]:.3e}, "
-          f"NC {eta['NC'][0]}->{eta['NC'][-1]}, 40 steps completed")
+          f"NC {eta['NC'][0]}->{eta['NC'][-1]}, {len(eta['R'])} steps completed")
     print(f"[plot] D_tau,T peak={p_dtau[1]:.4f} at u_x={p_dtau[0]:.3e}, "
           f"diverged at step {fail_step_dtau}")
     print(f"[plot] wrote {f_main}")

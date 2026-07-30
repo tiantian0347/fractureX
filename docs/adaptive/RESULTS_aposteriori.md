@@ -24,11 +24,43 @@
 | Phase 2 (du=1e-4) | 2026-06-18 | ✅ PASS（负结果） | 细化 du **不**让峰值收敛参照(−1.5%→+3.6%，跨参照两侧)⇒ 峰值本质路径依赖、报 ±4% 带；副产严格 η_τ 全程线性轨迹(slope≈124≈刚度)、η_τ/DG ~18–40× |
 | M3 效率 (DOF) | 2026-06-21 | ✅ PASS | 等精度对照：自适应 31406 σ-DOF 达 −1.5% 峰值精度，均匀需 nx=120 的 476883 DOF ⇒ **省 93% DOF**；均匀 nx24/48 峰值虚高 +37%/+25%（论证需自适应） |
 | Θ<1 根因诊断 | 2026-06-21 | 🐞→✅ **已修+坐实** | 根因 = `VectorDirichletBC` 误用缺非齐次提升项 (`f−=A·u_D`)，primal "truth" 能量随网格 ×√2 假发散 ⇒ Θ<1。修复后**生产 k_res=1e-6 真数：err 收敛 0.044、Θ 单调→nref4 的 1.044(→1⁺)**，η 仅比真误差大 4%。reliability+efficiency 双坐实，§7 主线全安全 |
-| SENS η_T marker | 2026-07-06 | ✅ PASS | Mode-II 剪切 40 步全跑完，peak $\lvert R_x\rvert=0.150$，NC 1152→1587；旧 M-DF 在 step 33 崩溃、$\mathcal D_{\max}=10^{51}$；理论升级消病态 |
+| SENS η_T marker | 2026-07-06 | ⚠ 欠分辨 | nx=24 run：40 步跑完、消 g⁻² 病态（定性成立），但网格欠分辨 ⇒ peak 0.150 未收敛、无清晰裂纹路径。定量数据以下行 nx=48 为准 |
+| SENS η_T nx=48 | 2026-07-12 | ❌ 作废（钉扎伪像） | 对 paper_direct_full 参照（nx=160, 真峰 0.421@1.03e-2）复审：η_T-only 事后型标记致裂尖前方饥饿（前方 0% 胞 ≤ ℓ0/2），上升段偏软 −30%，"峰 0.196"与"软化平台"是伪像。仅"$\mathcal D_{\max}$ 有界"仍成立。续跑已终止。修复：`eta_T_df` 混合 marker，见 DECISION §12 |
 
 ---
 
-## SENS η_T marker：Mode-II 剪切 $g^{-2}$ 病态的理论级修复（2026-07-06）
+## SENS η_T nx=48：分辨达标复跑（2026-07-12）——**❌ 复审作废（2026-07-10 记）**
+
+> ⚠ **本节全部定量结论已被参照对比推翻**（用户复审 + `paper_direct_full` nx=160 参照，
+> 真峰 0.421@u=1.033e-2）：η_T-only 是事后型标记，裂尖前方饥饿 ⇒ 钉扎伪像，上升段
+> 系统性偏软 −30%，"峰 0.196"非物理。裂纹路径"斜向下"亦为钉扎后的弥散团误读。
+> 60 步续跑已终止。根因与修复（`eta_T_df` 混合 marker）：
+> [DECISION_marker_theory_for_model2.md](DECISION_marker_theory_for_model2.md) §12。
+> 以下原文保留仅供复盘。
+
+> 取代下节 nx=24 的定量数字（那次欠分辨：h_min=0.0074 > ℓ0/2，d_hi=0.995 过滤掉 seed 邻胞，
+> marker 近乎失活；用户指出"网格明显不够密"、"不是斜向下的裂纹"后复跑）。
+
+配置：`FRACTUREX_MARKER=eta_T, ETA_T_STRATEGY=max, THETA_REC=0.9, ETA_DECREMENT=0.7, D_HI=0.999, CH=4.0, du=2.5e-4, nx=48, pardiso, 40 steps`。lab `results/adaptive_m3_pc_model2_eta_T_nx48/`，wall 319205.6s ≈ 88.7h。本机 `~/repository/results/adaptive_m3_pc_model2_eta_T_nx48/`。
+
+| 指标 | nx=48（有效） | nx=24（欠分辨） |
+|---|---:|---:|
+| Peak $\lvert R_x\rvert$ | **0.1957** at $u_x=7.0\times 10^{-3}$ | 0.150 at $7.5\times 10^{-3}$（低 23%）|
+| 裂纹路径 | 斜向下 (0.5,0.5)→(0.65,0.30)，符合 Miehe Mode-II | 弥散带 |
+| 裂缝带 h | median 0.0052 ≤ ℓ0/2=0.0066，min 0.0037 ≈ ℓ0/4 | h_min=0.0074 > ℓ0/2 |
+| NC | 4608 → 5567（+21%）| 1152 → 1587 |
+| $\mathcal D_{\max}$ | ≤ 3.3×10⁴ 有界 | 尖峰至 10¹³ |
+
+- **软化段未完**：峰后 R 在 0.177–0.195 平台震荡（裂纹扩展中途，40 步时 y 至 0.30 未贯穿）。
+  **断点续跑**至 60 步进行中（`adaptive_m3_pc_model2_eta_T_nx48_cont/`）。
+- **restart 机制**：`run_m3_pc_model1.py` 新增 `FRACTUREX_RESTART_NPZ/RESTART_STEP/PEAK_R0`，
+  npz 由 `vtu_to_restart_npz.py` 转换；与 in-run 加密后流程同构（恢复 mesh+d，H 由 solve 重建）。
+  smoke（nx=8, step2 重启）与整跑逐位一致；lab 续跑首步重解 step 39 验连续性（应复现 R≈0.1914）。
+- 5 张论文图已用 nx=48 重生成（`plot_paper_model2_Fu.py` + `plot_paper_model2_evolution.py`，
+  evolution 面板 0/20/28/39）；tex §5.4 当前为 diagnostic 定位，待续跑完再定叙事（用户决策）。
+- 详细记录：[DECISION_marker_theory_for_model2.md](DECISION_marker_theory_for_model2.md) §10.1。
+
+## SENS η_T marker：Mode-II 剪切 $g^{-2}$ 病态的理论级修复（2026-07-06，nx=24——欠分辨，仅定性结论有效）
 
 配置：`FRACTUREX_MARKER=eta_T, ETA_T_STRATEGY=max, THETA_REC=0.9, ETA_DECREMENT=0.7, D_HI=0.995, du=2.5e-4, nx=24, pardiso, 40 steps`。lab 服务器 `~/tian/fracturex/results/adaptive_m3_pc_model2_eta_T/`，wall 81326.5s $\approx$ 22.6h。数据 rsync 回本机 `~/repository/results/adaptive_m3_pc_model2_eta_T/`。
 

@@ -20,6 +20,12 @@ Migrated features:
   Stage 4 (interface cutting):
     - cut_interface(phi)
     - from_interface_cut_box(phi, box, nx, ny)
+  Stage 5 (quad red-blue adaptive + cell-data interpolation):
+    - refine_quad_rb / coarsen_quad_rb   (fully conforming red-blue quads)
+    - interpolation_cell_data            (piecewise-constant transfer from a
+      background triangle mesh, e.g. carrying the H history field across
+      remeshing); helpers bc_to_point / cell_area / boundary_node_flag /
+      find_point_in_triangle_mesh
 
 The class inherits from fealpy3 ``HalfEdgeMesh2d`` and wraps ``self.node`` and
 ``self.halfedge`` as ``DynamicArray`` so fealpy2 style
@@ -28,15 +34,20 @@ The class inherits from fealpy3 ``HalfEdgeMesh2d`` and wraps ``self.node`` and
 A thin ``self.ds`` shim is exposed so legacy code written against
 ``mesh.ds.halfedge`` / ``mesh.ds.subdomain`` etc. keeps working.
 
-Note: quad refine/coarsen (fealpy2 ``refine_quad`` / ``coarsen_quad``) is
-intentionally not ported.  The fealpy2 implementation is incomplete — the
-``quad_coordinateCell`` branch inside ``refine_cell`` was never written, and
-the ``hedgecolor`` attribute it relies on is never initialised in
-``__init__``.  Use ``refine_poly`` for polygon adaptivity, or write a new
-red-green style quad refiner if needed.
+Quad red-blue notes
+-------------------
+``refine_quad_rb`` / ``coarsen_quad_rb`` are a faithful port of the fealpy2
+``half_edge_mesh_2d.py`` ``refine_quad`` / ``coarsen_quad`` (the module actually
+imported at runtime, which DOES contain the working ``quad_coordinateCell``
+blue->red closure). Colors live in ``self.halfedgedata['color']`` and
+``self.halfedgedata['colorlevel']`` (both length NHE), with the fealpy2 value
+convention 0=red, 1=green (center spoke), 2=blue (transition, coarse side),
+3=yellow (transition, fine side). They are lazily initialised on first
+``refine_quad_rb`` call via a checkerboard flood-fill over the reference mesh.
 """
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from fealpy.mesh import HalfEdgeMesh2d as _FealpyHalfEdgeMesh2d
 from fealpy.common import DynamicArray
@@ -798,6 +809,482 @@ class AdaptiveHalfEdgeMesh2d(_FealpyHalfEdgeMesh2d):
         color[halfedge[color == 2, 3]] = 1
         self.halfedgedata['color'] = color
 
+    # ------------------------------------------------------------------
+    # Quad red-blue refine / coarsen  (Stage 5)
+    # ------------------------------------------------------------------
+
+    def _init_quad_color(self):
+        """Lazily build the checkerboard halfedge color for red-blue quads.
+
+        Faithful port of fealpy2 ``refine_quad`` colour seed (half_edge_mesh_2d
+        lines 1464-1473). Fills ``self.halfedgedata['color']`` and
+        ``['colorlevel']`` (both length NHE, int64) using the value convention
+        0=red, 1=green, 2=blue, 3=yellow. Must be called on an all-quad mesh
+        before any adaptive step so every regular quad edge is red/green.
+
+        Side effects
+        ------------
+        Writes ``self.halfedgedata['color']`` and ``['colorlevel']``.
+        """
+        NHE = self.number_of_halfedges()
+        he = self._halfedge_view()
+        color = 3 * np.ones(NHE, dtype=np.int_)
+        color[1] = 1
+        guard = 0
+        while (color == 3).any():
+            red = color == 1
+            gre = color == 0
+            color[he[red][:, [2, 3, 4]]] = 0
+            color[he[gre][:, [2, 3, 4]]] = 1
+            guard += 1
+            if guard > NHE + 10:
+                raise RuntimeError("quad colour flood-fill did not converge; "
+                                   "mesh is not a checkerboard-2-colourable quad mesh")
+        colorlevel = ((color == 1) | (color == 2)).astype(np.int_)
+        # Store as plain ndarrays (not DynamicArray): mark_halfedge relies on
+        # elementwise ``color == k``, which a DynamicArray reduces to a scalar.
+        self.halfedgedata['color'] = color
+        self.halfedgedata['colorlevel'] = colorlevel
+
+    def refine_quad_rb(self, isMarkedCell=None, options={}):
+        """Fully conforming red-blue (红蓝) refinement of a quad halfedge mesh.
+
+        Faithful new-architecture port of fealpy2
+        ``half_edge_mesh_2d.HalfEdgeMesh2d.refine_quad`` (lines 1457-1552),
+        including the ``quad_coordinateCell`` blue->red transition closure. Each
+        marked quad is split into 4 sub-quads; edge-neighbours of differing
+        level are joined by conforming blue/yellow transition quads so the mesh
+        never has hanging nodes.
+
+        Parameters
+        ----------
+        isMarkedCell : ndarray of bool, optional
+            Cells to refine. Length ``number_of_cells()`` (interior only) or
+            ``number_of_all_cells()`` (outer/hole entries are forced False).
+            ``None`` marks every interior cell (uniform refine).
+        options : dict, optional
+            Passed through to the cell-split engine (e.g. ``'numrefine'``).
+
+        Side effects
+        ------------
+        Mutates node/halfedge/subdomain/celldata['level']/halfedgedata['level']
+        in place, and maintains ``halfedgedata['color']`` / ``['colorlevel']``.
+        Lazily initialises the colour arrays via ``_init_quad_color`` on the
+        first call.
+        """
+        NC_all = self.number_of_all_cells()
+        cstart = self.cellstart
+
+        # normalise mark to NC_all length, outer/hole always False
+        if isMarkedCell is None:
+            isMarkedCell = np.ones(NC_all, dtype=np.bool_)
+        else:
+            isMarkedCell = np.asarray(isMarkedCell).astype(np.bool_)
+            if isMarkedCell.size == self.number_of_cells():
+                full = np.zeros(NC_all, dtype=np.bool_)
+                full[cstart:] = isMarkedCell
+                isMarkedCell = full
+            else:
+                isMarkedCell = isMarkedCell.copy()
+        isMarkedCell[:cstart] = False
+
+        if 'color' not in self.halfedgedata:
+            self._init_quad_color()
+
+        color = np.asarray(self.halfedgedata['color'][:]).copy()
+        colorlevel = np.asarray(self.halfedgedata['colorlevel'][:]).copy()
+
+        halfedge = self.halfedge
+        node = self._node_view()
+        NHE0 = self.number_of_halfedges()
+
+        isBlueHEdge = color == 2
+        isYellowHEdge = color == 3
+
+        # --- Phase 1: quad centre of every cell (corner average, forced NV=4) ---
+        hv = self._halfedge_view()
+        start = self.hcell[cstart:]
+        c0 = node[hv[start, 0]]
+        h = hv[start, 2]; c1 = node[hv[h, 0]]
+        h = hv[h, 2];     c2 = node[hv[h, 0]]
+        h = hv[h, 2];     c3 = node[hv[h, 0]]
+        bc = np.zeros((NC_all, 2), dtype=self.ftype)
+        bc[cstart:] = (c0 + c1 + c2 + c3) / 4
+
+        # shift transition-cell centres to the true parent-quad centre
+        bcur, = np.where(isBlueHEdge)
+        if bcur.size:
+            nex = hv[bcur, 2]; nnex = hv[nex, 2]; pre = hv[bcur, 3]
+            np.add.at(bc, hv[bcur, 1], (node[hv[nnex, 0]] - node[hv[pre, 0]]) / 8)
+        ycur, = np.where(isYellowHEdge)
+        if ycur.size:
+            nex = hv[ycur, 2]; nnex = hv[nex, 2]
+            np.add.at(bc, hv[ycur, 1], (node[hv[nex, 0]] - node[hv[ycur, 0]]) / 8)
+
+        # --- Phase A: mark halfedges (quad) and bisect the red/green ones ---
+        isMarkedHEdge0 = self.mark_halfedge(isMarkedCell.copy(), method='quad')
+        isMarkedHEdge = isMarkedHEdge0 & ((color == 0) | (color == 1))
+        isMarkedCell[halfedge[np.where(isMarkedHEdge)[0], 1]] = True
+        isMarkedCell[:cstart] = False
+
+        # Track the green-spoke starts geometrically (robust to the new-arch
+        # refine_halfedge numbering, which differs from fealpy2). After bisection
+        # a marked halfedge index keeps pointing midpoint->corner, so it is a
+        # center-split start; pre-existing green edges that were NOT bisected
+        # (transition spokes) are also starts. Verified start set == oracle.
+        pre_green = color == 1                       # length NHE0
+        current_orig = np.where(isMarkedHEdge)[0]    # indices preserved by bisect
+
+        self.refine_halfedge(isMarkedHEdge)
+        NHE_A = self.number_of_halfedges()
+        dA = NHE_A - NHE0
+
+        color = np.r_[color, np.zeros(dA, dtype=np.int_)]
+        colorlevel = np.r_[colorlevel, np.zeros(dA, dtype=np.int_)]
+        # A bisected edge stays monochrome: the new (back) half inherits the
+        # colour of the front half it feeds into (halfedge[new, 2]). Using the
+        # opposite (old fealpy2 idiom) mis-parities self-opposite boundary
+        # halves under the new-arch refine_halfedge numbering.
+        new_idx = np.arange(NHE0, NHE_A)
+        color[new_idx] = color[halfedge[new_idx, 2]]
+        colorlevel[new_idx] = colorlevel[halfedge[new_idx, 2]]
+
+        # --- Phase B: blue transition cells marked for refine become red ---
+        flag = isBlueHEdge & isMarkedHEdge0
+        current, = np.where(flag)
+        NE1 = current.size
+        if NE1:
+            NCB = self.number_of_all_cells()   # bisect adds no cells
+            pre = halfedge[current, 3]
+            ppre = halfedge[pre, 3]
+            opp = halfedge[current, 4]
+
+            halfedge[current, 3] = ppre
+            halfedge[current, 4] = np.arange(NHE_A, NHE_A + NE1)
+            halfedge[ppre, 2] = current
+            halfedge[pre, 1] = np.arange(NCB, NCB + NE1)
+            halfedge[pre, 2] = halfedge[opp, 2]
+            halfedge[pre, 3] = np.arange(NHE_A, NHE_A + NE1)
+
+            halfedgeNew = halfedge.increase_size(NE1 * 2)
+            halfedgeNew[:NE1, 0] = halfedge[ppre, 0]
+            halfedgeNew[:NE1, 1] = np.arange(NCB, NCB + NE1)
+            halfedgeNew[:NE1, 2] = pre
+            halfedgeNew[:NE1, 3] = np.arange(NHE_A + NE1, NHE_A + NE1 * 2)
+            halfedgeNew[:NE1, 4] = current
+
+            current2 = opp.copy()
+            nex = halfedge[current2, 2]
+            nnex = halfedge[nex, 2]
+            opp2 = halfedge[current2, 4]
+
+            halfedge[current2, 0] = halfedge[nex, 0]
+            halfedge[current2, 2] = nnex
+            halfedge[current2, 4] = np.arange(NHE_A + NE1, NHE_A + NE1 * 2)
+            halfedge[nnex, 3] = current2
+            halfedge[nex, 1] = np.arange(NCB, NCB + NE1)
+            halfedge[nex, 2] = np.arange(NHE_A + NE1, NHE_A + NE1 * 2)
+            halfedge[nex, 3] = pre
+            halfedgeNew[NE1:, 0] = halfedge[opp2, 0]
+            halfedgeNew[NE1:, 1] = np.arange(NCB, NCB + NE1)
+            halfedgeNew[NE1:, 2] = np.arange(NHE_A, NHE_A + NE1)
+            halfedgeNew[NE1:, 3] = nex
+            halfedgeNew[NE1:, 4] = current2
+
+            # grow per-cell arrays for the NE1 new (merged) cells
+            merged_cell = halfedge[current2, 1]
+            self.celldata['level'].extend(
+                np.asarray(self.celldata['level'][:])[merged_cell])
+            if self.subdomain is not None:
+                self.subdomain.extend(
+                    np.asarray(self.subdomain[:])[merged_cell])
+            self.halfedgedata['level'].extend(np.zeros(NE1 * 2, dtype=np.int_))
+
+            self._reinit_after_edit()
+
+            NHE_B = self.number_of_halfedges()
+            color = np.r_[color, np.zeros(NE1 * 2, dtype=np.int_)]
+            colorlevel = np.r_[colorlevel, np.zeros(NE1 * 2, dtype=np.int_)]
+            color[NHE_A:NHE_A + NE1] = 0
+            color[NHE_A + NE1:NHE_A + NE1 * 2] = 1
+            oppB = halfedge[np.arange(NHE_A, NHE_B), 4]
+            color[oppB] = (color[NHE_A:NHE_B] + 1) % 2
+            colorlevel[NHE_A + NE1:NHE_A + NE1 * 2] += 1
+        else:
+            NHE_B = NHE_A
+
+        # --- Phase C: centre-split every red quad with bisected edges ---
+        NV = self.number_of_vertices_of_all_cells()
+        isNewCell = (NV == 6) | (NV == 8)
+        bc = np.r_[bc, np.zeros((NE1, 2), dtype=self.ftype)]
+
+        # start halfedges = (unbisected pre-existing green | bisected spokes),
+        # restricted to the new (NV 6/8) cells (empirically == oracle start set)
+        NHE_B = self.number_of_halfedges()
+        unbis_green = np.zeros(NHE_B, dtype=np.bool_)
+        unbis_green[:NHE0] = pre_green & ~isMarkedHEdge
+        co = np.zeros(NHE_B, dtype=np.bool_)
+        co[current_orig] = True
+        incell = isNewCell[halfedge[np.arange(NHE_B), 1]]
+        isStartHEdge = (unbis_green | co) & incell
+        NC1 = int(isStartHEdge.sum())
+        center = bc[isNewCell]
+
+        # keep isMarkedHEdge aligned to current NHE for the Phase-D recolour
+        isMarkedHEdge = np.r_[isMarkedHEdge, np.zeros(NHE_B - NHE0, dtype=np.bool_)]
+
+        self._refine_poly_cell_(isNewCell, isStartHEdge, options=options,
+                                center=center)
+
+        # --- Phase D: recolour the freshly created transition edges ---
+        NHE_C = self.number_of_halfedges()
+        tmp = np.where(~isMarkedHEdge & isStartHEdge)[0]
+        color = np.r_[color, np.zeros(NC1 * 2, dtype=np.int_)]
+        colorlevel = np.r_[colorlevel, np.zeros(NC1 * 2, dtype=np.int_)]
+        color[NHE_C - NC1 * 2:NHE_C - NC1] = 1
+        color[halfedge[tmp, 3]] = 3
+        color[halfedge[halfedge[tmp, 3], 4]] = 2
+        colorlevel[NHE_C - NC1 * 2:NHE_C - NC1] += 1
+
+        self.halfedgedata['color'] = color
+        self.halfedgedata['colorlevel'] = colorlevel
+
+    def coarsen_quad_rb(self, isMarkedCell, options={}):
+        """Red-blue coarsening of a quad halfedge mesh (inverse of refine).
+
+        Removes the four sub-quads of a refined parent, recovering the parent
+        quad, then rebuilds the checkerboard halfedge colour. The topological
+        surgery (centre-node removal + edge un-bisection, with the built-in
+        "adjacent levels differ by <=1" mark propagation) reuses the validated
+        ``coarsen_poly`` engine; this method adds quad-specific colour
+        maintenance and guarantees the result stays all-quad.
+
+        Unlike the fealpy2 ``coarsen_quad`` (which was non-functional — it
+        crashed for any mesh with more than one cell), this is written and
+        validated directly: refine->coarsen restores the original NC/NN/NE and
+        total area, the result is conforming (no hanging nodes) and all-quad,
+        and the recoloured mesh can be refined again while staying conforming.
+
+        Parameters
+        ----------
+        isMarkedCell : ndarray of bool
+            Cells to coarsen. Length ``number_of_cells()`` (interior only) or
+            ``number_of_all_cells()``. Only cells with ``celldata['level'] > 0``
+            (i.e. previously refined) can actually be removed; the underlying
+            engine propagates marks so coarsening never breaks the 2:1 balance.
+        options : dict, optional
+            Passed through to ``coarsen_poly`` (e.g. ``'numrefine'``).
+
+        Side effects
+        ------------
+        Mutates node/halfedge/subdomain/celldata['level']/halfedgedata['level']
+        in place and rewrites ``halfedgedata['color']`` / ``['colorlevel']``.
+
+        Raises
+        ------
+        RuntimeError
+            If coarsening leaves a non-quad transition cell that cannot be
+            recoloured as a checkerboard (asymmetric partial marks); mark whole
+            refined groups to avoid this.
+        """
+        NC_all = self.number_of_all_cells()
+        cstart = self.cellstart
+
+        isMarkedCell = np.asarray(isMarkedCell).astype(np.bool_)
+        if isMarkedCell.size == self.number_of_cells():
+            full = np.zeros(NC_all, dtype=np.bool_)
+            full[cstart:] = isMarkedCell
+            isMarkedCell = full
+        else:
+            isMarkedCell = isMarkedCell.copy()
+        isMarkedCell[:cstart] = False
+
+        # topological inverse: remove centre nodes + un-bisect edges. The engine
+        # also enforces the 2:1 level balance via its own mark propagation.
+        self.coarsen_poly(isMarkedCell, options=options)
+
+        # rebuild the checkerboard colour on the coarsened mesh. _init_quad_color
+        # only makes sense on an all-quad mesh; a leftover transition polygon
+        # (from asymmetric partial marks) is reported rather than mis-coloured.
+        NV = self.number_of_vertices_of_all_cells()
+        if not (NV[cstart:] == 4).all():
+            bad = np.unique(NV[cstart:][NV[cstart:] != 4])
+            raise RuntimeError(
+                f"coarsen_quad_rb: coarsening left non-quad cell(s) with "
+                f"NV={bad.tolist()}; mark complete refined groups so the mesh "
+                "stays all-quad")
+        self.halfedgedata.pop('color', None)
+        self.halfedgedata.pop('colorlevel', None)
+        self._init_quad_color()
+
+    # ------------------------------------------------------------------
+    # Parent -> child inheritance interpolation (nested quad refinement)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _locate_in_quads(points, node_old, cell_old, tol=1e-9):
+        """Locate each point in the quad that contains it.
+
+        Point-in-convex-quad test via edge cross products, assuming each old
+        quad is given counter-clockwise. Used for parent->child inheritance,
+        where every query point (child centroid or new node) lies inside
+        exactly one parent quad by construction.
+
+        Parameters
+        ----------
+        points : (NP, 2) float64
+            Query points.
+        node_old : (NN_old, 2) float64
+            Coordinates of the pre-refine mesh nodes.
+        cell_old : (NC_old, 4) int
+            Parent quad connectivity, counter-clockwise, indexing ``node_old``.
+        tol : float
+            Boundary tolerance so points on an edge/corner still match.
+
+        Returns
+        -------
+        loc : (NP,) int
+            Index (into ``cell_old``) of the containing quad, or ``-1`` if the
+            point fell outside every quad (should not happen for nested refine).
+        """
+        NP = points.shape[0]
+        NC = cell_old.shape[0]
+        loc = np.full(NP, -1, dtype=np.int_)
+        v = node_old[cell_old]                       # (NC, 4, 2)
+        px = points[:, 0]; py = points[:, 1]
+        for i in range(NC):
+            q = v[i]
+            inside = np.ones(NP, dtype=np.bool_)
+            for k in range(4):
+                a = q[k]; b = q[(k + 1) % 4]
+                cross = (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])
+                inside &= cross >= -tol
+            newly = inside & (loc < 0)
+            loc[newly] = i
+        return loc
+
+    @staticmethod
+    def _bilinear_weights(points, quads, niter=30, tol=1e-13):
+        """Bilinear shape-function weights of ``points`` inside their quads.
+
+        Newton solve of the inverse bilinear map for each point. Quad corners
+        ``quads[p] = [N0, N1, N2, N3]`` (counter-clockwise) map to reference
+        coords via ``X(xi, eta) = (1-xi)(1-eta) N0 + xi(1-eta) N1 +
+        xi*eta N2 + (1-xi)eta N3`` with ``xi, eta in [0, 1]``.
+
+        Parameters
+        ----------
+        points : (NP, 2) float64
+            Query points.
+        quads : (NP, 4, 2) float64
+            The containing quad's corner coordinates for each point.
+
+        Returns
+        -------
+        w : (NP, 4) float64
+            Bilinear weights ``[N0, N1, N2, N3]`` summing to 1; a linear/bilinear
+            field ``f`` is reproduced exactly by ``w @ f_corners``.
+        """
+        NP = points.shape[0]
+        Q0, Q1, Q2, Q3 = quads[:, 0], quads[:, 1], quads[:, 2], quads[:, 3]
+        xi = np.full(NP, 0.5); eta = np.full(NP, 0.5)
+        for _ in range(niter):
+            omx = 1 - xi; ome = 1 - eta
+            N0 = omx * ome; N1 = xi * ome; N2 = xi * eta; N3 = omx * eta
+            X = (N0[:, None] * Q0 + N1[:, None] * Q1
+                 + N2[:, None] * Q2 + N3[:, None] * Q3)
+            r = X - points                                    # residual (NP,2)
+            dXi = ome[:, None] * (Q1 - Q0) + eta[:, None] * (Q2 - Q3)
+            dEta = omx[:, None] * (Q3 - Q0) + xi[:, None] * (Q2 - Q1)
+            det = dXi[:, 0] * dEta[:, 1] - dXi[:, 1] * dEta[:, 0]
+            det = np.where(np.abs(det) < 1e-300, 1e-300, det)
+            dxi = -(dEta[:, 1] * r[:, 0] - dEta[:, 0] * r[:, 1]) / det
+            deta = -(-dXi[:, 1] * r[:, 0] + dXi[:, 0] * r[:, 1]) / det
+            xi = np.clip(xi + dxi, 0.0, 1.0)
+            eta = np.clip(eta + deta, 0.0, 1.0)
+            if np.max(np.abs(r)) < tol:
+                break
+        omx = 1 - xi; ome = 1 - eta
+        return np.stack([omx * ome, xi * ome, xi * eta, omx * eta], axis=1)
+
+    def inherit_nodal_data(self, node_data_old, node_old, cell_old):
+        """Inherit a nodal field from the pre-refine mesh onto the current mesh.
+
+        Exact parent->child inheritance for red-blue quad refinement: old node
+        indices are preserved and every new node (edge midpoint / cell centre)
+        lies inside one parent quad, so its value is the parent quad's bilinear
+        interpolation. This reproduces any bi-/linear field exactly.
+
+        Parameters
+        ----------
+        node_data_old : (NN_old,) or (NN_old, d) float64
+            Nodal values on the pre-refine mesh, indexed by ``node_old`` order.
+        node_old : (NN_old, 2) float64
+            Pre-refine node coordinates (snapshot taken before ``refine_quad_rb``).
+        cell_old : (NC_old, 4) int
+            Pre-refine quad connectivity (from ``cell_to_node()``), CCW.
+
+        Returns
+        -------
+        out : (NN_new,) or (NN_new, d) float64
+            Values on all current nodes, indexed by the current node order.
+
+        Raises
+        ------
+        RuntimeError
+            If a current node cannot be located in any parent quad.
+        """
+        node_data_old = np.asarray(node_data_old)
+        pts = self._node_view()
+        loc = self._locate_in_quads(pts, node_old, cell_old)
+        if (loc < 0).any():
+            raise RuntimeError(
+                f"inherit_nodal_data: {(loc < 0).sum()} node(s) outside every "
+                "parent quad; snapshot node_old/cell_old must be the pre-refine mesh")
+        quads = node_old[cell_old[loc]]                       # (NN_new, 4, 2)
+        w = self._bilinear_weights(pts, quads)                # (NN_new, 4)
+        corner_vals = node_data_old[cell_old[loc]]            # (NN_new, 4[, d])
+        if node_data_old.ndim == 1:
+            return np.einsum('nk,nk->n', w, corner_vals)
+        return np.einsum('nk,nkd->nd', w, corner_vals)
+
+    def inherit_cell_data(self, cell_data_old, node_old, cell_old):
+        """Inherit piecewise-constant cell data from parents onto children.
+
+        Each current (child) cell nests inside exactly one parent quad; its
+        constant value is copied from that parent. Supports ``(NC_old,)`` and
+        ``(NC_old, NQ)`` layouts (e.g. an ``(NC, NQ)`` quadrature-point history
+        field), returning ``(NC_new, ...)``.
+
+        Parameters
+        ----------
+        cell_data_old : (NC_old,) or (NC_old, NQ) float64
+            Piecewise-constant data on the pre-refine mesh, indexed by the
+            interior-cell order (``cell_old`` order).
+        node_old : (NN_old, 2) float64
+            Pre-refine node coordinates.
+        cell_old : (NC_old, 4) int
+            Pre-refine quad connectivity (CCW), indexing ``node_old``.
+
+        Returns
+        -------
+        out : (NC_new,) or (NC_new, NQ) float64
+            Piecewise-constant data on the current cells, interior-cell order.
+
+        Raises
+        ------
+        RuntimeError
+            If a child centroid cannot be located in any parent quad.
+        """
+        cell_data_old = np.asarray(cell_data_old)
+        centroids = self.cell_barycenter()                    # (NC_new, 2)
+        loc = self._locate_in_quads(centroids, node_old, cell_old)
+        if (loc < 0).any():
+            raise RuntimeError(
+                f"inherit_cell_data: {(loc < 0).sum()} child centroid(s) outside "
+                "every parent quad; check node_old/cell_old snapshot")
+        return cell_data_old[loc]
+
     def refine_triangle_nvb(self, isMarkedCell=None, options={}):
         NC = self.number_of_cells()
         NHE = self.number_of_halfedges()
@@ -983,12 +1470,23 @@ class AdaptiveHalfEdgeMesh2d(_FealpyHalfEdgeMesh2d):
     # Polygon refine / coarsen  (Stage 3)
     # ------------------------------------------------------------------
 
-    def _refine_poly_cell_(self, isMarkedCell, isStartHEdge, options={}):
+    def _refine_poly_cell_(self, isMarkedCell, isStartHEdge, options={},
+                           center=None):
         """
         ``isMarkedCell`` has length NC_all (with outer/hole entries False).
         ``isStartHEdge`` has length NHE.
         New cell ids are appended at NC_all onward, keeping the outer/hole
         entries stable in position.
+
+        Parameters
+        ----------
+        center : (NN1, 2) float ndarray, optional
+            Explicit new-node coordinates, one per marked cell, in the same
+            order as ``np.where(isMarkedCell)`` over the full NC_all range.
+            When ``None`` (default) the area-weighted cell centroid is used
+            (``cell_barycenter``). Pass this for cells whose centroid must not
+            be the shoelace barycenter (e.g. NV==6 quad transition cells, whose
+            split node should sit at the quad center, not the polygon centroid).
         """
         NC_all = self.number_of_all_cells()
         NN = self.number_of_nodes()
@@ -1001,10 +1499,18 @@ class AdaptiveHalfEdgeMesh2d(_FealpyHalfEdgeMesh2d):
         hlevel = self.halfedgedata['level']
         halfedge = self.halfedge
 
-        # cell_barycenter returns NC-length (interior only); map isMarkedCell
-        # back into interior-cell indexing to pick the right centroids.
-        interior_marked = isMarkedCell[cstart:]
-        self.node.extend(self.cell_barycenter(index=interior_marked))
+        if center is None:
+            # cell_barycenter returns NC-length (interior only); map isMarkedCell
+            # back into interior-cell indexing to pick the right centroids.
+            interior_marked = isMarkedCell[cstart:]
+            self.node.extend(self.cell_barycenter(index=interior_marked))
+        else:
+            center = np.asarray(center, dtype=self.ftype)
+            if center.shape != (NN1, 2):
+                raise ValueError(
+                    f"center must have shape ({NN1}, 2) (one per marked cell), "
+                    f"got {center.shape}")
+            self.node.extend(center)
 
         cell2newNode = np.zeros(NC_all, dtype=np.int_)
         cell2newNode[isMarkedCell] = np.arange(NN, NN + NN1)

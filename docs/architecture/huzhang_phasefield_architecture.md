@@ -110,6 +110,7 @@ CaseBase
 - `fracturex/assemblers/phasefield_assembler.py`：相场系统组装与历史驱动耦合。  
 - `fracturex/damage/phasefield_damage.py`：AT1/AT2、退化函数、正应变能分裂、历史演化。  
 - `fracturex/utilfuc/linear_solvers.py`：直接法、Krylov、aux-space 预条件等实验路径。  
+- `fracturex/mesh/halfedge_mesh.py`（`AdaptiveHalfEdgeMesh2d`）：半边网格自适应。四边形**红蓝加密/粗化**（`refine_quad_rb` / `coarsen_quad_rb`，全共形无挂点）与**父→子继承插值**（`inherit_nodal_data` 双线性精确、`inherit_cell_data` 搬运 `(NC,NQ)` 分片常数，用于跨加密携带 H 历史场）。设计取舍与验证见 [`DECISION_quad_rb.md`](DECISION_quad_rb.md)；演示图 `quad_rb_interp_demo.png`（脚本 `scripts/demo_quad_rb_interp.py`）。  
 
 ---
 

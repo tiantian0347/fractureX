@@ -147,7 +147,7 @@ def run_model5_one(args: Model5RunArgs) -> Path:
         timing=False,
         recorder=recorder,
         output_dir=str(args.outdir),
-        save_vtu_per_step=False,
+        save_vtu_per_step=True,
     )
     driver.run(_resolve_loads(args))
     return args.outdir

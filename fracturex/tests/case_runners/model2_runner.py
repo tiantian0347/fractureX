@@ -201,7 +201,7 @@ def run_model2_one(args: Model2RunArgs) -> Path:
         timing=False,
         recorder=recorder,
         output_dir=str(args.outdir),
-        save_vtu_per_step=False,
+        save_vtu_per_step=True,
     )
 
     loads = _resolve_loads(args)

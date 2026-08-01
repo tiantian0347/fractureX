@@ -303,7 +303,7 @@ def main() -> None:
             timing=True,
             recorder=recorder,
             output_dir=tag_dir_path,
-            save_vtu_per_step=not performance_mode,
+            save_vtu_per_step=True,
         )
         return driver, discr, damage
 

@@ -89,7 +89,7 @@ class HuZhangPhaseFieldStaggeredDriver:
         timing: bool = False,
         recorder: Optional[Any] = None,
         output_dir: Optional[str] = None,
-        save_vtu_per_step: bool = False,
+        save_vtu_per_step: bool = True,
         stagger_print_interval: Optional[int] = None,
         d_relaxation: Optional[float] = None,
     ):
@@ -107,7 +107,8 @@ class HuZhangPhaseFieldStaggeredDriver:
             cell_mode/debug/timing/recorder: Output and diagnostics switches.
             output_dir: Directory for per-step VTK (``<dir>/vtk/step_XXX.vtu``).
                 Defaults to ``recorder.outdir`` when omitted.
-            save_vtu_per_step: Write VTK after each load step when an output dir exists.
+            save_vtu_per_step: Write VTK after each load step when an output dir exists
+                (default True; set False for smoke / IO-heavy long scans).
                 Legacy: also enabled when ``case.output_enabled`` is True.
             stagger_print_interval: Nonlinear staggered progress print stride.
                 ``None`` reads env ``FRACTUREX_STAGGER_PRINT_INTERVAL`` (default ``1``).

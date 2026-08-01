@@ -143,7 +143,7 @@ def run_model6_one(args: Model6RunArgs) -> Path:
         timing=False,
         recorder=recorder,
         output_dir=str(args.outdir),
-        save_vtu_per_step=False,
+        save_vtu_per_step=True,
     )
     driver.run(_resolve_loads(args))
     return args.outdir

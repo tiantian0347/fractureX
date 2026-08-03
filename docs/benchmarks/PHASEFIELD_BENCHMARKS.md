@@ -176,12 +176,40 @@ Repo adaptive-paper `model4` force curve (historical; confirm geometry match bef
 | Expectation | vertical Mode-I; sharp post-peak drop; peak **~0.042 kN** @ ~0.046 mm |
 
 Figures: `results/phasefield/model5_three_point_bending/`.
+Plot script: `scripts/paper_huzhang/make_model5_figures.py`
+(formal figure titles: *Three-Point Bending of a Notched Beam*).
 
 **Reference F–u**
 
 Ambati Fig. 22 (Miehe anisotropic ≈ hybrid):
 
 ![Ambati Fig.22 TPB](figures/loaddisp/ambati_fig22_model5_tpb_loaddisp.png)
+
+**FractureX Hu–Zhang (coarse smoke, \(h=0.15\), 80 steps)**
+
+![TPB FX F–u](figures/loaddisp/model5_fx_loaddisp.png)
+
+![TPB FX vs Ambati](figures/loaddisp/model5_fx_vs_ambati_loaddisp.png)
+
+> Coarse FX run peaks at \(|R|\approx0.248\) kN @ \(u=0.028\) vs Ambati / CLASSIC §5
+> \(\sim0.042\) kN @ \(\sim0.046\) (\(\approx5.9\times\) stiffer/stronger) — mesh / BC / unit check needed.
+
+**FractureX standard FEM (`MainSolve`, `h=0.1`, full Ambati schedule, lab ~22 h)**
+
+![TPB standard FEM F–u](figures/loaddisp/model5_std_fem_loaddisp.png)
+
+![TPB standard FEM vs Ambati](figures/loaddisp/model5_std_fem_vs_ambati_loaddisp.png)
+
+> Standard FEM peak \(|R|\approx0.059\) kN @ \(u=0.070\) vs Ambati \(\sim0.042\) kN @ \(\sim0.046\)
+> — same order of magnitude; slightly higher/later peak (mesh, notch geometry, phase-field regularization).
+> Run: `results/phasefield/model5_standard_fem/std_bg_h010_full/` (`h=0.1`, NC≈4k, ~22 h).
+> **Refinement:** use **`h \lesssim 0.01`** (NC≈370k, ~100× cost vs `h=0.1`) to resolve \(\ell_0=0.03\);
+> smoke to peak: `scripts/paper_huzhang/run_model5_std_fem_lab.sh smoke`.
+> Plot: `scripts/paper_huzhang/make_model5_std_fem_figures.py`.
+
+![TPB FX phase-field evolution](figures/phasefield/three_point_bending_phasefield_evolution.png)
+
+![TPB FX phase-field final](figures/phasefield/three_point_bending_phasefield_final.png)
 
 ---
 
@@ -312,7 +340,11 @@ fracturex/cases/
   model6_asymmetric_notched_beam.py
 fracturex/tests/case_runners/
   model{0,2,3,4,5,6}_runner.py
+scripts/paper_huzhang/
+  make_model5_figures.py              # TPB F–u + phase-field figures
 docs/benchmarks/
   PHASEFIELD_BENCHMARKS.md            # this file
-  figures/loaddisp/                   # F–u reference PNGs
+  figures/loaddisp/                   # F–u reference / FX PNGs
+  figures/phasefield/                 # damage-field snapshots
 ```
+

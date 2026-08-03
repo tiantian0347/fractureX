@@ -15,5 +15,14 @@ Used by [`../PHASEFIELD_BENCHMARKS.md`](../PHASEFIELD_BENCHMARKS.md).
 | `ambati_fig19_model3_lshape_loaddisp.png` | 3 | Ambati 2015 Fig. 19 |
 | `ambati_fig22_model5_tpb_loaddisp.png` | 5 | Ambati 2015 Fig. 22 |
 | `ambati_fig25_model6_loaddisp.png` | 6 | Ambati 2015 Fig. 25 |
+| `model5_fx_loaddisp.png` | 5 | FractureX Hu–Zhang run (`huzhang_bg_h015_n80`); script `scripts/paper_huzhang/make_model5_figures.py` |
+| `model5_fx_vs_ambati_loaddisp.png` | 5 | FX Hu–Zhang vs Ambati Fig.22 / `CLASSIC_BENCHMARKS` §5 overlay |
+| `model5_std_fem_loaddisp.png` | 5 | FractureX standard FEM (`std_bg_h010_full`, `h=0.1`); `scripts/paper_huzhang/make_model5_std_fem_figures.py` |
+| `model5_std_fem_vs_ambati_loaddisp.png` | 5 | FX standard FEM vs Ambati Fig.22 |
+| `ambati_fig22_model5_tpb_digitized.csv` | 5 | hand-digitized Ambati Fig.22 (mm, kN) |
+
+Phase-field snapshots for the same TPB run live in
+[`../phasefield/`](../phasefield/)
+(`three_point_bending_phasefield_{evolution,final}.{png,pdf}`).
 
 After a new FractureX production run, drop `model*_fx_loaddisp.png` here and link it in the MD results log.

@@ -180,6 +180,15 @@ class Model5ThreePointBendingCase(CaseBase):
     def reaction_direction(self):
         return "y"
 
+    def reaction_boundary(self, load: float = 0.0):
+        """Report force via support reactions (not the load-patch edges)."""
+
+        def on_supports(points: TensorLike) -> TensorLike:
+            return self._on_left_support(points) | self._on_right_support(points)
+
+        # Bottom outward normal is -e_y; sign=+1 yields upward support force.
+        return on_supports, "y", 1.0
+
     def make_mesh(self, nx: Optional[int] = None, ny: Optional[int] = None):
         mesh = _build_gmsh_beam(
             mesh_size=self.mesh_size,

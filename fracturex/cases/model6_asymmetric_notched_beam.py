@@ -190,6 +190,12 @@ class Model6AsymmetricNotchedBeamCase(CaseBase):
     def reaction_direction(self):
         return "y"
 
+    def reaction_boundary(self, load: float = 0.0):
+        def on_supports(points):
+            return self._on_left_support(points) | self._on_right_support(points)
+
+        return on_supports, "y", 1.0
+
     def make_mesh(self, nx: Optional[int] = None, ny: Optional[int] = None):
         mesh = _build_gmsh_asymmetric_beam(
             mesh_size=self.mesh_size,

@@ -420,12 +420,22 @@ class HuZhangElasticAssembler:
         nd = case.neumann_data(load)
         self._neumann_data_raw = nd
         if nd is not None and space0 is not None:
+            # Use v2: node-end DOFs use cartesian nsframe; edge-internal use
+            # esframe. Legacy set_essential_bc mis-projects node DOFs and can
+            # destroy traction-free ΓN (e.g. three-point-bending free bottom).
+            # skip_nn_corner_nodes=False: required for nonzero Neumann traction
+            # at NN corners (e.g. uniaxial end load). L-shape manufactured tests
+            # that need skip=True call set_essential_bc_v2 themselves.
             HSBC = HuzhangStressBoundaryCondition(space=space0, q=self.q)
             if isinstance(nd, (list, tuple)) and len(nd) > 0 and isinstance(nd[0], (list, tuple)) and len(nd[0]) in (3, 4):
-                uh_sig, is_bd = HSBC.set_essential_bc(gd=None, piecewise=nd)
+                uh_sig, is_bd = HSBC.set_essential_bc_v2(
+                    gd=None, piecewise=nd, skip_nn_corner_nodes=False
+                )
             else:
                 thr, gd, coord = nd
-                uh_sig, is_bd = HSBC.set_essential_bc(gd, threshold=thr, coord=coord)
+                uh_sig, is_bd = HSBC.set_essential_bc_v2(
+                    gd, threshold=thr, coord=coord, skip_nn_corner_nodes=False
+                )
             self._neumann_uh_sig = uh_sig
             self._neumann_is_bd = is_bd
 
@@ -546,10 +556,14 @@ class HuZhangElasticAssembler:
             else:
                 HSBC = HuzhangStressBoundaryCondition(space=space0, q=self.q)
                 if isinstance(nd, (list, tuple)) and len(nd) > 0 and isinstance(nd[0], (list, tuple)) and len(nd[0]) in (3, 4):
-                    uh_sig, isBd = HSBC.set_essential_bc(gd=None, piecewise=nd)
+                    uh_sig, isBd = HSBC.set_essential_bc_v2(
+                        gd=None, piecewise=nd, skip_nn_corner_nodes=False
+                    )
                 else:
                     thr, gd, coord = nd
-                    uh_sig, isBd = HSBC.set_essential_bc(gd, threshold=thr, coord=coord)
+                    uh_sig, isBd = HSBC.set_essential_bc_v2(
+                        gd, threshold=thr, coord=coord, skip_nn_corner_nodes=False
+                    )
 
             if self._matfree:
                 # MF-aware essential elimination: emulate F = F - A@uh; F[isbd]=uh[isbd]

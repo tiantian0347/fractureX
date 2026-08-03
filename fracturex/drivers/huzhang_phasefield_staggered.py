@@ -764,14 +764,31 @@ class HuZhangPhaseFieldStaggeredDriver:
             dir_load = "y"
 
         sigma_react = self._sigma_physical_eval if self._sigma_physical_eval is not None else state.sigma
-        R = reaction_from_sigma(
-            self.discr.mesh,
-            sigma_react,
-            lp.threshold,
-            direction=dir_load,
-            q=q,
-            sign=-1,
-        )
+        rb = None
+        if hasattr(self.case, "reaction_boundary"):
+            rb = self.case.reaction_boundary(load)
+        if rb is not None:
+            thr_R, dir_R, sign_R = rb
+            if dir_R not in ("x", "y", "z"):
+                dir_R = dir_load
+            R = reaction_from_sigma(
+                self.discr.mesh,
+                sigma_react,
+                thr_R,
+                direction=dir_R,
+                q=q,
+                sign=float(sign_R),
+            )
+            dir_load = dir_R
+        else:
+            R = reaction_from_sigma(
+                self.discr.mesh,
+                sigma_react,
+                lp.threshold,
+                direction=dir_load,
+                q=q,
+                sign=-1,
+            )
 
         step_walltime = float(time.perf_counter() - t_step0)
         d_final = bm.asarray(state.d[:])

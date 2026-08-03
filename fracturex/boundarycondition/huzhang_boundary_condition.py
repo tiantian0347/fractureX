@@ -187,10 +187,9 @@ class HuzhangBoundaryCondition:
         if piecewise is None:
             piecewise = [(threshold, value, direction)]
 
-        # 逐段累加
+        # 逐段累加. ``threshold=None`` means the whole boundary
+        # (see ``get_boundary_faces``); do not skip that piece.
         for thr, val, direc in piecewise:
-            if thr is None:
-                continue
             r += self._displacement_bc_one_piece(val, thr, direc, coef=coef)
 
         return r
@@ -441,8 +440,12 @@ class HuzhangStressBoundaryCondition:
             sigma_gdof = space0.number_of_global_dofs()
 
         # 1) 计算 σ 的边界 dof 与值
-        uh_stress, isbddof_stress = self.set_essential_bc(
-            gd, threshold=threshold, coord=coord, piecewise=piecewise
+        uh_stress, isbddof_stress = self.set_essential_bc_v2(
+            gd,
+            threshold=threshold,
+            coord=coord,
+            piecewise=piecewise,
+            skip_nn_corner_nodes=True,
         )
 
         # 2) 扩展到全系统
@@ -574,6 +577,16 @@ class HuzhangStressBoundaryCondition:
 
     def _apply_one_piece_v2(self, uh, isBdDof, gd, threshold, coord, comp=None,
                               skip_nn_corner_nodes=None):
+        """Corrected essential stress BC for one ΓN piece.
+
+        Supports:
+          - Voigt stress ``(..., 3)``
+          - traction vector ``(..., 2)`` with ``coord='nt'|'xy'|'auto'``
+            (phase-field cases use ``(gn, gt)=(0,0)`` in ``nt``)
+          - component filter ``comp in {None, 'n', 't'}``
+        """
+        import numpy as _np
+
         space = self.space
         mesh = self.mesh
         mask = boundary_entity_mask(mesh, "edge", threshold, name="threshold")
@@ -583,67 +596,123 @@ class HuzhangStressBoundaryCondition:
             return uh, isBdDof
 
         e2d_all = space.face_to_dof()
-        e2d = e2d_all[sel]                                    # (NEsel, 8 for p=3)
+        e2d = e2d_all[sel]                                    # (NEsel, 2(p+1) for 2D)
         p = space.p
 
         bcs = bm.multi_index_matrix(p, 1) / p                 # (Nbasis=p+1, 2)
         pts_all = mesh.bc_to_point(bcs)                       # (NE, Nbasis, 2)
         pts = pts_all[sel]                                    # (NEsel, Nbasis, 2)
+        Nbasis = int(bcs.shape[0])
 
         if callable(gd):
             gd_vals = gd(pts)
         else:
             gd_arr = bm.asarray(gd)
             if gd_arr.ndim == 1:
-                gd_vals = bm.broadcast_to(gd_arr, (NEsel, int(bcs.shape[0]), int(gd_arr.shape[0])))
+                gd_vals = bm.broadcast_to(
+                    gd_arr, (NEsel, Nbasis, int(gd_arr.shape[0]))
+                )
             else:
-                gd_vals = bm.broadcast_to(gd_arr, (NEsel, int(bcs.shape[0]), int(gd_arr.shape[-1])))
+                gd_vals = bm.broadcast_to(
+                    gd_arr, (NEsel, Nbasis, int(gd_arr.shape[-1]))
+                )
 
         dim = int(gd_vals.shape[-1])
-        if dim != 3:
-            raise NotImplementedError("v2 currently expects Voigt stress (dim=3) input")
+        if dim not in (2, 3):
+            raise ValueError(
+                f"v2 gd(points) must return last-dim 2 or 3, got {dim}"
+            )
 
-        # Voigt 内积权重：xx*1 + xy*2 + yy*1
-        num = bm.array([1.0, 2.0, 1.0], dtype=space.ftype)
-
-        # --- 边内部 trace DOFs (e2d[:, 2:-2])：用 esframe (nn, sym(nt)) 标架 ---
+        # Edge-internal DOFs live in esframe (σ_nn, 2 σ_nt).
+        # Node-end DOFs live in nsframe (σ_xx, 2 σ_xy).
         e_int = e2d[:, 2:-2]                                  # (NEsel, 2(p-1))
-        # 取 edge-internal 求值点：bcs 中端点之外的 (p-1) 个点；这里偷懒：
-        # fealpy interpolation 节点顺序就是 e2d 顺序，我们对应 gd_vals[:, 1:-1] (内部点)
-        gd_int = gd_vals[:, 1:-1, :]                          # (NEsel, p-1, 3)
-        eframe = space.esframe[sel, :2].copy()                # (NEsel, 2, 3) Voigt
-        eframe[:, 1] *= 2.0
-        val_int = bm.einsum('eid, jd, d -> eij', gd_int, eframe[0], num)  # 占位，正下方修正
-        val_int = bm.einsum('eid, ejd, d -> eij', gd_int, eframe, num)    # (NEsel, p-1, 2)
-        val_int_flat = val_int.reshape(NEsel, -1)             # (NEsel, 2(p-1))
+        write_nodes = True
 
-        # --- 节点 trace DOFs (e2d[:, :2] 和 e2d[:, -2:])：用 nsframe (cartesian S_xx, S_xy) ---
-        # nsframe 是节点上的，全网格统一为 cartesian {(1,0,0),(0,1/2,0),(0,0,1)}
-        # 端点 trace DOFs 取该节点对应的 (S_xx, S_xy)，即 σ_xx, 2σ_xy
-        # 端点 a 在 gd_vals[:, 0, :]；端点 b 在 gd_vals[:, -1, :]
-        gd_a = gd_vals[:, 0, :]                               # (NEsel, 3) Voigt
-        gd_b = gd_vals[:, -1, :]
-        # 节点 trace DOF 值 = (σ_xx, 2 σ_xy)，注意 Voigt[1] = σ_xy
-        val_a = bm.stack([gd_a[:, 0], 2.0 * gd_a[:, 1]], axis=-1)  # (NEsel, 2)
-        val_b = bm.stack([gd_b[:, 0], 2.0 * gd_b[:, 1]], axis=-1)
+        if dim == 3:
+            num = bm.array([1.0, 2.0, 1.0], dtype=space.ftype)
+            gd_int = gd_vals[:, 1:-1, :]                      # (NEsel, p-1, 3)
+            eframe = space.esframe[sel, :2].copy()            # (NEsel, 2, 3)
+            eframe[:, 1] *= 2.0
+            val_int = bm.einsum("eid, ejd, d -> eij", gd_int, eframe, num)
+            val_int_flat = val_int.reshape(NEsel, -1)
 
-        # --- 写入 uh / isBdDof ---
+            gd_a = gd_vals[:, 0, :]
+            gd_b = gd_vals[:, -1, :]
+            val_a = bm.stack([gd_a[:, 0], 2.0 * gd_a[:, 1]], axis=-1)
+            val_b = bm.stack([gd_b[:, 0], 2.0 * gd_b[:, 1]], axis=-1)
+        else:
+            # Vector traction: resolve to (gn, gt), then esframe DOFs (gn, 2 gt).
+            if coord == "auto":
+                cattr = getattr(gd, "coordtype", None)
+                coord_eff = "xy" if cattr is None else str(cattr).lower()
+            else:
+                coord_eff = str(coord).lower()
+
+            if coord_eff == "nt":
+                gn = gd_vals[..., 0]
+                gt = gd_vals[..., 1]
+            else:
+                en = mesh.edge_unit_normal(index=sel)[:, None, :]
+                et = mesh.edge_unit_tangent(index=sel)[:, None, :]
+                gn = bm.sum(gd_vals * en, axis=-1)
+                gt = bm.sum(gd_vals * et, axis=-1)
+
+            val_edge = bm.stack([gn, 2.0 * gt], axis=-1)      # (NEsel, Nbasis, 2)
+            val_int_flat = val_edge[:, 1:-1, :].reshape(NEsel, -1)
+
+            # Node-end DOFs use cartesian nsframe (σ_xx, 2 σ_xy); σ_yy is not
+            # stored at nodes. Vector traction (gn, gt) maps to nsframe only
+            # for near-vertical edges (n ≈ ±e_x):
+            #   (σ_xx, 2 σ_xy) = (gn, 2 gt)
+            # For near-horizontal edges (n ≈ ±e_y):
+            #   only σ_xy is representable; set 2 σ_xy from gt (zero-trac: 0)
+            #   and leave σ_xx free (required for bending). σ_yy = gn is
+            #   enforced by edge-internal esframe DOFs, not node ends.
+            en_np = _np.asarray(mesh.edge_unit_normal(index=sel))
+            gn_np = _np.asarray(gn)
+            gt_np = _np.asarray(gt)
+            vertical = _np.abs(en_np[:, 0]) >= _np.abs(en_np[:, 1])
+            write_nodes = True
+            node_write_xx = vertical.copy()          # only vertical: σ_xx ↔ gn
+            node_write_xy = _np.ones(NEsel, dtype=bool)  # both: σ_xy ↔ gt
+            val_a = bm.stack([gn[:, 0], 2.0 * gt[:, 0]], axis=-1)
+            val_b = bm.stack([gn[:, -1], 2.0 * gt[:, -1]], axis=-1)
+
         dof_a = e2d[:, :2]
         dof_b = e2d[:, -2:]
         dof_int = e_int
 
+        # Component filter on edge-internal esframe DOFs: even=n, odd=t.
         if comp is None:
-            # 边内部 trace（(nn, sym(nt))）总是写：这里不涉及节点，不受 skip 影响
-            uh = bm.set_at(uh, dof_int.reshape(-1), val_int_flat.reshape(-1))
-            isBdDof = bm.set_at(isBdDof, dof_int.reshape(-1), True)
+            dof_int_w, dat_int_w = dof_int, val_int_flat
+            write_n = write_t = True
+        elif comp == "t":
+            dof_int_w = dof_int[:, 1::2]
+            dat_int_w = val_int_flat.reshape(NEsel, -1, 2)[:, :, 1]
+            write_n, write_t = False, True
+            # tangential-only BC: do not touch cartesian node-end DOFs
+            write_nodes = False
+        elif comp == "n":
+            dof_int_w = dof_int[:, 0::2]
+            dat_int_w = val_int_flat.reshape(NEsel, -1, 2)[:, :, 0]
+            write_n, write_t = True, False
+            write_nodes = False
+        else:
+            raise ValueError(f"Unknown comp={comp}, use None/'n'/'t'.")
 
-            # 端点 trace：可选跳过 NN 角点节点
-            import numpy as _np
-            edge = _np.asarray(mesh.entity('edge'))
+        # Drop corner-relaxation sentinel indices (-1) if present.
+        dof_int_np = _np.asarray(dof_int_w).reshape(-1)
+        dat_int_np = _np.asarray(dat_int_w).reshape(-1)
+        good = dof_int_np >= 0
+        if good.any():
+            uh = bm.set_at(uh, dof_int_np[good], dat_int_np[good])
+            isBdDof = bm.set_at(isBdDof, dof_int_np[good], True)
+
+        if write_nodes and (write_n or write_t) and comp is None:
+            edge = _np.asarray(mesh.entity("edge"))
             sel_np = _np.asarray(sel)
-            end_a_nid = edge[sel_np, 0]     # a 端点 node id
+            end_a_nid = edge[sel_np, 0]
             end_b_nid = edge[sel_np, 1]
-
             if skip_nn_corner_nodes is None or len(skip_nn_corner_nodes) == 0:
                 mask_a = _np.ones(NEsel, dtype=bool)
                 mask_b = _np.ones(NEsel, dtype=bool)
@@ -652,18 +721,30 @@ class HuzhangStressBoundaryCondition:
                 mask_a = ~_np.isin(end_a_nid, skip_arr)
                 mask_b = ~_np.isin(end_b_nid, skip_arr)
 
-            if mask_a.any():
-                da = _np.asarray(dof_a)[mask_a]
-                va = _np.asarray(val_a)[mask_a]
-                uh = bm.set_at(uh, da.reshape(-1), va.reshape(-1))
-                isBdDof = bm.set_at(isBdDof, da.reshape(-1), True)
-            if mask_b.any():
-                db = _np.asarray(dof_b)[mask_b]
-                vb = _np.asarray(val_b)[mask_b]
-                uh = bm.set_at(uh, db.reshape(-1), vb.reshape(-1))
-                isBdDof = bm.set_at(isBdDof, db.reshape(-1), True)
-        else:
-            raise NotImplementedError("v2 with comp filter not implemented yet")
+            # Optional per-edge component mask for vector-traction path.
+            if dim == 2:
+                # (NEsel, 2) bool: which nsframe components to write
+                comp_m = _np.stack([node_write_xx, node_write_xy], axis=1)
+            else:
+                comp_m = _np.ones((NEsel, 2), dtype=bool)
+
+            def _write_ends(mask_end, dof_end, val_end):
+                nonlocal uh, isBdDof
+                if not mask_end.any():
+                    return
+                da = _np.asarray(dof_end)[mask_end]          # (n, 2)
+                va = _np.asarray(val_end)[mask_end]
+                cm = comp_m[mask_end]
+                flat_d = da.reshape(-1)
+                flat_v = va.reshape(-1)
+                flat_c = cm.reshape(-1)
+                good_e = (flat_d >= 0) & flat_c
+                if good_e.any():
+                    uh = bm.set_at(uh, flat_d[good_e], flat_v[good_e])
+                    isBdDof = bm.set_at(isBdDof, flat_d[good_e], True)
+
+            _write_ends(mask_a, dof_a, val_a)
+            _write_ends(mask_b, dof_b, val_b)
 
         return uh, isBdDof
 

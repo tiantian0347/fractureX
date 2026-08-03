@@ -117,6 +117,19 @@ class CaseBase:
     def fix_dirichlet_pieces(self, load: float):
         """返回所有固定段（tag!='load'），可选。"""
         return [p for p in self.dirichlet_pieces(load) if getattr(p, "tag", "") != "load"]
+
+    def reaction_boundary(self, load: float = 0.0):
+        """Optional reaction integral target for reported residual force.
+
+        Return ``None`` to use the load Dirichlet piece (default), or
+        ``(threshold, direction, sign)`` where
+        ``R = sign * ∫_Γ (σ n)·e_dir ds``.
+
+        Three-point bending and similar pin/roller cases should integrate
+        over the supports: integrating only the small load patch can
+        grossly overestimate the net applied force.
+        """
+        return None
     
     # 
     def crack_edge_mask(self, mesh) -> TensorLike:

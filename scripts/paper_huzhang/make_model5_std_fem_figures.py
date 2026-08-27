@@ -23,7 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[2]
-FORMAL_TITLE = "Three-Point Bending of a Notched Beam"
+FORMAL_TITLE = "V-notch beam"
 
 _run_env = os.environ.get("FRACTUREX_MODEL5_STD_FEM", "").strip()
 _default = ROOT / "results/phasefield/model5_standard_fem/std_bg_h010_full"
@@ -51,7 +51,7 @@ def load_ambati():
 def fig_std_only(u, r):
     i = int(np.nanargmax(r))
     fig, ax = plt.subplots(figsize=(4.8, 3.6))
-    ax.plot(u, r, "-", lw=1.4, color="#2e7d32", label="FractureX standard FEM")
+    ax.plot(u, r, "-", lw=1.4, color="#2e7d32", label="standard finite element solution")
     ax.plot(
         u[i],
         r[i],
@@ -60,7 +60,7 @@ def fig_std_only(u, r):
         ms=6,
         label=rf"peak $|R|={r[i]:.3f}$ at $u={u[i]:.3f}$ mm",
     )
-    ax.set_xlabel(r"imposed displacement $|u_y|$ (mm)")
+    ax.set_xlabel(r"prescribed displacement $|u_y|$ (mm)")
     ax.set_ylabel(r"reaction force $|R_y|$ (kN)")
     ax.set_title(rf"{FORMAL_TITLE}: standard FEM")
     ax.grid(True, ls=":", alpha=0.5)
@@ -73,8 +73,8 @@ def fig_std_only(u, r):
 
 def fig_vs_ambati(u, r, ua, ra):
     fig, ax = plt.subplots(figsize=(5.2, 3.8))
-    ax.plot(ua, ra, "o-", ms=4, lw=1.2, color="#555555", label="Ambati 2015 Fig.22")
-    ax.plot(u, r, "-", lw=1.5, color="#2e7d32", label="FractureX standard FEM")
+    ax.plot(ua, ra, "o-", ms=4, lw=1.2, color="#555555", label="Ambati (2015), Fig. 22")
+    ax.plot(u, r, "-", lw=1.5, color="#2e7d32", label="standard finite element solution")
     i_fx = int(np.nanargmax(r))
     i_am = int(np.nanargmax(ra))
     ax.plot(
@@ -93,8 +93,8 @@ def fig_vs_ambati(u, r, ua, ra):
         ms=5,
         label=rf"Ambati peak {ra[i_am]:.3f} kN @ {ua[i_am]:.3f} mm",
     )
-    ax.set_xlabel(r"midspan displacement $|u_y|$ (mm)")
-    ax.set_ylabel(r"support / load reaction $|R_y|$ (kN)")
+    ax.set_xlabel(r"prescribed displacement $|u_y|$ (mm)")
+    ax.set_ylabel(r"reaction force $|R_y|$ (kN)")
     ax.set_title(rf"{FORMAL_TITLE}: standard FEM vs Ambati")
     ax.set_xlim(0.0, max(u.max(), ua.max()) * 1.05)
     ax.grid(True, ls=":", alpha=0.5)

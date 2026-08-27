@@ -1,3 +1,5 @@
+"""Package metadata and optional dependency groups for FractureX."""
+
 import sys
 import os
 import pathlib
@@ -42,7 +44,7 @@ setup(
     zip_safe=False,
     extras_require={
         "doc": ["sphinx", "sphinx-rtd-theme"],  # Documentation dependencies
-        "dev": ["pytest", "pytest-cov", "ipdb"],
+        "dev": ["pytest", "pytest-cov"],
         "direct": ["pypardiso"],  # optional Intel MKL PARDISO (MUMPS: install separately)
         # Operator-learning surrogate (fracturex/learn). Solver-decoupled: only
         # needs the SURROGATE_DATA_SCHEMA npz protocol + PyTorch. scipy is used

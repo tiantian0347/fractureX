@@ -25,6 +25,7 @@
 | M3 效率 (DOF) | 2026-06-21 | ✅ PASS | 等精度对照：自适应 31406 σ-DOF 达 −1.5% 峰值精度，均匀需 nx=120 的 476883 DOF ⇒ **省 93% DOF**；均匀 nx24/48 峰值虚高 +37%/+25%（论证需自适应） |
 | Θ<1 根因诊断 | 2026-06-21 | 🐞→✅ **已修+坐实** | 根因 = `VectorDirichletBC` 误用缺非齐次提升项 (`f−=A·u_D`)，primal "truth" 能量随网格 ×√2 假发散 ⇒ Θ<1。修复后**生产 k_res=1e-6 真数：err 收敛 0.044、Θ 单调→nref4 的 1.044(→1⁺)**，η 仅比真误差大 4%。reliability+efficiency 双坐实，§7 主线全安全 |
 | SENS η_T marker | 2026-07-06 | ⚠ 欠分辨 | nx=24 run：40 步跑完、消 g⁻² 病态（定性成立），但网格欠分辨 ⇒ peak 0.150 未收敛、无清晰裂纹路径。定量数据以下行 nx=48 为准 |
+| effstress SENS (model2) | 2026-07-03 | ✅ 有效到 step 32 | Peak R=0.234@0.006；step 33 DNF（D_max→10⁵¹）；本地 `huzhang_fracture_result/results_model2/adaptive_m3_pc_model2_effstress/` |
 | SENS η_T nx=48 | 2026-07-12 | ❌ 作废（钉扎伪像） | 对 paper_direct_full 参照（nx=160, 真峰 0.421@1.03e-2）复审：η_T-only 事后型标记致裂尖前方饥饿（前方 0% 胞 ≤ ℓ0/2），上升段偏软 −30%，"峰 0.196"与"软化平台"是伪像。仅"$\mathcal D_{\max}$ 有界"仍成立。续跑已终止。修复：`eta_T_df` 混合 marker，见 DECISION §12 |
 
 ---
@@ -65,6 +66,16 @@
 配置：`FRACTUREX_MARKER=eta_T, ETA_T_STRATEGY=max, THETA_REC=0.9, ETA_DECREMENT=0.7, D_HI=0.995, du=2.5e-4, nx=24, pardiso, 40 steps`。lab 服务器 `~/tian/fracturex/results/adaptive_m3_pc_model2_eta_T/`，wall 81326.5s $\approx$ 22.6h。数据 rsync 回本机 `~/repository/results/adaptive_m3_pc_model2_eta_T/`。
 
 ### 对比：$\mathcal D_{\tau,T}$-marker (旧 effstress) vs $\eta_T$-marker (本次)
+
+> **effstress 原始数据（2026-08-20 同步）**：lab `results/adaptive_m3_pc_model2_effstress/` → 本机 `huzhang_fracture_result/results_model2/adaptive_m3_pc_model2_effstress/`（`history.csv` + 33 VTU + `TEST_REPORT.md`）。有效步到 **step 32**（R≈0.156@u=0.008）；step 33 非收敛勿用。
+
+![effstress F–u](../benchmarks/figures/loaddisp/model2_effstress_loaddisp.png)
+
+![effstress damage evolution](figures/model2_effstress_evolution.png)
+
+![effstress final mesh+damage](figures/model2_effstress_final_mesh_damage.png)
+
+![effstress NC growth](../benchmarks/figures/loaddisp/model2_effstress_NC.png)
 
 | 指标 | $\eta_T$ marker | $\mathcal D_{\tau,T}$ marker (effstress) |
 |---|---:|---:|

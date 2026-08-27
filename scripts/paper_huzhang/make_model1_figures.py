@@ -39,11 +39,14 @@ import numpy as np
 # pyvista is only needed by the VTU-based crack figures; import lazily so the
 # load-displacement figure (history.csv only) works on machines without it.
 
-ROOT = Path("/home/gongshihua/tian/fracturex")
+import os as _os
+# ROOT (repo root holding results/) and OUT (figure dir) are env-overridable so
+# the script runs both on the cluster and from a local checkout.
+ROOT = Path(_os.environ.get("FRACTUREX_ROOT",
+                            "/home/gongshihua/tian/fracturex"))
 # Run directory is env-overridable so the same script serves the original
 # paper_direct run and the full-range paper_direct_full_nx120 run:
 #   FRACTUREX_MODEL1_RUN=results/.../paper_direct_full_nx120/epsg_1e-06
-import os as _os
 _run_env = _os.environ.get("FRACTUREX_MODEL1_RUN", "").strip()
 # Default to the full-separation nx120 run: it is the one the paper text and
 # Table~\ref{tab:model1_summary} describe (peak |F_y|=0.631 at u=5.10e-3, carried
@@ -53,7 +56,8 @@ RUN = (Path(_run_env) if _run_env else
        ROOT / "results/phasefield/square_tension_precrack/paper_direct_full_nx120/epsg_1e-06")
 if not RUN.is_absolute():
     RUN = ROOT / RUN
-OUT = Path("/home/gongshihua/tian/Frac_huzhang/figures")
+OUT = Path(_os.environ.get("FRACTUREX_FIG_OUT",
+                           "/home/gongshihua/tian/Frac_huzhang/figures"))
 OUT.mkdir(parents=True, exist_ok=True)
 
 
@@ -64,8 +68,54 @@ def load_history():
     return disp, reac
 
 
-def vtu_files():
-    fs = sorted(glob.glob(str(RUN / "vtk" / "*.vtu")))
+# The crack evolution/final fields are drawn from CRACK_RUN, which defaults to
+# RUN but is overridable so those panels can come from a different run than the
+# load-displacement curve (e.g. paper_direct while loaddisp uses full_nx120).
+_crack_env = _os.environ.get("FRACTUREX_MODEL1_CRACK_RUN", "").strip()
+CRACK_RUN = Path(_crack_env) if _crack_env else RUN
+if not CRACK_RUN.is_absolute():
+    CRACK_RUN = ROOT / CRACK_RUN
+
+
+class _Mesh:
+    """Minimal triangle-mesh view over a .vtu, backed by the vtk package.
+
+    Exposes the same points/cells/point_data/cell_data attributes the figure
+    code used with pyvista, so the reader swap is transparent downstream.
+    """
+
+    def __init__(self, points, cells, point_data, cell_data):
+        self.points = points
+        self.cells = cells
+        self.point_data = point_data
+        self.cell_data = cell_data
+
+
+def _read_vtu(path):
+    import vtk
+    from vtk.util.numpy_support import vtk_to_numpy
+
+    reader = vtk.vtkXMLUnstructuredGridReader()
+    reader.SetFileName(str(path))
+    reader.Update()
+    grid = reader.GetOutput()
+    points = vtk_to_numpy(grid.GetPoints().GetData())
+    ncells = grid.GetNumberOfCells()
+    conn = np.array([[grid.GetCell(c).GetPointId(k) for k in range(3)]
+                     for c in range(ncells)])
+    # pad to pyvista's [n, i, j, k] cell layout so mesh.cells.reshape works
+    cells = np.hstack([np.full((ncells, 1), 3), conn]).ravel()
+    pd = grid.GetPointData()
+    cd = grid.GetCellData()
+    point_data = {pd.GetArrayName(i): vtk_to_numpy(pd.GetArray(i))
+                  for i in range(pd.GetNumberOfArrays())}
+    cell_data = {cd.GetArrayName(i): vtk_to_numpy(cd.GetArray(i))
+                 for i in range(cd.GetNumberOfArrays())}
+    return _Mesh(points, cells, point_data, cell_data)
+
+
+def vtu_files(run_dir):
+    fs = sorted(glob.glob(str(run_dir / "vtk" / "*.vtu")))
     out = []
     for f in fs:
         load = float(re.search(r"load_([0-9.eE+-]+)\.vtu", f).group(1))
@@ -86,12 +136,12 @@ def reaction_from_vtu(mesh):
     return abs(R)
 
 
-def collect_vtu():
-    import pyvista as pv  # lazy: only the VTU-based figures need the reader
+def collect_vtu(run_dir):
     data = []  # (disp, reaction, max_d, mesh)
-    for load, f in vtu_files():
-        m = pv.read(f)
-        data.append((load, reaction_from_vtu(m), float(np.asarray(m.point_data["damage"]).max()), m))
+    for load, f in vtu_files(run_dir):
+        m = _read_vtu(f)
+        data.append((load, reaction_from_vtu(m),
+                     float(np.asarray(m.point_data["damage"]).max()), m))
     return data
 
 
@@ -114,8 +164,7 @@ def fig_loaddisp(hist, vtu):
     ipk = int(np.argmax(full_r))
 
     fig, ax = plt.subplots(figsize=(5.2, 4.0))
-    ax.plot(full_d, full_r, "-", color="#1f3b73", lw=1.8, zorder=2,
-            label="Hu--Zhang, direct solver")
+    ax.plot(full_d, full_r, "-", color="#1f3b73", lw=1.8, zorder=2)
     if vtu and extra.any():
         ax.plot(vd[extra], vr[extra], "o", color="#c0392b", ms=5, zorder=3,
                 label=r"reconstructed from $\sigma_{yy}$ (exported states)")
@@ -131,9 +180,9 @@ def fig_loaddisp(hist, vtu):
     ax.set_xlim(left=0.0)
     ax.set_xlabel(r"prescribed displacement $\bar u$")
     ax.set_ylabel(r"reaction force $|F_y|$")
-    ax.set_title("Single-edge-notched tension: load--displacement")
     ax.grid(True, ls=":", alpha=0.5)
-    ax.legend(fontsize=8, loc="upper left")
+    if ax.get_legend_handles_labels()[1]:
+        ax.legend(fontsize=8, loc="upper left")
     fig.tight_layout()
     for ext in ("png", "pdf"):
         fig.savefig(OUT / f"model1_loaddisp.{ext}", dpi=200)
@@ -197,14 +246,18 @@ def fig_crack_evolution(vtu):
 def main():
     hist = load_history()
     try:
-        vtu = collect_vtu()
+        # loaddisp only needs vtu states beyond history; when history already
+        # spans the full range (nx120), reuse the crack vtu to avoid re-reading.
+        crack_vtu = collect_vtu(CRACK_RUN)
+        vtu = crack_vtu if CRACK_RUN == RUN else collect_vtu(RUN)
     except ModuleNotFoundError as e:
-        print(f"[skip] VTU figures need pyvista ({e}); load-disp + table from history.csv only")
-        vtu = []
+        print(f"[skip] VTU figures need a reader ({e}); "
+              "load-disp + table from history.csv only")
+        vtu = crack_vtu = []
     pk = fig_loaddisp(hist, vtu)
-    if vtu:
-        fig_crack_final(vtu)
-        fig_crack_evolution(vtu)
+    if crack_vtu:
+        fig_crack_final(crack_vtu)
+        fig_crack_evolution(crack_vtu)
     print("peak (disp, reaction) =", pk)
     print("wrote figures to", OUT)
 

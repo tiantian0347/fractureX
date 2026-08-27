@@ -6,6 +6,7 @@
 """
 from typing import Callable, Optional, Dict
 import os
+from pathlib import Path
 import numpy as np
 from fealpy.utils import timer
 
@@ -126,6 +127,8 @@ class MainSolve:
         self.enable_refinement = False
 
         self._save_vtk = False
+        self._vtkfname = None
+        self._damage_npz_dir = None
         self._atype = None
         self._timer = False
 
@@ -196,6 +199,11 @@ class MainSolve:
         maxit: int = 50,
         *,
         linear_solver_options: Optional[Dict] = None,
+        restart_npz: Optional[str] = None,
+        start_load_index: int = 0,
+        adaptive_load_step: bool = False,
+        min_load_step: Optional[float] = None,
+        max_subdivisions: int = 8,
     ):
         """
         Solve the phase-field fracture problem.
@@ -219,30 +227,87 @@ class MainSolve:
         linear_solver_options : dict, optional
             If given, forwarded once to :meth:`set_linear_solver_options` before the
             load-step loop (e.g. ``{'method': 'gmres', 'rtol': 1e-6}``).
+        adaptive_load_step : bool, optional
+            If true, reject a nonconverged load step, restore the last accepted
+            ``(u,d,H)`` state, and bisect the displacement increment.  The
+            default false preserves the historical fixed-load-path behavior.
+        min_load_step : float, optional
+            Smallest allowed absolute displacement increment for adaptive
+            subdivision.  Defaults to the initial increment divided by
+            ``2**max_subdivisions``.
+        max_subdivisions : int, optional
+            Maximum number of recursive bisections per original load interval.
         """
         if linear_solver_options:
             self.set_linear_solver_options(**linear_solver_options)
         self._method = method
         self.initialize_settings(p=p, q=q)
+        if restart_npz:
+            self.load_restart_npz(restart_npz)
         self._initialize_force_boundary()
-        self._Rforce = bm.zeros_like(self._force_value)
-        
-        #for i in range(2):
-        for i in range(len(self._force_value)-1):
+        i0 = max(0, int(start_load_index))
+        load_values = [float(v) for v in bm.to_numpy(self._force_value)]
+        if len(load_values) < 2:
+            raise ValueError("At least two load values are required.")
+        if max_subdivisions < 0:
+            raise ValueError("max_subdivisions must be nonnegative")
+        initial_increment = abs(load_values[1] - load_values[0])
+        adaptive_floor = (
+            float(min_load_step)
+            if min_load_step is not None
+            else initial_increment / max(2 ** max_subdivisions, 1)
+        )
+        if adaptive_floor <= 0.0:
+            raise ValueError("min_load_step must be positive")
+        reaction_values = [float("nan")] * len(load_values)
+        reaction_values[0] = 0.0
+        self._write_step_damage(i0)
+        i = i0
+        while i < len(load_values) - 1:
             print('i', i)
-            self._currt_force_value = self._force_value[i+1]
+            target_load = load_values[i + 1]
+            self._currt_force_value = bm.array(target_load, dtype=self.uh.dtype)
+            state_before = self._snapshot_state() if adaptive_load_step else None
 
             # Run Newton-Raphson iteration
-            self.newton_raphson(maxit)
-            
+            converged, _, error = self.newton_raphson(maxit)
+
+            if not converged and adaptive_load_step:
+                assert state_before is not None
+                self._restore_state(state_before)
+                increment = abs(target_load - load_values[i])
+                if increment > adaptive_floor:
+                    midpoint = load_values[i] + 0.5 * (target_load - load_values[i])
+                    load_values.insert(i + 1, midpoint)
+                    reaction_values.insert(i + 1, float("nan"))
+                    print(
+                        "[MainSolve] reject load step: "
+                        f"target={target_load:.8e}, error={error:.3e}; "
+                        f"retry midpoint={midpoint:.8e}"
+                    )
+                    continue
+                print(
+                    "[MainSolve] adaptive load-step floor reached: "
+                    f"target={target_load:.8e}, error={error:.3e}"
+                )
+                break
+
             if self._save_vtk:
                 if self._vtkfname is None:
                     fname = f'test{i:010d}.vtu'
                 else:
                     fname = f'{self._vtkfname}{i:010d}.vtu'
                 self._save_vtkfile(fname=fname)
-            
-            bm.set_at(self._Rforce, i+1, self._Rfu)
+            self._write_step_damage(i + 1)
+
+            reaction_values[i + 1] = float(bm.to_numpy(self._Rfu))
+            i += 1
+
+        # Keep the accepted path aligned with the reaction history.  Adaptive
+        # continuation may insert midpoint loads, so the original prescribed
+        # array is not necessarily the path that was actually solved.
+        self._force_value = bm.array(load_values, dtype=self.uh.dtype)
+        self._Rforce = bm.array(reaction_values, dtype=self.uh.dtype)
             
 
     def newton_raphson(self, maxit: int = 50):
@@ -257,7 +322,11 @@ class MainSolve:
             Value of the force boundary condition.
         """
         tmr = self.tmr
+        converged = False
+        error = float("inf")
+        iterations = 0
         for k in range(maxit):
+            iterations = k + 1
             print(f"Newton-Raphson Iteration {k + 1}/{maxit}:")
             
             tmr.send('start')
@@ -308,7 +377,41 @@ class MainSolve:
             print(f'Iteration {k+1}, Error: {error}')
             if error < 1e-5:
                 print(f"Convergence achieved after {k + 1} iterations.")
+                converged = True
                 break
+        return converged, iterations, error
+
+    def _snapshot_state(self) -> tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+        """Copy the accepted state before a load-step attempt.
+
+        Returns
+        -------
+        tuple of ndarray
+            Displacement, nodal phase field, and quadrature history field in
+            the current FEALPy storage layout.
+        """
+        history = getattr(self, "H", getattr(self.pfcm, "H", None))
+        history_copy = None if history is None else np.array(bm.to_numpy(history), copy=True)
+        return (
+            np.array(bm.to_numpy(self.uh[:]), copy=True),
+            np.array(bm.to_numpy(self.d[:]), copy=True),
+            history_copy,
+        )
+
+    def _restore_state(
+        self, snapshot: tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]
+    ) -> None:
+        """Restore a state snapshot after a rejected load-step attempt."""
+        uh, d, history = snapshot
+        self.uh[:] = bm.array(uh, dtype=self.uh.dtype)
+        self.d[:] = bm.array(d, dtype=self.d.dtype)
+        self.H = None if history is None else bm.array(history, dtype=self.d.dtype)
+        if self.H is not None:
+            self.pfcm.update_historical_field(self.H)
+        else:
+            self.pfcm.H = None
+        self.pfcm.update_disp(self.uh)
+        self.pfcm.update_phase(self.d)
 
     def solve_displacement(self) -> float:
         """
@@ -626,6 +729,25 @@ class MainSolve:
         self.pfcm.update_disp(self.uh)
         self.pfcm.update_phase(self.d)
 
+    def save_restart_npz(self, path: str) -> None:
+        """Save displacement, damage, and historical field for load-step continuation."""
+        np.savez(
+            path,
+            uh=bm.to_numpy(self.uh[:]),
+            d=bm.to_numpy(self.d[:]),
+            H=bm.to_numpy(self.H),
+        )
+
+    def load_restart_npz(self, path: str) -> None:
+        """Restore displacement, damage, and historical field from :meth:`save_restart_npz`."""
+        dat = np.load(path)
+        self.uh[:] = bm.array(dat["uh"], dtype=self.uh.dtype)
+        self.d[:] = bm.array(dat["d"], dtype=self.d.dtype)
+        self.H = bm.array(dat["H"], dtype=self.d.dtype)
+        self.pfcm.update_historical_field(self.H)
+        self.pfcm.update_disp(self.uh)
+        self.pfcm.update_phase(self.d)
+
     def _save_vtkfile(self, fname: str):
         """
         Save the solution to a VTK file.
@@ -759,6 +881,30 @@ class MainSolve:
         if dname:
             os.makedirs(dname, exist_ok=True)
         mesh.to_vtk(fname=fname)
+
+    def save_damage_npz_dir(self, path: str) -> None:
+        """Write ``step_XXXX.npz`` (node, cell, d) after every load step.
+
+        Call before :meth:`solve`. Directory is created on first write.
+        """
+        self._damage_npz_dir = str(path)
+
+    def _write_step_damage(self, step: int) -> None:
+        """Save nodal damage and triangle mesh for animation. No-op if unset."""
+        if not self._damage_npz_dir:
+            return
+        out_dir = Path(self._damage_npz_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        node = np.asarray(bm.to_numpy(self.mesh.entity("node")), dtype=np.float64)[:, :2]
+        cell = np.asarray(bm.to_numpy(self.mesh.entity("cell")), dtype=np.int64)
+        d = np.asarray(bm.to_numpy(self.d[:]), dtype=np.float64)
+        np.savez_compressed(
+            out_dir / f"step_{int(step):04d}.npz",
+            node=node,
+            cell=cell,
+            d=d,
+            step=np.int32(step),
+        )
 
     def save_vtkfile(self, fname: str):
         """
@@ -954,14 +1100,31 @@ class MainSolve:
 
 
     def _initialize_force_boundary(self):
-        """
-        Initialize the force boundary conditions.
+        """Initialize force-boundary data in the active FEALPy backend.
+
+        The load path may be supplied as a Python sequence by case scripts. It
+        is converted here so later tensor operations (`zeros_like`, indexed
+        load values) work consistently on NumPy, PyTorch, and JAX backends.
         """
         force_data = self._get_boundary_conditions('force')
+        if not force_data:
+            raise ValueError("A 'force' Dirichlet boundary condition is required before solve().")
         force_data = force_data[0]
         self._force_type = force_data.get('type')
         self._force_dof = force_data.get('bcdof')
-        self._force_value = force_data.get('value')
+        force_value = force_data.get('value')
+        if force_value is None:
+            raise ValueError("The 'force' boundary condition requires a load-value sequence.")
+        self._force_value = (
+            force_value
+            if bm.is_tensor(force_value)
+            else bm.tensor(force_value, dtype=self.uh.dtype)
+        )
+        if len(self._force_value.shape) != 1 or len(self._force_value) < 2:
+            raise ValueError(
+                "The 'force' load path must be a one-dimensional sequence with at least "
+                "two values (initial state and one load step)."
+            )
         self._force_direction = force_data.get('direction')
 
     def _apply_boundary_conditions(self, A, R, field: str):
@@ -1006,6 +1169,14 @@ class MainSolve:
         Get the residual vector.
         """
         return self._Rforce
+
+    def get_accepted_load_path(self):
+        """Return the displacement path corresponding to the reaction history.
+
+        The returned path includes any midpoint loads inserted by adaptive
+        continuation and is therefore aligned with :meth:`get_residual_force`.
+        """
+        return self._force_value
     
     def output_timer(self):
         """开启计时输出（置 ``self._timer=True``），后续迭代打印各阶段耗时。"""

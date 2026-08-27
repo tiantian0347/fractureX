@@ -49,6 +49,10 @@ from fracturex.boundarycondition.huzhang_boundary_condition import build_isNedge
 def _build_gmsh_beam(
     *,
     mesh_size: float,
+    local_mesh_size: Optional[float] = None,
+    local_refine_half_width: float = 0.5,
+    local_refine_ymax: float = 1.6,
+    local_refine_transition: float = 0.15,
     length: float,
     height: float,
     notch_depth: float,
@@ -124,6 +128,25 @@ def _build_gmsh_beam(
     if crack_line is not None:
         gmsh.model.mesh.embed(1, [crack_line], 2, 1)
     gmsh.model.mesh.setSize(gmsh.model.getEntities(0), float(mesh_size))
+    if local_mesh_size is not None:
+        if local_mesh_size <= 0.0 or local_mesh_size >= mesh_size:
+            raise ValueError("local_mesh_size must satisfy 0 < local_mesh_size < mesh_size")
+        if local_refine_half_width <= 0.0 or local_refine_ymax <= 0.0:
+            raise ValueError("local refinement box dimensions must be positive")
+        # A symmetric box field resolves the process zone near the notch while
+        # retaining a coarser far field.  This mirrors the a-priori refinement
+        # used in the reference three-point-bending calculation.
+        field = gmsh.model.mesh.field.add("Box")
+        gmsh.model.mesh.field.setNumber(field, "VIn", float(local_mesh_size))
+        gmsh.model.mesh.field.setNumber(field, "VOut", float(mesh_size))
+        gmsh.model.mesh.field.setNumber(field, "XMin", mid - float(local_refine_half_width))
+        gmsh.model.mesh.field.setNumber(field, "XMax", mid + float(local_refine_half_width))
+        gmsh.model.mesh.field.setNumber(field, "YMin", 0.0)
+        gmsh.model.mesh.field.setNumber(field, "YMax", float(local_refine_ymax))
+        gmsh.model.mesh.field.setNumber(field, "ZMin", -1.0)
+        gmsh.model.mesh.field.setNumber(field, "ZMax", 1.0)
+        gmsh.model.mesh.field.setNumber(field, "Thickness", float(local_refine_transition))
+        gmsh.model.mesh.field.setAsBackgroundMesh(field)
     gmsh.model.mesh.generate(2)
 
     node_tags, node_coords, _ = gmsh.model.mesh.getNodes()

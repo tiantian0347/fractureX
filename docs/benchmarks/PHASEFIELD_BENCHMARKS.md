@@ -154,6 +154,14 @@ Repo adaptive-paper curve (same `u` range; **force scale differs** — treat as 
 
 Figures: `results/phasefield/model4_notched_plate_with_hole/`.
 
+**Standard FEM (`MainSolve`, geometric notch)** — lab 2026-08-20 上机
+
+- Driver: `fracturex/cases/phase_field/model4_notched_plate.py`
+- Launcher: `scripts/paper_huzhang/run_model4_std_fem_lab.sh {smoke|path}`
+- First production: **`path`** `h=1.0`（ℓ₀=0.1 的全 `h≲ℓ₀/2` 网格过大）, `Δu=0.01` mm 到 2 mm（200 步）, 输出 `results/phasefield/model4_standard_fem/std_h1_path/`
+- Lab solver: **scipy GMRES**（位移 Jacobian 含空行，SuperLU/PARDISO 直接法拒绝）
+- 主判据是绕孔裂纹路径，不是峰值对齐
+
 **Reference F–u**
 
 Repo adaptive-paper `model4` force curve (historical; confirm geometry match before using as quantitative Ambati §4.6 anchor — Ambati emphasizes **crack path** vs experiment):
@@ -207,6 +215,62 @@ Ambati Fig. 22 (Miehe anisotropic ≈ hybrid):
 > smoke to peak: `scripts/paper_huzhang/run_model5_std_fem_lab.sh smoke`.
 > Plot: `scripts/paper_huzhang/make_model5_std_fem_figures.py`.
 
+**FractureX standard FEM (`MainSolve`, `h=0.015`, continuation u=0→0.06 mm, lab ~10.5 d for u=0.03→0.06)**
+
+![TPB standard FEM h=0.015 F–u](figures/loaddisp/model5_std_fem_h015_loaddisp.png)
+
+![TPB standard FEM h=0.015 vs Ambati](figures/loaddisp/model5_std_fem_h015_vs_ambati_loaddisp.png)
+
+| Item | Value |
+|------|-------|
+| Local data | `huzhang_fracture_result/phasefield/model5_standard_fem/std_bg_h015_smoke_a{_cont}/` |
+| Peak \|R\| | **0.0411 kN** @ u=0.046 mm |
+| vs Ambati | 0.042 kN @ 0.046 mm (**位移一致，峰值约 −2%**) |
+| Caveat | 末加载步 maxit=80 未收敛（error≈6.4e-2）；软化段只到 u=0.06，Ambati 曲线到 0.12 |
+
+> 相较 `h=0.1` 标准 FEM（peak 0.059 kN @ 0.070 mm）和 `h=0.15` HZ smoke（peak ≈5.9× 偏高），`h=0.015` 已对齐 Ambati 峰值位置与量级。
+
+**网格 + 相场**（末态 `u_y=0.06` mm，由 `model5_std_state.npz` 重建网格；lab 未存 VTU。裂纹从切口竖直向上，符合 Mode-I。末步未收敛，`d_max≈1.004` 略超 1。）
+
+![TPB std FEM h=0.015 mesh+damage](figures/phasefield/model5_std_fem_h015_mesh_damage_stacked.png)
+
+![TPB std FEM h=0.015 full](figures/phasefield/model5_std_fem_h015_mesh_damage.png)
+
+![TPB std FEM h=0.015 notch zoom](figures/phasefield/model5_std_fem_h015_mesh_damage_notch.png)
+
+脚本：`scripts/paper_huzhang/plot_model5_std_fem_mesh_damage.py`
+**加载步 `d` 动图**（与 h=0.015 静图同几何、u→0.06）：`h=0.03` 逐步存 `d`，峰值 0.043 kN @ 0.048 mm（接近 Ambati / h=0.015）。GIF：`figures/phasefield/model5_std_fem_h003_d.gif`。先前 `h=0.1` GIF 过程区太宽，和 h=0.015 细裂纹对不上。h=0.015 lab run 仍无逐步场。
+通用：[`VTU_POSTPROCESS.md`](VTU_POSTPROCESS.md)。
+
+**局部解析网格边界测试（2026-08-25）**
+
+为直接检验“缺口附近满足 (h<\ell_0/2)”的要求，新增 Gmsh Box 局部加密：背景尺寸
+`0.1 mm`，缺口上方 (|x-4|\le0.5\,\mathrm{mm})、(0\le y\le1.6\,\mathrm{mm}) 内目标尺寸
+`0.01 mm`。实际局部最大边长为 `0.01475 mm`，满足 `0.01475 < l0/2=0.015 mm`；全局网格为
+`41768` 个三角形。普通交错路径从 `u=0.001` 推进到约 `u=0.043 mm`，在文献峰值附近失去收缩性，
+因此该路径作为**求解器边界诊断**保存，不把非收敛终态作为物理结果。
+
+结果目录：
+`results/phasefield/model5_standard_fem/std_local_h001_u0001_u006_direct/`；
+局部加密预峰值相场图位于
+`results/phasefield/model5_standard_fem/std_local_h001_diagnostic_figures/`，
+复现实验命令和停止标准见该目录下的 `TEST_REPORT.md`。
+
+**局部加密自适应续接边界测试（2026-08-25）**
+
+在相同局部网格上加入“失败步回退—载荷增量二分”机制，实际接受路径推进到
+`|u_y|=0.04275 mm`。原始 `0.042 -> 0.043 mm` 步被拒绝后，求解器恢复已接受的
+`(u,d,H)` 状态，并接受 `0.0425` 和 `0.04275 mm` 两个中间步；随后目标步仍接近失去收缩性。
+该结果验证了自适应续接的状态一致性和拒绝机制，但不把临界区间的中断状态作为最终物理结果。
+
+结果目录：
+`results/phasefield/model5_standard_fem/std_local_h001_adaptive_peak/`；
+已接受相场图：
+`results/phasefield/model5_standard_fem/std_local_h001_adaptive_peak/figures/model5_local_refined_diagnostic_phase_field.png`；
+完整参数、命令和停止标准见该目录下的 `TEST_REPORT.md`。
+
+**Hu–Zhang 粗网格相场（历史对照，非 h=0.015）**
+
 ![TPB FX phase-field evolution](figures/phasefield/three_point_bending_phasefield_evolution.png)
 
 ![TPB FX phase-field final](figures/phasefield/three_point_bending_phasefield_final.png)
@@ -238,6 +302,31 @@ Ambati Fig. 22 (Miehe anisotropic ≈ hybrid):
 Ambati Fig. 25:
 
 ![Ambati Fig.25 asymmetric beam](figures/loaddisp/ambati_fig25_model6_loaddisp.png)
+
+**Standard FEM (`MainSolve`, geometric notch)** — lab 2026-08-20 上机
+
+- Driver: `fracturex/cases/phase_field/model6_asymmetric_beam.py`
+- Launcher: `scripts/paper_huzhang/run_model6_std_fem_lab.sh {smoke|path}`
+- First production: **`path`** `h=0.15`（需分辨 `r=0.25` 孔；全 `h≲ℓ₀/2=0.005` 过大）, `u=0→0.25` mm / 250 步，覆盖 Ambati 峰值 ~0.22 mm
+- Lab solver: **scipy GMRES**（同上，直接法空行）
+- 输出 `results/phasefield/model6_standard_fem/std_h015_path/`
+- 主判据：裂纹弯向第 2 孔；峰值对照 ~0.66 kN @ ~0.22 mm
+
+> model0–model3 L-shape 与三维切口立方体此前已有可算的 FEM 测试，本轮不上机。
+
+---
+
+## Postprocess: VTU stills and phase-field GIFs
+
+命令、参数、**model5 动图缺 VTU 时怎么办**：[`VTU_POSTPROCESS.md`](VTU_POSTPROCESS.md)。
+
+```bash
+python -m fracturex.postprocess.vtu_plot --vtu step.vtu --out frame.png
+python -m fracturex.postprocess.vtu_animation --vtu-dir path/to/vtu --out damage.gif
+python -m fracturex.postprocess.vtu_animation --vtu-dir path/to/vtu --out damage.gif --mesh-every 10
+```
+
+model5 h=0.015 **静图**已从 `model5_std_state.npz` 画出（见上节）。**动图**需要 `--save-vtk` 的 VTU 序列；该 lab run 没存，不能从单个 npz 补中间帧。
 
 ---
 
@@ -340,11 +429,23 @@ fracturex/cases/
   model6_asymmetric_notched_beam.py
 fracturex/tests/case_runners/
   model{0,2,3,4,5,6}_runner.py
+fracturex/cases/phase_field/
+  model4_notched_plate.py             # MainSolve model4
+  model5_three_point_bending.py       # MainSolve model5
+  model6_asymmetric_beam.py           # MainSolve model6
 scripts/paper_huzhang/
   make_model5_figures.py              # TPB F–u + phase-field figures
+  plot_vtu_mesh_damage.py             # 单张 VTU → PNG（包装 vtu_plot）
+  plot_vtu_phasefield_gif.py          # VTU 序列 → GIF（包装 vtu_animation）
+  plot_model5_std_fem_mesh_damage.py  # model5 h=0.015 末态 npz → 网格+损伤
+  run_model{4,5,6}_std_fem_lab.sh     # lab MainSolve launchers
+fracturex/postprocess/
+  vtu_plot.py                         # 2D VTU 静图库 + CLI
+  vtu_animation.py                    # 2D VTU 序列动图库 + CLI
+  npz_animation.py                    # npz 里的 d → GIF（序列或 α·d_final）
 docs/benchmarks/
   PHASEFIELD_BENCHMARKS.md            # this file
+  VTU_POSTPROCESS.md                  # VTU 静图 / GIF 用法 + model5 缺帧说明
   figures/loaddisp/                   # F–u reference / FX PNGs
   figures/phasefield/                 # damage-field snapshots
 ```
-

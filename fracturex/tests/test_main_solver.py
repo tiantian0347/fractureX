@@ -1,53 +1,52 @@
+"""Smoke tests for the current standard phase-field staggered solver API.
 
-import ipdb
+The test intentionally runs one load step only. It verifies solver setup,
+boundary-condition registration, material integration, and phase-field update
+without starting a long fracture simulation.
+"""
+
 import numpy as np
-
 import pytest
+
 from fealpy.backend import backend_manager as bm
 from fealpy.mesh import TriangleMesh
 
-from app.fracturex.fracturex.phasefield.main_solve import MainSolve
-
-class TestMainSolver:
-
-    @pytest.mark.parametrize("backend", ['numpy', 'pytorch'])
-    def test_main_solver(self, backend):
-        
-        mesh = TriangleMesh.from_box([0,1,0,1],1,1)
+from fracturex.phasefield.main_solve import MainSolve
 
 
-        E = 200
-        nv = 0.3
-        params = {'E': E, 'nu': nv, 'Gc': 1.0, 'l0': 0.1}
-
-        ms = MainSolver(mesh=mesh, material_params=params, p=1, method='HybridModel')
-        
-
-        ms.add_boundary_condition('force', 'Dirichlet', self.fun1, [0.1, 0.2, 0.3], 'y')
-        ms.add_boundary_condition('displacement', 'Dirichlet', self.fun, 0)
-        ms.solve(vtkname='test')
-        
+def _top_boundary(points):
+    """Select the top edge for prescribed vertical displacement."""
+    return bm.abs(points[..., 1] - 1.0) < 1.0e-12
 
 
-    
-    def fun(self, p):
-        x = p[..., 0]
-        y = p[..., 1]
-        return bm.abs(y) < 1e-10
-    
-    def fun1(self, p):
-        x = p[..., 0]
-        y = p[..., 1]
-        isindof =  bm.abs(y-1) < 1e-10
-        return isindof
+def _bottom_boundary(points):
+    """Select the bottom edge for the zero-displacement constraint."""
+    return bm.abs(points[..., 1]) < 1.0e-12
 
 
+@pytest.mark.parametrize("backend", ("numpy", "pytorch"))
+def test_main_solve_one_load_step(backend):
+    """Run one HybridModel load step on each standard CPU backend."""
+    bm.set_backend(backend)
+    mesh = TriangleMesh.from_box([0.0, 1.0, 0.0, 1.0], nx=1, ny=1)
+    material = {"E": 200.0, "nu": 0.3, "Gc": 1.0, "l0": 0.1}
+    solver = MainSolve(mesh=mesh, material_params=material, model_type="HybridModel")
 
+    solver.add_boundary_condition(
+        "force", "Dirichlet", _top_boundary, [0.0, 1.0e-5], "y"
+    )
+    solver.add_boundary_condition(
+        "displacement", "Dirichlet", _bottom_boundary, 0.0
+    )
+    solver.solve(
+        method="lfem",
+        p=1,
+        q=3,
+        maxit=1,
+        linear_solver_options={"method": "direct"},
+    )
 
-
-if __name__ == "__main__":
-    TestMainSolver().test_main_solver('numpy')
-    TestMainSolver().test_main_solver('pytorch')
-
-
+    assert solver.H.shape == (mesh.number_of_cells(), 6)
+    assert np.all(np.isfinite(bm.to_numpy(solver.H)))
+    assert np.all(np.isfinite(bm.to_numpy(solver.d)))
 

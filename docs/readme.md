@@ -5,6 +5,7 @@
 ## architecture/ — 架构与接口
 - [整体架构与技术路线（中文）](architecture/huzhang_phasefield_architecture.md)
 - [Hu–Zhang + 相场架构（English, focused）](architecture/huzhang_phasefield_architecture.en.md)
+- [标准相场断裂应变能分解](architecture/strain_energy_splits.md) — Bourdin、Lancioni、Amor、Miehe、Ambati 模型的统一接口、标准 FEM 集成与多后端验证
 - [HuZhang 相场接口测试手册（中文）](architecture/huzhang_interface_test_manual.md)
 - [多后端编码规范（统一约定）](architecture/multibackend_convention.md) — 计算用 `bm` 不用 `np`；numpy 仅限 I/O/scipy 边界（`bm.to_numpy` 跨界）；新代码强制、存量随改随迁
 

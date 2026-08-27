@@ -653,6 +653,7 @@ def _build_driver(
         density_type="AT2",
         degradation_type="quadratic",
         split="hybrid",
+        history_source=os.environ.get("FRACTUREX_HISTORY_SOURCE", "from_u").strip() or "from_u",
         eps_g=float(EPS_G),
         debug=False,
     )

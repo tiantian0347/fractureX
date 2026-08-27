@@ -78,6 +78,7 @@ class PhaseFieldDamageModel(DamageModelBase):
     density_type: str = "AT2"
     degradation_type: str = "quadratic"
     split: str = "hybrid"         # "hybrid", "spectral", "isotropic"
+    history_source: str = "from_u"  # "from_u" or "from_sigma"
     eps_g: float = 1e-10
     clamp_max: float = 0.999999
     debug: bool = False
@@ -99,6 +100,11 @@ class PhaseFieldDamageModel(DamageModelBase):
             case: 提供 ``model()``（含 ``Gc``、``l0`` 及 Lamé 参数）。
         """
         model = case.model()
+        if self.history_source not in ("from_u", "from_sigma"):
+            raise ValueError(
+                "PhaseFieldDamageModel.history_source must be 'from_u' or "
+                f"'from_sigma'; got {self.history_source!r}."
+            )
 
         self.lam, self.mu = _material_lame_from_model(model)
 
@@ -220,8 +226,13 @@ class PhaseFieldDamageModel(DamageModelBase):
         bcs : quadrature barycentric points
         index : cell indices
         """
-        grad_u = state.u.grad_value(bcs, index=index)               # (NC,NQ,GD,GD)
-        strain = 0.5 * (grad_u + bm.swapaxes(grad_u, -2, -1))
+        if self.history_source == "from_u":
+            grad_u = state.u.grad_value(bcs, index=index)           # (NC,NQ,GD,GD)
+            strain = 0.5 * (grad_u + bm.swapaxes(grad_u, -2, -1))
+        elif self.history_source == "from_sigma":
+            strain = self._recover_strain_from_sigma(state, bcs, index=index)
+        else:
+            raise ValueError(f"Unknown history source: {self.history_source!r}")
 
         if self.split in ("hybrid", "spectral"):
             phip = self._spectral_positive_energy_density(strain)   # (NC,NQ)
@@ -250,6 +261,47 @@ class PhaseFieldDamageModel(DamageModelBase):
                 f"H min/max = {float(bm.min(state.H)):.3e} / {float(bm.max(state.H)):.3e}"
             )
         return state.H
+
+    def _recover_strain_from_sigma(self, state, bcs, index=None):
+        """Recover the standard-formulation strain ``epsilon=A(d)sigma``.
+
+        Args:
+            state: Discrete state with Hu--Zhang stress ``sigma`` and damage ``d``.
+            bcs: Cell quadrature barycentric coordinates.
+            index: Optional cell indices matching ``bcs``.
+        Returns:
+            Symmetric plane-strain tensor array ``(NC, NQ, 2, 2)``.
+        Raises:
+            ValueError: If the Hu--Zhang stress is not 2-D Voigt ``(xx,xy,yy)``.
+
+        The production paper runner uses the standard mixed formulation, whose
+        stress variable is the degraded physical stress. Therefore the total
+        strain is ``C^{-1} sigma / g(d)`` at the same quadrature points.
+        """
+        sigma_v = bm.asarray(state.sigma(bcs, index=index))
+        if sigma_v.ndim != 3 or sigma_v.shape[-1] != 3:
+            raise ValueError(
+                "from_sigma requires 2-D Hu--Zhang Voigt stress with shape "
+                f"(NC,NQ,3); got {sigma_v.shape}."
+            )
+
+        sxx = sigma_v[..., 0]
+        sxy = sigma_v[..., 1]
+        syy = sigma_v[..., 2]
+        tr_sigma = sxx + syy
+        lam = float(self.lam)
+        mu = float(self.mu)
+        trace_coef = lam / (2.0 * (lam + mu))
+        scale = 1.0 / (2.0 * mu)
+
+        eps = bm.zeros(sigma_v.shape[:2] + (2, 2), dtype=sigma_v.dtype)
+        eps[..., 0, 0] = scale * (sxx - trace_coef * tr_sigma)
+        eps[..., 0, 1] = scale * sxy
+        eps[..., 1, 0] = scale * sxy
+        eps[..., 1, 1] = scale * (syy - trace_coef * tr_sigma)
+
+        gd = self.coef_bary(state, bcs, index=index)
+        return eps / gd[..., None, None]
 
     # backward-compatible alias
     def update_after_elastic(self, discr, state, case):

@@ -13,11 +13,51 @@ from fracturex.analysis.affine_invariant import (
     write_summary_csv,
 )
 from fracturex.analysis.nepin_hook import build_nepin_callbacks
+from fracturex.analysis.box_quadratic import (
+    BoxQuadraticResult,
+    solve_box_quadratic_active_set,
+)
 from fracturex.analysis.nonlinear_elimination import (
     NEPINConfig,
     NEPINEliminator,
     NEPINResult,
     identify_subset,
+)
+from fracturex.analysis.reduced_nonlinear_solver import (
+    ReducedNewtonConfig,
+    ReducedNewtonResult,
+    solve_reduced_nonlinear_system,
+)
+from fracturex.analysis.coupled_newton_solver import (
+    CoupledNewtonConfig,
+    CoupledNewtonResult,
+    solve_coupled_newton,
+)
+from fracturex.analysis.staggered_slow_mode import (
+    apply_local_elimination_projection,
+    augment_weighted_subspace_with_memory,
+    DominantModeResult,
+    FixedPointResult,
+    IncrementSubspaceResult,
+    LocalEliminationResult,
+    MemoryAugmentedSubspaceResult,
+    SlowSubspaceResult,
+    compute_cell_energy_from_diagonal_weight,
+    coupled_slow_subspace_from_sweep_column,
+    diagonal_cell_weights,
+    diagonal_patch_survival_factor,
+    diagonal_patch_subspace_survival_factor,
+    dominant_mode,
+    finite_difference_jacobian,
+    finite_difference_jacobian_rectangular,
+    iterate_fixed_point,
+    online_increment_subspace,
+    solve_local_nonlinear_residual,
+    select_bulk_cells,
+    spectral_slow_subspace,
+    subspace_cell_trace_indicator,
+    weighted_orthonormalize,
+    weighted_principal_angles,
 )
 
 __all__ = [
@@ -32,4 +72,36 @@ __all__ = [
     "NEPINResult",
     "identify_subset",
     "build_nepin_callbacks",
+    "BoxQuadraticResult",
+    "solve_box_quadratic_active_set",
+    "ReducedNewtonConfig",
+    "ReducedNewtonResult",
+    "solve_reduced_nonlinear_system",
+    "CoupledNewtonConfig",
+    "CoupledNewtonResult",
+    "solve_coupled_newton",
+    "DominantModeResult",
+    "apply_local_elimination_projection",
+    "augment_weighted_subspace_with_memory",
+    "FixedPointResult",
+    "IncrementSubspaceResult",
+    "LocalEliminationResult",
+    "MemoryAugmentedSubspaceResult",
+    "SlowSubspaceResult",
+    "compute_cell_energy_from_diagonal_weight",
+    "coupled_slow_subspace_from_sweep_column",
+    "diagonal_cell_weights",
+    "diagonal_patch_survival_factor",
+    "diagonal_patch_subspace_survival_factor",
+    "dominant_mode",
+    "finite_difference_jacobian",
+    "finite_difference_jacobian_rectangular",
+    "iterate_fixed_point",
+    "online_increment_subspace",
+    "solve_local_nonlinear_residual",
+    "select_bulk_cells",
+    "spectral_slow_subspace",
+    "subspace_cell_trace_indicator",
+    "weighted_orthonormalize",
+    "weighted_principal_angles",
 ]

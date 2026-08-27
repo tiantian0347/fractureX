@@ -51,9 +51,22 @@ class Model5StandardFEM:
         "l0": 0.03,
     }
 
-    def __init__(self, *, mesh_size: float = 0.15, with_geometric_notch: bool = True):
+    def __init__(
+        self,
+        *,
+        mesh_size: float = 0.15,
+        with_geometric_notch: bool = True,
+        local_mesh_size: float | None = None,
+        local_refine_half_width: float = 0.5,
+        local_refine_ymax: float = 1.6,
+        local_refine_transition: float = 0.15,
+    ):
         self.mesh_size = float(mesh_size)
         self.with_geometric_notch = bool(with_geometric_notch)
+        self.local_mesh_size = None if local_mesh_size is None else float(local_mesh_size)
+        self.local_refine_half_width = float(local_refine_half_width)
+        self.local_refine_ymax = float(local_refine_ymax)
+        self.local_refine_transition = float(local_refine_transition)
         hw = max(float(self.support_half_width), 0.6 * self.mesh_size)
         self._support_hw = hw
         self._load_hw = max(float(self.load_half_width), 0.6 * self.mesh_size)
@@ -61,6 +74,10 @@ class Model5StandardFEM:
     def build_mesh(self) -> TriangleMesh:
         return _build_gmsh_beam(
             mesh_size=self.mesh_size,
+            local_mesh_size=self.local_mesh_size,
+            local_refine_half_width=self.local_refine_half_width,
+            local_refine_ymax=self.local_refine_ymax,
+            local_refine_transition=self.local_refine_transition,
             length=self.length,
             height=self.height,
             notch_depth=self.notch_depth,
@@ -100,6 +117,21 @@ class Model5StandardFEM:
         return (bm.abs(p[..., 1]) < self.bd_tol) & (
             bm.abs(p[..., 0] - self.right_support_x) <= self._support_hw
         )
+
+
+def _displacement_segment(u_start: float, u_end: float, n_steps: int):
+    """Downward midspan schedule on ``[u_start, u_end]`` (mm, magnitudes ≥ 0)."""
+    return -bm.linspace(float(u_start), float(u_end), int(n_steps) + 1, dtype=bm.float64)
+
+
+def _merge_force_disp(prev_path: Path, disp_np, force) -> np.ndarray:
+    old = np.loadtxt(prev_path, skiprows=1)
+    if old.ndim == 1:
+        old = old.reshape(1, -1)
+    new = np.c_[disp_np, force]
+    if len(old) and abs(abs(old[-1, 0]) - abs(new[0, 0])) < 1e-9:
+        new = new[1:]
+    return np.vstack([old, new])
 
 
 def _attach_model5_bcs(ms: MainSolve, model: Model5StandardFEM, disp) -> None:
@@ -175,9 +207,36 @@ def main(argv=None):
     parser.add_argument("--degree", default=1, type=int)
     parser.add_argument("--maxit", default=50, type=int)
     parser.add_argument("--mesh-size", default=0.15, type=float)
+    parser.add_argument(
+        "--local-mesh-size", default=None, type=float,
+        help="optional Gmsh Box-field size near the notch (must be below --mesh-size)",
+    )
+    parser.add_argument("--local-refine-half-width", default=0.5, type=float)
+    parser.add_argument("--local-refine-ymax", default=1.6, type=float)
+    parser.add_argument("--local-refine-transition", default=0.15, type=float)
+    parser.add_argument(
+        "--adaptive-load-step", action="store_true",
+        help="reject nonconverged increments and bisect the displacement step",
+    )
+    parser.add_argument("--min-load-step", default=None, type=float)
+    parser.add_argument("--max-subdivisions", default=8, type=int)
     parser.add_argument("--max-steps", default=None, type=int)
+    parser.add_argument("--u-start", default=None, type=float,
+                        help="segment start magnitude (mm); with --u-end for continuation")
+    parser.add_argument("--u-end", default=None, type=float)
+    parser.add_argument("--n-steps", default=None, type=int)
+    parser.add_argument("--restart-npz", default=None, type=str)
+    parser.add_argument("--save-state-npz", default=None, type=str)
+    parser.add_argument("--merge-with", default=None, type=str,
+                        help="prior force_disp txt to prepend when saving")
     parser.add_argument("--backend", default="numpy", type=str)
     parser.add_argument("--model_type", default="HybridModel", type=str)
+    parser.add_argument(
+        "--lin-method",
+        default="auto",
+        type=str,
+        help="MainSolve linear solver: auto|direct|gmres|pardiso|mumps",
+    )
     parser.add_argument(
         "--no-notch",
         action="store_true",
@@ -190,6 +249,12 @@ def main(argv=None):
     )
     parser.add_argument("--vtkname", default="model5_std", type=str)
     parser.add_argument("--save-vtk", action="store_true")
+    parser.add_argument(
+        "--save-damage-dir",
+        default=None,
+        type=str,
+        help="write step_XXXX.npz (node, cell, d) after each load step",
+    )
     args = parser.parse_args(argv)
 
     bm.set_backend(args.backend)
@@ -199,6 +264,10 @@ def main(argv=None):
     model = Model5StandardFEM(
         mesh_size=args.mesh_size,
         with_geometric_notch=not args.no_notch,
+        local_mesh_size=args.local_mesh_size,
+        local_refine_half_width=args.local_refine_half_width,
+        local_refine_ymax=args.local_refine_ymax,
+        local_refine_transition=args.local_refine_transition,
     )
     mesh = model.build_mesh()
     node = np.asarray(mesh.entity("node"))
@@ -212,7 +281,11 @@ def main(argv=None):
     )
 
     disp = model.force_schedule()
-    if args.max_steps is not None:
+    if args.u_start is not None:
+        u_end = 0.06 if args.u_end is None else float(args.u_end)
+        n_steps = 30 if args.n_steps is None else int(args.n_steps)
+        disp = _displacement_segment(args.u_start, u_end, n_steps)
+    elif args.max_steps is not None:
         disp = disp[: args.max_steps + 1]
 
     ms = MainSolve(
@@ -221,21 +294,42 @@ def main(argv=None):
     _attach_model5_bcs(ms, model, disp)
     if args.save_vtk:
         ms.save_vtkfile(fname=str(out / args.vtkname))
+    if args.save_damage_dir:
+        ms.save_damage_npz_dir(args.save_damage_dir)
 
     t0 = time.time()
-    ms.solve(p=args.degree, maxit=args.maxit)
+    ms.solve(
+        p=args.degree,
+        maxit=args.maxit,
+        restart_npz=args.restart_npz,
+        linear_solver_options={"method": args.lin_method},
+        adaptive_load_step=args.adaptive_load_step,
+        min_load_step=args.min_load_step,
+        max_subdivisions=args.max_subdivisions,
+    )
     print(f"[model5-std] wall time {time.time() - t0:.1f}s")
 
+    if args.save_state_npz:
+        ms.save_restart_npz(args.save_state_npz)
+        print(f"[model5-std] saved state {args.save_state_npz}")
+
     force = bm.to_numpy(ms.get_residual_force())
-    disp_np = bm.to_numpy(disp)
+    # Adaptive continuation can insert accepted midpoint loads; use the
+    # solver's actual path so displacement and reaction columns stay aligned.
+    disp_np = bm.to_numpy(ms.get_accepted_load_path())
+    out_data = (
+        _merge_force_disp(Path(args.merge_with), disp_np, force)
+        if args.merge_with
+        else np.c_[disp_np, force]
+    )
     np.savetxt(
         out / f"{args.vtkname}_force_disp.txt",
-        np.c_[disp_np, force],
+        out_data,
         header="disp(mm)  reaction_force",
         comments="",
     )
     print(
-        f"[model5-std] |R|_max={np.nanmax(np.abs(force)):.3e} "
+        f"[model5-std] |R|_max={np.nanmax(np.abs(out_data[:, 1])):.3e} "
         f"wrote {out / (args.vtkname + '_force_disp.txt')}"
     )
 

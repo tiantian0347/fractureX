@@ -1,11 +1,11 @@
 # M3b Stage D 进度：平衡残差正则 + σ_h vs σ_h^rec 对照
 
-> 状态：**已上线, sweep running**（2026-07-05）。规划见
+> 状态：**A/A' sweep 已完成并同步本地**（2026-07-06 跑完，2026-08-20 scp）。规划见
 > [paper_thesis.md §F.3 / §G](paper_thesis.md)、
 > [plan_operator_learning.md](plan_operator_learning.md) §Stage D。
 >
-> 本页只记 **代码/数据管线** 与 **首轮 sweep 触发点**；训练指标结果落到
-> `results/learn/m3b_hz_sweep/*/eval_report.md`，跑完后回填到 §5。
+> 本页只记 **代码/数据管线** 与 **首轮 sweep 结果**；训练指标见
+> `huzhang_fracture_result/results/learn/m3b_hz_sweep/*/eval_report.md`。
 
 ## 1. 代码落地（本地 + 服务器同步完成）
 
@@ -51,9 +51,9 @@
   **法向跳跃 pathology**，正是 paper_thesis §F.3 想暴露的对照点
 - 训练时用 `--sigma-transform arcsinh` 可压缩这种重尾
 
-## 3. 服务器首轮 sweep（A / A' 组）
+## 3. 服务器首轮 sweep（A / A' 组）——✅ 已完成
 
-已启动 nohup（服务器 lab 端，2026-07-05 10:57），跑完约需数小时（CPU 上让路 D12 aux h2/h3 + model2 direct）。
+完成时间 2026-07-06；本地副本 `huzhang_fracture_result/results/learn/m3b_hz_sweep/`（含四组 checkpoint + `sweep_summary.json`）。
 
 ```bash
 # 复现命令
@@ -84,6 +84,8 @@ results/learn/m3b_hz_sweep/
 ├── sigma_h_leq1/           # A' λ_eq=1.0
 └── sweep_summary.json      # 4-row 汇总
 ```
+
+**本地路径（2026-08-20 scp）**：`huzhang_fracture_result/results/learn/m3b_hz_sweep/`（≈257 MB，含四组 `model_final.pt`）。
 
 ## 4. 观测口子
 

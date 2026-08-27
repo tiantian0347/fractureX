@@ -1,34 +1,23 @@
-# fracturex 论文 + 开发 主计划（2026-07-11 v1.1）
+# fracturex 论文 + 开发 主计划（2026-08-25 v2.6）
 
-> **v1.1 更新（2026-07-11）**：**新增第 5 个近期投稿候选 T9 / 论文 F（FractureX 框架/软件论文）**——把 D12 里新加的相场 AMG 预条件 + HZ 矩阵并行组装抽出来，与标准 Lagrange / IP-FEM 一并写成 FractureX 框架论文（**不并入 D12**，否则与 D12 matrix-free 主线冲突、稀释 aux-space 头条）。**脊梁 = 一套解耦架构承载三种离散范式**（标准 Lagrange `MainSolve` / HZ 混合 `huzhang_*` / C⁰-IP 4 阶 `interior_penalty`，共用 fealpy backend + cases 基座）；**首次正式存档 FractureX**（ICCES2025 仅摘要+报告无论文稿）。**期刊首选 CiCP**（与底座引擎 FEALPy v3 同刊，`10.4208/cicp.OA-2025-0327`）。**边界**：框架论文引 D12/T6a/田博论讲方法，自己只讲实现+性能+统一。详见 `docs/planning/T9_FRAMEWORK_PAPER_PLAN.md`。**动作**：§1 表加 T9 行、§3 清单加 F 行。
+> **v2.6**：完成论文第二阶段压缩。正文保留“诊断--定位--消元--验收”主线、核心理论、收益表、网格证据和 reference-free 验收；实现细节与审计参数收敛为简短说明，当前 PDF 为 24 页（含附录和参考文献）。
 
-> **v1.0 更新（2026-07-10）**：**ipfem (T6a) 插队到投稿队首**——`ipfem_paper.tex` 已从 v0.6 盘点的 1187 行扩到 **2345 行**，计划里当作核心 delta 的 **T6a.pre.A1（应变梯度耦合，Aifantis $O(\ell_s^2)$ 分量式）已全程落地**（§2.2 length-scale regularization + §3.2/§4.6 离散与误差分析扩展），**A3（penalty γ 敏感性 §5.4）、A4（Conclusion 已桥接 equilibrated estimator → T2）** 亦完成，另加计划外的 **§5.5 manufactured-solution 收敛验证**。→ 博论重合风险解除，ipfem **是当前唯一不卡服务器算例的稿子，本地即可收官**。**动作**：T6a 从 Phase 3 / 2027-06 提前到 **2026-07 立即投**（Comput. Mech./IJNME）；§1 表 T6a 行 ETA/状态改写、§3 清单投稿日改 2026-07、§4.3 勾掉 A1/A3/A4。**近期真实投稿顺序 = ipfem（现在）→ A（只欠本地 scp+图表，1–2 周）→ D12/B（卡算例，8 月）**。**仍欠**：A2（2 vs 4 阶直接对比，tex §2299 明写留 future work）、B5（SENT tension benchmark）——不阻塞本轮送审，作 rebuttal 储备。
 
-> **v0.9 更新（2026-07-05）**：**A 送审关键路径落到执行层 + 二投候选双路并行**——A 的瓶颈是 scp + 后处理一步，理论侧 A-2/3/4 从 remark 提到 §body（spectral majorant 拎成独立子节，避免 reviewer 觉得藏在 remark 里）；A 走 CMAME、arXiv 同日挂占坑。第二篇不押死 D12：**路径 α (D12)** 立刻起 shear aux **h1**（比 h2/h3 快，3–4 天过 peak 够 aux-vs-direct），**路径 β (B/T3)** M3b.4 服务器改 writer 立即起（不阻塞任何在跑 job）；两路平行 2 周，谁先齐谁投。§2 Phase 1 加执行层清单。
-
-> **v0.8 更新（2026-07-05）**：**A 先于 D12 送审**——A tex 理论侧 A-2/3/4 已落地（v0.2），SENT shear 数据 7/3 已跑完（step 32 有效），只欠本地 scp + 图表处理（A-1），1–2 周可送审；D12 的 SENT shear aux 侧尚未起跑 + h2/h3 续算需 1–2 周，Conclusion 已明写 shear 是头条卖点，硬砍会伤 selling point。**动作**：§1 表把 T2 ETA 提到 **2026-07**、T1 保持 2026-09；§3 论文清单顺序调整为 **A → D12 → B → …**，D12 投稿从 2026-09 保留不动、A 从 2026-11 提前到 2026-07；§2 Phase 1 标题改为「T2 (A) 先送审，T1 (D12) 补 shear 后跟上」。
-
-> **v0.7 更新（2026-07-05）**：**章节顺序调整**——把 §0（龚博论祖谱）与 §0.5（田博论祖谱）两段背景章从最前面移到最后面（现改称 **§8** / **§9**，位于 §7 一句话总纲之后、§附 A 之前）。目的：§1 总优先级表直接顶到读者眼前，背景性对接表下沉。**内容不变**，仅编号与位置变。历史 changelog 里"§0.5"字样保留原样以反映当时结构。
-
-> **v0.6 更新（2026-07-05）**：**T6a tex 已有底稿**——`Tian/thesis/ip_fracture/ipfem_paper.tex` 1187 行，Intro/Model/离散/**完整误差分析章**（stability + coercivity + a priori $h^{p-1}$）/两算例（circular hole + notch）/Conclusion 骨架 100%；结果目录 `ipfem_fp_results/` 中 model0 p=2,3,4 × 多 h 全 √；六张图齐。**Conclusion 自认五条 open extension** 已识别。**核心 delta 是应变梯度耦合**（相对博论 IP-FEM 章的独家性）——**理论先行**：先补 §Model / §Discretization 里应变梯度变分形式与稳定性分析，再回 fealpy3 实现。**动作**：§2 T6a 预研任务从 3 条扩到 6 条（明确"先理论后代码"顺序），§4.3 加对应 checkbox；fealpy_old → fealpy3 迁移作 T6a.pre.6，是 T6b 的前置。附 §附 T6a 现状盘点表。
->
-> **v0.5 更新（2026-07-04）**：**T6 (C 线) 拆两路径**——博论 IP-FEM 地基稳，把 C 线拆成 **T6a·标准/IP-FEM 4 阶 PFM**（博论直接延伸，理论风险低，safe win）和 **T6b·Hu-Zhang mixed 4 阶 PFM**（inf-sup 重证，novel）。投稿排开：**2027-06 T6a → 2027-09 T7 → 2027-12 T6b**，同时解决 v0.4 遗留的 T7/C 撞档 2027-09。**动作**：§1 表拆两行、§2 Phase 2 尾预研先做 T6a 数值扩展 / T6b inf-sup 草稿、§3 论文清单加一行 T6a、§4 拆预研与代码接入。
->
-> **v0.4 更新（2026-07-04）**：**T6 (C 线 4 阶 PFM) 优先级提半档**——依据 §0.5 博论 IP-FEM 4 阶章已把可行性验证完，C 线现在做的是 "IP-FEM → Hu-Zhang mixed setting" 的**离散升级**而非从头造轮子；且 T6 卖点（mesh budget ℓ/h≥4）与 T5 D+ 卖点（求解器 niter）正交。**动作**：ETA 14–18 月 → 10–14 月；投稿 2027-12 → 2027-09；§2 Phase 2 尾新增"T6 预研段"（离散设计 + inf-sup 草稿），代码接入仍待 T2 送审后。**不改**：T2/T5 仍是 Phase 2 主推，T6 不抢资源。
->
-> **v0.3 更新（2026-07-04）**：接入 **田甜博士论文（`ttthesis/thesis/tianPHD.tex`, 已完成）** 的方法学接续关系——博论四项创新（任意次 tensorized FEM / recovery-based AFEM + GPU / IP-FEM 4 阶 PFM / FractureX 平台）与主计划五+条论文线一一对上（新增 §0.5）。§5 引用表加入博论 A/C/B 三行；附索引加 ttthesis 锚点。
->
-> **v0.2 更新（2026-07-04）**：D12 (`Tian/thesis/fracture_huzhang/phasefield_huzhang.tex`) 与 A (`.../adaptive/equilibrated_aposteriori.tex`) 两篇 tex 均已完成正文 + Conclusion + Outlook。基于两篇 Outlook 自认的欠账，重新校准 Phase 1/2 排期：短期先补两篇 gap 送审，中期改为 **T3 (B 线) + T5 (D+ 线) 并行**，T4 (A+ 线) 后置到 2027。
-
-## 服务器 job 状态（2026-07-04 22:28 CST 核对 + 本轮改动）
+## 服务器 job 状态（2026-08-20 09:55 CST 核对）
 
 | Job | 现状 | 数据到 | 下一步 |
 |---|---|---|---|
-| **A adaptive model2 effstress** | ✅ **已跑完** (7/3 17:31, `DONE steps=34, peak_R=0.234`) | step 33 fallback 崩停；有效数据到 step 32 (R=0.156)；history.csv 35 行 + vtu 11MB | 已给 scp 命令；下拉后处理成 SENT shear 图表补进 A tex §sec:num (A-1) |
-| **D12 aux h2** | 🟢 **已重启在跑** (7/4 22:14, PID 267325, restart=400/maxit=800 + Anderson, from step_013.npz) | 之前 6/19 停在 step 59, u_y=0.0876（已过 peak -28.14） | 目标：u_y=0.125 (breakthrough)；每步 ~1–4h（局部化区更慢），估计 1 周 |
-| **D12 aux h3** | 🟢 **已重启在跑** (7/4 22:14, PID 267327, 同上) | 之前 6/22 停在 step 106, u_y=0.0876（已过 peak -28.19） | 每步 ~8h（局部化区更慢），估计 2 周 |
-| **D12 model2 direct pardiso_gmres** | 🟡 在跑 (PID 4142145, 5天+, step 8, u_y=6.67e-4) | 未到 peak (peak ~ u_y=1.03e-2) | 每步 ~15h，到 breakthrough 3–4 周；性价比低 |
-| **D12 square/model0 direct** | 🟡 在跑 (PID 3782490, 16天+) | 用途待确认 | 保留 |
+| **A adaptive model2 effstress** | ✅ **已跑完 + 已同步本地** (7/3 17:31) | step 33 fallback 崩停；有效数据到 step 32 (R=0.156) | 本地 `huzhang_fracture_result/results_model2/adaptive_m3_pc_model2_effstress/`；后处理 SENT shear 图表补进 A tex §sec:num (A-1) |
+| **D12 aux h2** | 🔴 **已停，无运行进程**；7/4 resume 只恢复 checkpoint，未产出 step 14 | history/checkpoint 均到 **step 13/31**，u_y=0.0876，max_d=0.4264 | 决定是否重启；若保留 D12 完整 mesh-independence 结论，需从 step_013.npz 续算 |
+| **D12 aux h3** | 🔴 **已停，无运行进程**；7/4 resume 只恢复 checkpoint，未产出 step 14 | history/checkpoint 均到 **step 13/31**，u_y=0.0876，max_d=0.4193 | 同 h2；重启前先评估局部化区成本与论文最低数据需求 |
+| **D12 model2 direct pardiso_gmres** | 🟡 **在跑**（PID 4142145，6/29 起） | 已完成 **step 171/240**，u_y=0.01425，max_d=1.0；step 171 用 482 次 staggered iteration 收敛 | 继续到目标步 240；已过 peak，但后局部化单步成本很高 |
+| **D12 square/model0 direct** | 🟡 **在跑**（PID 3782490，6/18 起） | 已完成 **step 81**，u_y=0.00531，max_d=1.0；step 81 用 10 次 iteration 收敛 | 保留运行；明确该数据在 D12/SENS 对照中的用途 |
+| **Model5 standard FEM h=0.015** | ✅ **已跑完 + 已同步本地** (8/19 23:40) | u=0→0.06 mm 两段 continuation；peak \|R\|≈0.0411 @ u≈0.047 mm（≈Ambati 0.042）；末步 maxit=80 未收敛 | 本地 `huzhang_fracture_result/phasefield/model5_standard_fem/std_bg_h015_smoke_a{_cont}/`；更新 `PHASEFIELD_BENCHMARKS.md` |
+| **M3b A/A' sweep** | ✅ **已完成 + 已同步本地** (7/6) | λ_eq∈{0,0.01,0.1,1.0} 四组；σ_rel L2≈0.986–0.988，λ_eq 无明显改善 | 本地 `huzhang_fracture_result/results/learn/m3b_hz_sweep/`；见 `m3b_stageD_status.md` §5 |
+| **paper_aux_h1** | ✅ **已同步本地** | VTU/checkpoint 到 step 30；history 仅到 step 16 | 本地 `huzhang_fracture_result/results_model0/paper_aux_h1/epsg_1e-06/` |
+| **M3b hires dataset** | 🟡 **在跑**（PID 291306，7/5 起） | sample_000004 已完成 step 15；sample_000005 已完成 step 6，正在 step 7 | 继续生成；完成后做 stress_rec 与 B/B' sweep |
+| **Model4 standard FEM h=1.0** | 🟡 **在跑** PID **3851518**（2026-08-20 11:36 CST） | `path`：gmres，`Δu=0.01` 到 2 mm / 200 步；NN=9605 NC=18689；step 0 已 4 NR 收敛 | `results/phasefield/model4_standard_fem/std_h1_path/`；log `results/logs/model4_std_fem_path.nohup` |
+| **Model6 standard FEM h=0.15** | 🟡 **在跑** PID **3846352**（2026-08-20 11:32 CST） | `path`：gmres，u=0→0.25 mm / 250 步；NN=9435 NC=18442；step 1 起 3 NR/步 | `results/phasefield/model6_standard_fem/std_h015_path/`；log `results/logs/model6_std_fem_path.nohup` |
 
 **本轮 tex 改动（2026-07-04）**：
 
@@ -37,8 +26,8 @@
 
 **剩余 gap 状态**：
 
-- 🟢 D-1..D-5 (SENT/SENS aux 端到端 + 局部化 mesh-indep)：**等 h2/h3 续算出货**（1–2 周）
-- 🟢 A-1 (SENT shear 场景)：**数据到手**，等本地 scp + 图表处理
+- 🔴 D-1..D-5 (SENT/SENS aux 端到端 + 局部化 mesh-indep)：**h2/h3 均停在 step 13/31**，需明确重启或缩减论文结论范围
+- 🟢 A-1 (SENT shear 场景)：**数据已 scp 至 `huzhang_fracture_result/results_model2/adaptive_m3_pc_model2_effstress/`**，待本地后处理图表
 - 🟡 D-3/D-4 (SENS aux)：model2 direct 太慢，作 "future work" 处理
 - ✅ D-7, A-2/3/4：本轮全部落地
 - ✅ **T3.M3a**：`equilibrium_residual_l2` stub 实现完成（`fracturex/learn/eval/metrics.py:277`），签名对齐 `paper_thesis.md §C`（`sigma_grid, mask, dx, dy, f=0.0, d=None, d_c=0.9, L=None`）；`fracturex/tests/test_learn_metrics_equilibrium.py` 8 项 pytest 全过（零应力、常应力 div=0、σ_xx=x 解析 R̃_h≈2.55、体积力抵消、批 shape、d>d_c 剔除、shape 校验、显式 L 覆盖）；`test_learn_m1_smoke.py` 11/11 无回归——B 线迈出第一步
@@ -51,7 +40,7 @@
   - `_make_loader` 按 `supervision_source == 'sigma_h_rec'` 自动开 `include_stress_rec`
   - 全套 38 项 (stress_recovery 10 + losses 9 + metrics 8 + m1_smoke 11) 零回归——B 线对照实验的**训练侧基础设施**齐全，等 M3b.4 数据生成脚本吐出带 `stress_rec` 的数据集即可 A/B 训练
 
-## T3.M3b 服务器进展（2026-07-05 更新）
+## T3.M3b 服务器进展（2026-08-20 更新）
 
 **M3b.4 · 数据管线：把 σ_h^rec 写进 npz 数据集** ✅ 完成 (2026-07-05)
 
@@ -64,16 +53,17 @@
 - **观测到裂尖 10⁴× 于 p95 的重尾**（p95=1.0 vs max=9780 in sample_000000）—— σ_h^rec ∉ H(div,S) 的法向跳跃 pathology，正是 paper_thesis §F.3 想暴露的对照点
 - 详细状态：`docs/operator_learning/m3b_stageD_status.md`
 
-**M3b.5 · A/B 对照训练** 🟢 A/A' sweep running (2026-07-05 10:57)
+**M3b.5 · A/B 对照训练** 🟡 A/A' sweep 已完成，B/B' 待 hires 数据
 
-已启动（nohup, log `/tmp/m3b_hz_sweep.log`）：
+已完成（log `/tmp/m3b_hz_sweep.log`，summary 为 `results/learn/m3b_hz_sweep/sweep_summary.json`）：
 
 - **A/A' sweep**（HZ σ_h supervision）：`run_m3b_lambda_eq_sweep.py` × λ_eq ∈ {0, 0.01, 0.1, 1.0}
 - 数据集：m1_pilot（train=19/test=8，64×64）
 - 模型：`multioutput_fno`, Stage B, 100 epochs
-- CPU 让位 D12 aux h2/h3 (267325/267327) + model2 direct (3782490/4142145)
+- 四组训练与评估均已结束；σ relative L2 约 0.986–0.988，未见 λ_eq 带来明显改善
+- hires 数据生成仍在跑：sample_000004 已完成，sample_000005 正在生成
 
-**待跑（M3b.4 批处理跑完后）**：
+**待跑（hires 数据生成与 stress_rec 批处理完成后）**：
 
 - **B/B' sweep**（σ_h^rec supervision）：同架构同 hyperparams，加 `--supervision sigma_h_rec --sigma-transform arcsinh`（压缩 10⁴× 重尾）
 - **产图**（对应 `paper_thesis.md §F.3` "plateau vs descent"）：R̃_h vs epoch，四条曲线；预期 HZ 组 → ε 可降，rec 组 → Θ(h^m) plateau
@@ -91,16 +81,16 @@
 
 | # | 类别 | 项目 | 状态 | 依赖 | 目标产出 | ETA |
 |---|---|---|---|---|---|---|
-| **T0** | 运维 | P1 遗留 + aux_h2/h3/model1 三段并行流水线 | 🟡 运行中（2026-06-04 起） | — | paper_aux 数据齐全 | 1–2 周 |
+| **T0** | 运维 | 服务器长任务收尾：model2/square direct + M3b hires；处理 aux h2/h3 停跑 | 🟡 direct/dataset 在跑；🔴 aux h2/h3 停在 step 13 | — | paper_aux 与 direct 对照数据齐全 | 先决策 aux 是否重启 |
 | **T2** | 论文 A | A tex 已成稿（`equilibrated_aposteriori.tex` 907 行含 Conclusion）→ 补 SENT shear 图表 + 已 sketch 的 equilibrating correction / spectral split majorant / marker efficiency 下界收尾 | 🟢 tex 骨架 100%，理论侧 A-2/3/4 已 sketch；SENT tension + CNT red-green + shear 数据齐 | T0 无关；只欠本地图表 | **CMAME/SINUM 主推** | **1–2 月（v0.8 提档）** |
-| **T1** | 论文 D | D12 tex 已成稿（`phasefield_huzhang.tex` 3148 行含 Conclusion + Appendix）→ 补 Outlook 自认欠账 + §13 sweep 表 + 收稿 | 🟡 tex 骨架 100%，欠 SENT shear 完整 aux-vs-direct + 局部化 mesh-independence + shear 局部化 iteration 一栏 | T0（h2/h3/model1 pipeline 出货 + shear aux 起跑） | **SISC/CMAME 短稿** | 2–3 月 |
-| **T3** | 论文 B | HZ-supervised 算子学习 Stage D + 对照表 + 数据重生 | 🟢 主定理锁定 2026-06-02，欠 `equilibrium_residual_l2` stub 实现 | T1/T2 无关，可并行 | **JCP/CMAME** | 5–6 月 |
+| **T1** | 论文 D | D12 tex 已成稿（`phasefield_huzhang.tex` 3148 行含 Conclusion + Appendix）→ 补 Outlook 自认欠账 + §13 sweep 表 + 收稿 | 🟡 tex 骨架 100%，欠 SENT shear 完整 aux-vs-direct + 局部化 mesh-independence + shear 局部化 iteration 一栏 | T0：h2/h3 已停在 step 13，须重启或缩减结论范围 | **SISC/CMAME 短稿** | 待 aux 决策后重估 |
+| **T3** | 论文 B | HZ-supervised 算子学习 Stage D + 对照表 + hires 数据生成 | 🟡 M3a 与 HZ A/A' sweep 已完成；hires dataset 在跑，欠 σ_h^rec 的 B/B' 对照 | T1/T2 无关，可并行 | **JCP/CMAME** | hires 完成后进入 B/B' sweep |
 | **T9** | 论文 F | FractureX 框架论文：一套解耦架构承载三种离散范式（标准 Lagrange / HZ 混合 / C⁰-IP 4 阶）+ 并行组装 + 双块最优求解器 | 🟢 代码/文档骨架齐；欠 scaling benchmark（本地快出，不卡服务器） | 引 D12/T6a/田博论方法；预研无阻塞 | **CiCP（与 FEALPy v3 同刊）** | 详见 `T9_FRAMEWORK_PAPER_PLAN.md`；≈2027 Q1（benchmark 后） |
 | **T5** | 论文 D+ | 多水平/两层 Schwarz 预条件（博士论文第 6 章 + conf 胡齐芽） | 🟢 D12 Outlook 自己点名"contrast-adapted, interface-resolving coarse space"；paper_aux 数据可直接复用 | T1 tex 送审后启动 | D 论文续作 / SIMAX-NLAA | 8–12 月 |
 | **T4** | 论文 A+ | Hu-Ma 扩展 H-Z 空间 + NVB 处理 L-shape（博士论文第 3 章 + conf 马睿线 2） | 🔵 fealpy 需新增顶点分裂逻辑；工程量最重 | T2 送审后接入 | A 论文附加章 / 独立短文 | 12–14 月 |
 | **T6a** | 论文 C1 | 4 阶 PFM + 应变梯度 **on 标准/IP-FEM**（博论 IP-FEM 章直接延伸） | 🟢 **tex 2345 行成稿**，应变梯度/penalty/aposteriori 桥接/manufactured-solution 全落地；不卡算例 | 无（本地即可投） | Comput. Mech./IJNME | **立即投（2026-07，v1.0 插队队首）** |
 | **T6b** | 论文 C2 | 4 阶 PFM + 应变梯度 **on Hu-Zhang mixed**（离散升级 + inf-sup 重证） | 🟢 卖点与 T5 正交（mesh budget vs niter）；inf-sup 非现成推论 | T2 送审后接入代码；预研阶段无阻塞 | Comput. Mech./IJNME | **12–16 月**（v0.5 后置，novel） |
-| **T7** | 理论 | 仿射不变 Lipschitz + NEPIN 用到 fracturex staggered（博士论文第 8–10 章 + conf §3 葛志昊） | 🔵 未开工，理论文 | T2/T3 完成 | SINUM/M2AN | 15–20 月 |
+| **T7** | 论文 Solver | Coupled slow subspace localization and local nonlinear elimination | 🟡 六状态启动准则已完成；待在线区域与网格验证 | T2/T3 不阻塞 | CMAME / SINUM / SISC | 主线 |
 | **T8** | 论文 E | 可微 HZ-PFM + AuTO 拓扑韧化 | 🔵 需 JAX 端到端 | T3 完成 + jax backend | ML4Science / PNAS 短篇 | 20–24 月 |
 
 **颜色**：🟡 在跑/在写 🟢 立即可起 🔵 依赖前置
@@ -114,7 +104,7 @@
 **T0 剩余动作**（`p1_action_checklist.md` §"P1 完成判定"未打勾项）
 1. Lagrange 路线 `MainSolve` 在 model0 上跑通（C5 对照必备）
 2. EXPERIMENT_MATRIX 自动扫描脚本（P0 优先级不高，0.5 天可写）
-3. 等 aux_h2/h3/model1 三段过完局部化区（h2 在 step 13/31 已滞、h3 在 step 13、model1 在 step 54/161）——**这些数据是 T1 D12 §13 sweep 表的原料**
+3. aux_h2/h3 已确认停在 step 13/31；model1/square direct 已到 step 81，model2 direct 已到 step 171/240。先决定 aux 是否重启；若不重启，T1 必须缩减局部化 mesh-independence 的结论范围
 
 **门槛条件（Go / No-Go）**
 - T2/T3 不阻塞 T0 完成，可并行启动；
@@ -259,11 +249,11 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 - 把预研阶段 IP-FEM 数值扩展 + 应变梯度耦合落成 fracturex 代码
 - 目标投稿 **2027-06**（v0.5 新增，safe win）
 
-**T7 · 理论文 · 仿射不变 NEPIN + 全离散稳定性**（博士论文第 8–10 章 + `conf §3` 葛志昊）
-- 用博士论文第 8 章的**仿射不变 Lipschitz 常数**理论，分析 fracturex staggered/Newton 收敛
-- 补 fracturex 目前**只有单调性数值现象、没干净能量证明**的短板
-- 输出：一篇偏理论的 SINUM/M2AN 文章
-- 投稿 **2027-09**（独占档位，v0.5 T6 拆分后不再与 C 撞档）
+**T7 · Solver 线 · coupled slow subspace 与局部非线性消元**（博士论文第 8–10 章）
+- H1--H6、五档预算和六状态启动准则已完成；
+- 下一步：在线慢空间与网格稳健性；
+- 历史场、动态、非对称投影和拓扑粗空间暂存为 \`T7_COUPLED_SLOW_SUBSPACE_PLAN.md\` 的后续分支；
+- 目标输出：一篇以慢子空间 survival factor 为核心、面向可靠条件加速的求解器方法论文，投稿 **2027-09**。
 
 **T6b · C2 线 · Hu-Zhang mixed 4 阶 PFM 代码接入 + 论文成稿**（预研在 Phase 2 尾已启动）
 - 把 inf-sup 稳定性草稿落成严格证明；4 阶 mixed 变分形式接 T2 equilibrated estimator 做 aposteriori 章
@@ -273,6 +263,191 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 **T8 · E 线 · 可微 HZ-PFM + AuTO 拓扑韧化**（远景）
 - 依赖 T3 完成 + fealpy jax backend 稳定
 - SH-com 弹簧网络最小模型（Fucheng Tian PNAS 2025）+ JAX AD 端到端
+
+---
+
+## 2.5 求解器论文方向（2026-08 决策版，索引）
+
+求解器论文正文现在只保留一条主线，数学模型、算法和验证计划统一以
+[T7_COUPLED_SLOW_SUBSPACE_PLAN.md](T7_COUPLED_SLOW_SUBSPACE_PLAN.md)
+和 \`Tian/thesis/phasefield_solver/phasefield_solver.tex\` 为准：
+
+- **唯一主问题**：如何依据 coupled slow subspace 的消除收益与局部代价选择强耦合区域，并保持原 KKT 离散解？
+- **中心算子**：\(G\)、\(\mathcal V_r\)、\(Q_\omega G\)；
+- **一般中心定理**：\(\|Q_\omega Gw\|_W/\|w\|_W=|\lambda|\chi_{\omega,W}(w)\)；
+- **SPD 推论**：\(\chi_{\omega,J}(w)=\sqrt{1-c_\omega(w)}\)。
+
+本节其余内容为历史候选记录，不再作为当前论文结构或执行入口。当前执行顺序为六点启动准则、在线增量慢空间和网格稳健性。
+
+这一节是当前所有“下一篇论文 idea”的唯一入口。它把龚世华博士论文第 8–10 章的仿射不变量、非精确 Newton 和 NEPIN 思路，与 fractureX 当前的历史场、交替求解和路径敏感性问题接起来。
+
+### 2.5.1 历史候选记录（冻结，不作为当前执行入口）
+
+以下内容保留历史讨论和备选实现。当前论文主线、数学对象和实验顺序以
+\`T7_COUPLED_SLOW_SUBSPACE_PLAN.md\`为准；本节不再扩展。
+
+**题目草案：**
+
+> Transactional History Fields and Affine-Invariant Process-Zone Nonlinear Elimination for Phase-Field Fracture
+
+主线分为两个互相依赖的贡献：
+
+1. **事务型历史场。** 一个物理载荷步开始时保存已提交历史场 \(H_n\)。非线性迭代只生成
+
+   \[
+   H_{\mathrm{trial}}^k
+   =
+   \max\{H_n,\psi^+(\varepsilon(u^k))\},
+   \]
+
+   只有载荷步通过统一真残量、不可逆性和能量判据后才 commit；失败或减小步长时 rollback。这样当前载荷步对应固定的 \(G_{H_n}\)，Anderson、固定点收缩率和 Newton 判据才作用于同一个数学对象。
+
+2. **过程区联合 NEPIN。** 冻结 \(u,H\) 后，标准 AT2 相场子问题通常是线性的，因此“只对损伤场做局部 NEPIN”不够有力。真正需要消除的是裂纹过程区内联合的
+
+   \[
+   \begin{bmatrix}
+   F_u(u,d)\\
+   F_d(u,d;H_n)
+   \end{bmatrix}_{\omega_{\mathrm{pz}}}=0.
+   \]
+
+   先用仿射不变量、\(u\)-\(d\) 耦合强度、损伤梯度和活动集变化率选出移动 patch，再在 patch 内联合求解，区域外保留便宜的全局迭代。
+
+核心因果链是：
+
+> 非线性试算写入历史场
+> \(\rightarrow\) 载荷步映射不固定、路径产生响应带宽
+> \(\rightarrow\) 事务型 commit/rollback 恢复固定问题
+> \(\rightarrow\) 成核阶段慢模态局部化到过程区
+> \(\rightarrow\) 局部 \(u\)-\(d\) 消元恢复快速收敛。
+
+### 2.5.2 代码与结果依据
+
+- phasefield/main_solve.py 在相场组装路径中调用历史场最大值；
+- damage/phasefield_damage.py 的历史更新函数执行累计最大值；
+- drivers/huzhang_phasefield_staggered.py 在外迭代中更新 \(H\)，Anderson 主要作用于 \(d\)；
+- analysis/affine_invariant.py 已有诊断原型，但需区分真正 Newton 修正和 staggered 固定点增量；
+- docs/adaptive/RESULTS_aposteriori.md 已记录 Anderson 从 6.98 h 降至 1.13 h，以及局部化后峰值载荷约 \(\pm4\%\) 的路径带宽；
+- Tian/thesis/fracture_huzhang/phasefield_huzhang.tex 已区分收敛态历史场与算法累计历史场，并给出 \(H_{\mathrm{alg}}\ge H_{\mathrm{conv}}\) 的理论种子；
+- docs/preconditioner/THEORY_nonlinear_elimination.md 需要按“过程区内联合 \(u\)-\(d\) 消元”重新收紧，而不是继续扩展 damage-only NEPIN。
+
+### 2.5.3 文献边界与可用空白
+
+已有工作已经覆盖：
+
+| 已有方向 | 代表文献 | 本计划避开的弱贡献 |
+|---|---|---|
+| 交替求解与 Anderson | Farrell & Maurini 2017；Storvik et al. 2021 | 只调 Anderson 深度或松弛参数 |
+| matrix-free multigrid | Jodlbauer et al. 2020 | 只更换 AMG/GMG |
+| 全场 nonlinear field-split / SPIN | Kopaničáková et al. 2023 | 把全场 staggered sweep 改名为 NEPIN |
+| 域分解与浮动子结构 | Rannou & Bovet 2024 | 只在固定几何子域上局部求解 |
+| TNNMG 与不可逆约束 | Gräser et al. 2023 | 只更换 active-set 求解器 |
+| 通用 NEPIN | Cai & Keyes 2002；Gong & Cai 2019；Liu et al. 2022 | 不揭示断裂中的慢模态来源 |
+| 局部极小与分岔 | Terzi et al. 2025 | 不把“存在多解”本身作为新发现 |
+
+本轮检索未发现与以下三点直接对应的相场断裂工作：
+
+1. 带 commit/rollback 语义的事务型历史场，以及它对固定点映射、算法路径和断裂响应的系统影响；
+2. 由仿射不变量和耦合指标自动选择移动过程区，并在其中联合消除 \(u\)-\(d\) 强耦合；
+3. 由损伤拓扑自动生成裂纹片段近刚体模态粗空间。
+
+### 2.5.4 两个必须先做的 go/no-go 实验
+
+**实验 A：历史场事务对照。**
+在同一已收敛 checkpoint 上比较 cumulative 与 transactional，组合 plain staggered / Anderson \(m=3,5,8\)、\(10^{-4},10^{-6},10^{-8}\) 容差和不同初值。记录历史场差值、峰值、耗散能、裂纹路径、真残量、失败/回滚次数。
+
+- Go：跨算法/容差的峰值或耗散能离散降低至少 50%，或观察到可重复的 cumulative 历史场过冲；
+- 合并入主线：差异稳定但小于约 0.2%，作为过程区 NEPIN 的问题定义部分；
+- 停止独立论文：多个局部化模型和故意较差初值下均无可测差异。
+
+**实验 B：staggered 慢模态定位。**
+在峰前、成核和扩展三个 checkpoint 组装
+
+\[
+T_{\mathrm{stag}}=D^{-1}CA^{-1}B,
+\]
+
+用矩阵自由方法计算领先特征对，统计单元能量与过程区覆盖率，再做一次理想 patch 联合消元。
+
+- Go：峰前 \(\rho(T_{\mathrm{stag}})<0.8\)，成核时 \(>0.95\)；不超过 20% 单元承载至少 70% 慢模态能量；理想 patch 能降低谱半径；
+- 若慢模态不局部：转向 2.5.6 的裂纹拓扑近核粗空间，不把 patch 扩展成全场 SPIN。
+
+### 2.5.5 过程区 NEPIN 的最小实现
+
+定义指标
+
+\[
+\mathcal S_k=\{K:\omega_K>\theta_\omega
+\ \text{or}\ \chi_K>\theta_\chi
+\ \text{or}\ |\nabla d|_K>\theta_d\},
+\]
+
+并扩张一到两层单元形成 \(\omega_{\mathrm{pz}}^k\)。局部变换 \(T_{\mathcal S}\) 固定 patch 外自由度，在 patch 内联合求解两场方程与不可逆约束，外层求解
+
+\[
+\mathcal F(x)=F(T_{\mathcal S}(x))=0.
+\]
+
+局部问题采用自适应非精确容差
+
+\[
+\|F_{\mathcal S}(z^\ell)\|
+\le \eta_k\|F_{\mathcal S}(z^0)\|,
+\qquad
+\eta_k=\min(\eta_{\max},c\|F(x_k)\|^\alpha),
+\]
+
+并配合 Newton–Krylov、线搜索和 patch 更新迟滞。理论先证明根一致性、patch 外慢模态能量对收缩因子的控制，以及 forcing term 下的局部快速收敛；再做完整大规模性能实验。
+
+### 2.5.6 备选线：裂纹拓扑感知近核粗空间
+
+若实验 B 证明慢模态不是局部的，转向纯线性求解器方向：
+
+\[
+K(d)=\int_\Omega g(d)B^\top\mathbb C B\,\mathrm dx.
+\]
+
+利用 \(g(d)\) 加权图识别损伤分裂后的连通片段，为每个片段注入二维 3 个、三维 6 个近刚体模态，或补充局部广义特征向量。它区别于固定子域浮动模态：粗空间由损伤拓扑事件触发，并随裂纹连通性更新。
+
+直接复用 docs/preconditioner/D12_RESULTS.md 的冻结矩阵，在 \(\max d\approx0.43,0.998,1.0\) 和不同残余刚度 \(\kappa\) 下比较全局刚体模态、片段刚体模态、局部特征粗空间和直接法。
+
+### 2.5.7 求解器线四周执行顺序
+
+| 周次 | 任务 | 产出 | 决策 |
+|---|---|---|---|
+| 第 1 周 | 历史场 snapshot/trial/commit/rollback 原型；3 个 checkpoint 对照 | \(H\) 过冲、峰值/能量带宽、真残量图 | 决定 A 独立或并入主线 |
+| 第 2 周 | 固定点收缩指标与 Newton 仿射不变量分开；计算 \(T_{\mathrm{stag}}\) 前几个特征对 | 慢模态能量分布、谱半径 | 决定 B 或拓扑粗空间 |
+| 第 3 周 | 最小联合 \(u\)-\(d\) patch solve；外层 Newton–Krylov | plain/Anderson/NEPIN 收敛与时间 | 验证过程区消元 |
+| 第 4 周 | 三网格、两参数、两几何消融；整理主图表 | 机制图、效率表、物理一致性表 | 锁定论文题目与投稿期刊 |
+
+### 2.5.8 论文结构与下一步路径
+
+推荐论文结构：
+
+1. 问题：历史场被求解器试算路径改变，且成核阶段 staggered 变慢；
+2. 机制：累计历史场的棘轮上界与固定映射破坏；慢模态的过程区局部化；
+3. 方法：事务型状态机 + 仿射不变量 patch + 局部联合 NEPIN；
+4. 理论：不可逆性、回滚一致性、根一致性、局部谱改善和非精确 Newton 收敛；
+5. 实验：历史语义、慢模态、算法消融、网格/材料/几何扩展；
+6. 结论：先恢复正确的载荷步问题，再以局部非线性工作量换取全局快速收敛。
+
+### 2.5.9 动态断裂：T7 的条件扩展
+
+动态断裂值得加入，但不单独新开论文线。fractureX 当前没有惯性项和独立时间积分器；已有工作已经覆盖动态相场的单体/交错积分、显式方法、时空自适应、域分解预条件和自适应 BDF，因此“加入 Newmark 和动态 benchmark”本身不足以形成贡献（Borden et al. 2012, doi:10.1016/j.cma.2012.01.008；Svolos et al. 2020, doi:10.1016/j.jcp.2020.109746；Rannou and Bovet 2024, doi:10.1002/nme.7544；Cassese et al. 2026, doi:10.1016/j.finel.2026.104622）。
+
+可形成闭环的切口是 **时间步相关的 regime-adaptive nonlinear preconditioning**。隐式 Newmark 离散后，位移块近似为
+
+\[
+A_{\Delta t}(d)=\frac{1}{\beta\Delta t^2}M+K_{uu}(d),
+\qquad
+T_{\Delta t}=K_{dd}^{-1}K_{du}A_{\Delta t}^{-1}K_{ud}.
+\]
+
+小时间步下惯性项占优，预期 \(\rho(T_{\Delta t})=O(\Delta t^2)\)，普通 staggered 已足够；时间步增大或裂纹成核后，退化刚度与局部 \(u\)-\(d\) 耦合占优，再启用过程区 NEPIN。所有 \(u,v,a,d,H\) 采用 trial/commit/rollback，拒绝时间步不写入不可逆状态。
+
+最快的 go/no-go 不需要先实现完整动态断裂：组装一致质量矩阵，在现有峰前/成核/扩展 checkpoint 上扫描 \(\Delta t\)，计算 \(\rho(T_{\Delta t})\)、慢模态局部性和理想 patch 消元后的谱半径。只有当该指标能预测 staggered 迭代突增并给出稳定切换阈值时，才实现 Newmark 平均加速度格式、弹性波能量 smoke test 和一个 2D Kalthoff benchmark。
+
+**当前唯一下一步：** 在六个峰值邻域状态建立启动准则；随后构造在线增量慢空间，动态分支继续冻结。
 
 ---
 
@@ -287,7 +462,7 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 | 4 | **D+** | Non-nested coarse spaces and two-level Schwarz preconditioning for Hu-Zhang phase-field fracture in the localized regime | SIMAX / NLAA | 龚博论 Ch 6 多水平 + 胡齐芽 GEP-coarse；D12 自己 Outlook 点名的续作 | 2027-03 |
 | 5 | **A+** | Extended Hu-Zhang element with vertex-tangent relaxation for adaptive elasticity at reentrant corners | Math. Comp. / M2AN | 合并 Hu-Ma 2020 + 龚博论 Ch 3 任意维奇异点代数定义 | 2027-08（v0.5 后移 1 档给 T6a 让路） |
 | 6 | **T6a** | Fourth-order phase-field fracture with strain-gradient elasticity via interior-penalty FEM | Comput. Mech. / IJNME | 博论 IP-FEM 章直接延伸；mesh budget 放松 + 尺寸效应；应变梯度 delta 已入正文 | **2026-07（v1.0 提前，稿已齐，插队队首）** |
-| 7 | **T7** | Affine-invariant analysis of staggered Newton for Hu-Zhang phase-field fracture | SINUM / M2AN | 龚博论 Ch 8–10 NEPIN 框架用到相场 staggered，补严格能量下降证明 | 2027-09 |
+| 7 | **T7** | Coupled slow subspace localization and slow-mode-targeted local nonlinear elimination | CMAME / SINUM / SISC | 以 \(G\)、\(\mathcal V_r\)、\(Q_\omega G\) 建立 survival factor 与收缩因子闭环；局部性失败时转拓扑粗空间 | 2027-09 |
 | 8 | **T6b** | Fourth-order phase-field fracture in Hu-Zhang mixed setting: inf-sup stability and equilibrated aposteriori | Comput. Mech. / IJNME / M2AN | σ_h ∈ H(div,S) + ∇²d 耦合 inf-sup 重证；接 T2 estimator；对 T6a 的 novel 升级 | **2027-12**（v0.5 新增） |
 | 9 | **E** | Differentiable Hu-Zhang phase-field for topology-toughening design | ML4Science / PNAS | JAX 端到端 + SH-com 最小模型 | 2028 |
 
@@ -298,19 +473,19 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 ### 4.1 P0 · 立即（Phase 0）
 - [ ] T0.1 完成 Lagrange 路线 (`MainSolve`) 在 model0 上跑通（C5 对照必备）
 - [ ] T0.2 EXPERIMENT_MATRIX 自动扫描脚本（0.5 天）
-- [ ] T0.3 aux_h2/h3/model1 三段过完局部化，产出 D12 sweep 数据
+- [ ] T0.3 处理 aux_h2/h3 停在 step 13：重启续算或缩减 D12 局部化 mesh-independence 结论
 
 ### 4.2 P1 · Phase 1（Q3 2026）· D12 + A tex 补 gap 送审 + B 线并行打底
 - [ ] T1.tex.1 SENT shear 完整 aux-vs-direct 端到端 + crack-path 场对比
 - [ ] T1.tex.2 SENT shear 局部化 iteration 研究一栏
 - [ ] T1.tex.3 局部化区 mesh-independence 一栏
 - [ ] T1.tex.4 §13 sweep 表空档从 pipeline (h2/h3/model1) 出货后补齐
-- [ ] T1.tex.5 Cervera VMS-OSGS 对照段落补进 §Related Work
+- [x] T1.tex.5 Cervera VMS-OSGS 对照段落补进 §Related Work（2026-07-04）
 - [ ] T2.tex.1 SENT shear 场景验证（tension + CNT red-green 已交付）
-- [ ] T2.tex.2 一般数据 $(f, t_N)$ 的显式 equilibrating correction
-- [ ] T2.tex.3 spectral tension–compression split 的 convex-duality majorant
-- [ ] T2.tex.4 marker efficiency 下界 / marker certification
-- [ ] T3.M3a `equilibrium_residual_l2` stub 实现（`fracturex/learn/eval/metrics.py:277`）
+- [x] T2.tex.2 一般数据 $(f, t_N)$ 的显式 equilibrating correction（sketch 已入正文）
+- [x] T2.tex.3 spectral tension–compression split 的 convex-duality majorant（sketch 已入正文）
+- [x] T2.tex.4 marker efficiency 下界 / marker certification（sketch 已入正文）
+- [x] T3.M3a `equilibrium_residual_l2` stub 实现（`fracturex/learn/eval/metrics.py:277`，8 项测试通过）
 - [ ] T3.M3b σ_h vs σ_h^rec 监督对照表
 - [ ] T3.M3c 数据重生成 h_FE ≤ ℓ₀/2
 
@@ -336,7 +511,21 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 ### 4.4 P3 · Phase 3（Q2 2027+）
 - [ ] T6a.1 IP-FEM 4 阶 PFM 代码接入 fracturex（预研落地）
 - [ ] T6a.2 T6a 论文成稿（Comput. Mech./IJNME，**2027-06 投稿**，v0.5 safe win）
-- [ ] T7 仿射不变 Lipschitz 用到 staggered 收敛证明（**2027-09 投稿**）
+- [x] T7.0 完成 H1--H4：完整 \(G\)、慢子空间低维性与 solver-aware 局部性
+- [x] T7.1 固定 patch 验证 \(Q_\omega G\) 和中心衰减律
+- [x] T7.2 峰值固定区域 H6：约化解一致性与总成本对照
+- [x] T7.3 coupled \(J_{\omega\omega}\) 与五档 matched-coupled 扫描
+- [x] T7.4 六状态收益--成本稳定性与启动准则
+- [x] T7.5 在线增量慢空间与长度尺度可解析路径慢率扫描
+- [x] T7.5b Reduced–NE `J_{ud}` 方向校验；小算例误差 (2.2\times10^{-11})，解析网格误差 (7.4\times10^{-7})
+- [x] T7.5c 外层 block-LU 预条件器与局部 predictor；Krylov 285→131，保留严格验收结果
+- [x] T7.5d reference-free 自适应 warmup、残差下降门控与外层 Armijo 回溯：warmup 记录全场/约化/局部残差、在线率和残差比；慢率触发还要求最新残差比不超过 0.8
+- [x] T7.5e 固定历史参考根上的全局化闭环原型：新增线性 continuation（4 阶段）与 Schur 方向残差、步长、回溯次数记录；四阶段均收敛，最终投影残差 $5.785\times10^{-10}$，但等价工作量和时间高于基线
+- [ ] T7.5f Reduced--NE 可靠性到性能闭环：作为后续性能工作，优化 continuation 阶段自适应、局部消元精度与外层 Krylov 工作
+- [x] T7.7 论文整理第一阶段：标题、摘要、引言主线统一为“诊断--定位--消元--验收”；加入科学思想图、solver workflow 图和“适用范围与当前实现边界”小节，cost-aware 降为诊断层，TeX 编译通过
+- [x] T7.8 论文整理第二阶段：压缩实现细节与审计表，保留慢模态理论、核心收益表、网格证据和 reference-free 验收；当前 PDF 为 24 页（含附录和参考文献），后续仅做版式级微调
+- [ ] T7.5a 在 $\bar u=0.0986,0.1030$ 做矩阵自由谱核对；选择一个可靠状态完成 Reduced-NE 对照（**2027-09 投稿**）
+- [ ] T7.6 仅在主线闭环后评估历史场、动态和拓扑粗空间分支
 - [ ] T6b.1 HZ mixed 4 阶 PFM 代码接入 fracturex
 - [ ] T6b.2 inf-sup 严格证明 + 接 T2 estimator 做 aposteriori 章
 - [ ] T6b.3 T6b 论文成稿（Comput. Mech./IJNME/M2AN，**2027-12 投稿**，v0.5 novel）
@@ -352,7 +541,7 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 | A | Ch 7 §7.2 "$H(\div,\mathbb{S})$ 空间的正则分解与弹性正合序列" | 支撑 A 论文的 σ_h ∈ H(div,S) 平衡性讨论 |
 | A+ | Ch 3 §3.1 "Hu-Zhang 元及其推广" + §附录 A "奇异点相关结果的证明" | 任意维奇异点代数定义与 Hu-Ma 2020 合并 |
 | D+ | Ch 6 全章 "杂交化问题的多水平求解器" | 非嵌套粗空间 + 顶点块局部估计的直接祖本 |
-| T7 | Ch 8 "牛顿法与仿射不变性" + Ch 10 "非线性消去预条件牛顿法" | 仿射不变 Lipschitz 常数用到 staggered/Newton |
+| T7 | Ch 8 "牛顿法与仿射不变性" + Ch 10 "非线性消去预条件牛顿法" | 事务型状态、过程区 patch 谱作用与非精确 Newton；不再只做泛化的 staggered 理论 |
 
 **与田甜博士论文（`ttthesis/thesis/`）的直接对接**（"prior work by the author" 口径）：
 
@@ -378,7 +567,7 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 
 ## 7. 一句话总纲
 
-> **短期（半年）** 把 D12 收稿、A 主推、B 打底三线并行推完；**中期（一年）** 用博士论文第 3 章升级 A（→A+）、用第 6 章升级 D（→D+）；**长期（一年半+）** 用第 8–10 章补 staggered 理论（T7）、用 JAX AD 打远景（T8）。**所有线都以 σ_h ∈ H(div,S) 的两条独家性质（inf-sup 稳定 + 逐元平衡）为共同支点**——这正是龚博论第 7 章、conf 马睿线、fracturex 三者最大的方法学交汇。
+> **短期（半年）** 把 D12 收稿、A 主推、B 打底三线并行推完；**中期（一年）** 用博士论文第 3 章升级 A（→A+）、用第 6 章升级 D（→D+）；**长期（一年半+）** 用第 8–10 章推进 T7 coupled slow subspace 求解器论文，用 JAX AD 打远景（T8）。**所有线都以 σ_h ∈ H(div,S) 的两条独家性质（inf-sup 稳定 + 逐元平衡）为共同支点**——这正是龚博论第 7 章、conf 马睿线、fracturex 三者最大的方法学交汇。
 
 ---
 
@@ -392,10 +581,10 @@ Outlook 自认欠账（Conclusion 尾段明写）：
 | 第 4 章 内罚混合有限元（非协调面泡，任意阶） | 低阶 Hu-Zhang 替代 | fracturex 未采用（p≥3 已足） | 备胎，暂不投入 |
 | 第 6 章 杂交系统的多水平求解器（非嵌套粗空间 + 区域分解磨光 + 顶点块局部估计） | 多水平预条件 | **conf §1 胡齐芽两层 Schwarz** ★★★ | 未开工，D 线**升级路径** |
 | 第 7 章 H(div, S) 辅助空间预条件（离散弹性正合列 + 离散正则分解） | 块对角预条件的理论底座 | **D12 论文的理论根基** | ✅ 已在 fracturex 使用（`solve_huzhang_block_gmres_auxspace`），论文正在收尾 |
-| 第 8–10 章 仿射不变 Lipschitz + NEPIN/ASPIN | 非线性预条件牛顿法 | fracturex staggered/Newton **理论补强候选** | **未开工**，可与 §葛志昊"全离散稳定性"合并做理论文 |
+| 第 8–10 章 仿射不变 Lipschitz + NEPIN/ASPIN | 非线性预条件牛顿法 | T7 慢子空间 survival factor、\(Q_\omega G\) 与局部联合消元 | **先做 H1--H4**；通过后进入固定 patch 与总成本验证，no-go 时转拓扑近核粗空间 |
 | 2015 H(div,S) 手稿（`thiese/`） | 第 7 章雏形 | = D12 前身 | — |
 
-**结论**：D12（论文 §D）在**用**博士论文第 7 章；A 线自适应可**接**第 3 章；staggered 收敛的严格理论可**用**第 8–10 章的仿射不变框架。这三条是龚老师博士工作在 fracturex 上的直接延续，可以在论文里理直气壮地引自己。
+**结论**：D12（论文 §D）在**用**博士论文第 7 章；A 线自适应可**接**第 3 章；T7 将第 8–10 章的仿射不变框架用于事务型状态、过程区慢模态和非精确 NEPIN。这三条是龚老师博士工作在 fracturex 上的直接延续，可以在论文里理直气壮地引自己。
 
 ---
 

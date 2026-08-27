@@ -6,6 +6,7 @@ Welcome to the fractureX, an open-source software package designed for the simul
 
 ## Features
 - **Multi-Backend Support**: Seamlessly switch between Numpy, JAX, PyTorch, and TensorFlow for computation.
+- **Unified Phase-Field Energy Splits**: Bourdin, Lancioni, Amor, Miehe, and Ambati models share one dimension- and degree-generic material interface.
 - **Traditional Algorithms**: Implement classical fracture mechanics algorithms.
 - **AI Techniques**: Incorporate artificial intelligence methods to enhance simulation efficiency.
 - **Open-Source**: Fully open-source, encouraging collaboration and contributions from the community.
@@ -25,7 +26,7 @@ fractureX is built on [FEALPy](https://github.com/weihuayi/fealpy). **Install FE
 - Python **3.8+** (see `setup.py`)
 - **FEALPy** with `fealpy.backend` — **installed separately**, not via fractureX `requirements.txt`
 - fractureX runtime: **NumPy**, **SciPy**, **matplotlib**, **pyamg** (via `pip install -e .`)
-- Optional: **`pip install -e ".[dev]"`** for `pytest`, `pytest-cov`, `ipdb`
+- Optional: **`pip install -e ".[dev]"`** for `pytest` and `pytest-cov`
 - Optional: **`pip install -e ".[direct]"`** for Intel MKL PARDISO (`pypardiso`); MUMPS remains a separate system install
 
 #### 1. Install FEALPy (separate step)
@@ -87,7 +88,7 @@ fractureX 基于 [FEALPy](https://github.com/weihuayi/fealpy)。请**先单独�
 - Python **3.8+**
 - **FEALPy**（含 `fealpy.backend`）— **单独安装**，不包含在 fractureX 的 pip 依赖里
 - fractureX 运行时：`numpy`、`scipy`、`matplotlib`、`pyamg`（`pip install -e .` 自动安装）
-- 可选：**`pip install -e ".[dev]"`** — 测试与调试（`pytest`、`pytest-cov`、`ipdb`）
+- 可选：**`pip install -e ".[dev]"`** — 测试与覆盖率统计（`pytest`、`pytest-cov`）
 - 可选：**`pip install -e ".[direct]"`** — `pypardiso`（MKL PARDISO）；MUMPS 需自行安装系统库与 Python 绑定
 
 #### 1. 单独安装 FEALPy
@@ -140,6 +141,7 @@ python -m fracturex.tests.phasefield_model0_huzhang
 
 ## Documentation
 
+- **Standard phase-field strain-energy splits and `MainSolve` integration (Chinese)**: [docs/architecture/strain_energy_splits.md](docs/architecture/strain_energy_splits.md). It documents the Bourdin, Lancioni, Amor, Miehe, and Ambati models, their unified APIs, multi-backend behavior, and focused verification commands.
 - **FractureX overall introduction (Chinese)**: [docs/architecture/huzhang_phasefield_architecture.md](docs/architecture/huzhang_phasefield_architecture.md). This now covers repository architecture, technical routes, core abstractions, and keeps Hu–Zhang + phase-field as a key section.
 - **Hu–Zhang mixed element + phase-field focused version (English)**: [docs/architecture/huzhang_phasefield_architecture.en.md](docs/architecture/huzhang_phasefield_architecture.en.md).
 - After refactors, run `python3 scripts/verify_huzhang_docs.py` to ensure listed paths still exist.

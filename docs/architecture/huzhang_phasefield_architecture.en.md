@@ -82,7 +82,7 @@ Load segment: `load_dirichlet_piece(load)` prefers the piece with `tag=="load"`,
 - `density_type`: crack surface density, e.g. `"AT2"` / `"AT1"` (`CrackSurfaceDensityFunction`)
 - `degradation_type`: elastic degradation, e.g. `"quadratic"` (`EnergyDegradationFunction`)
 - `split`: history energy positive part: `"hybrid"` / `"spectral"` / `"isotropic"`
-- `history_source`: how history is built; the implementation currently supports **only `"from_u"`** (strain from `u`’s gradient, then \(\psi^+\) drives \(H\))
+- `history_source`: how history is built; `"from_u"` uses the symmetric gradient of the discrete displacement, while `"from_sigma"` recovers the standard-formulation strain as \(\varepsilon_h=\mathbb A(d_h)\sigma_h\). The paper runner selects it through `FRACTUREX_HISTORY_SOURCE`.
 - `eps_g`: numerical lower bound used inside `damage.coef_bary` for stability; **does not** appear as `max(g(d), eps_g)` in the assembled blocks or aux-space preconditioner. Paper-facing wording is the bare baseline `g(d)`.
 - `clamp_max`: upper clamp for damage
 - `debug`: debug output

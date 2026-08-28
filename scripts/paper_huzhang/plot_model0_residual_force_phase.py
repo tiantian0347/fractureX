@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plot the audited Model-0 response and final phase field.
+"""Plot the audited clamped circular-boundary response and phase field.
 
 The figures use the geometry, material, boundary conditions, and report loads
 defined by ``model0_example.py``.  The input data are obtained on a
@@ -183,7 +183,10 @@ def _save_phase_figure(
     axis.set_ylim(0.0, 1.0)
     axis.set_xlabel("x")
     axis.set_ylabel("y")
-    axis.set_title(rf"Circular-hole plate final phase field $d$ ($\bar u={load:.4f}$)")
+    axis.set_title(
+        rf"Clamped circular-boundary plate: final phase field $d$ "
+        rf"($\bar u={load:.4f}$)"
+    )
     axis.tick_params(direction="out", length=3.0, width=0.8)
     axis.spines[["top", "right"]].set_visible(False)
     colorbar = figure.colorbar(field, ax=axis, fraction=0.046, pad=0.04)
@@ -226,7 +229,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Generate Model-0 force and final phase-field figures."""
+    """Generate clamped circular-boundary force and phase-field figures."""
     args = _parse_args()
     force_png, phase_png = plot_model0(args.input_dir.resolve(), args.output_dir.resolve())
     print(f"[{SCRIPT_VERSION}] wrote {force_png}")

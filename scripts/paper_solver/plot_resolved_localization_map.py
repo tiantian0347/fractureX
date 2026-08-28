@@ -3,7 +3,7 @@
 
 Purpose
 -------
-Create a three-panel comparison at the resolved circular-hole checkpoint
+Create a three-panel comparison at the resolved clamped circular-boundary checkpoint
 ``bar_u=0.0898``.  The panels use the same finite-element mesh and show the
 dominant coupled slow-mode cell energy, the phase field, and the phase-field
 gradient magnitude.
@@ -260,7 +260,8 @@ def make_figure(checkpoint: Path, output_pdf: Path) -> Path:
         )
         figure.colorbar(artist, ax=axis, fraction=0.046, pad=0.02)
     figure.suptitle(
-        r"Resolved circular-hole checkpoint, $\bar u=0.0898$; fields normalized independently",
+        r"Resolved clamped circular-boundary checkpoint, $\bar u=0.0898$; "
+        r"fields normalized independently",
         fontsize=10,
     )
     for extension in ("pdf", "png"):

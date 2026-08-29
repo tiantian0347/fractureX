@@ -154,10 +154,7 @@ def _plot_phase(path: Path, node: np.ndarray, cell: np.ndarray, damage: np.ndarr
     axis.set_ylim(0.0, 2.0)
     axis.set_xlabel(r"$x$ (mm)")
     axis.set_ylabel(r"$y$ (mm)")
-    axis.set_title(
-        rf"V-notch beam final phase field $d$ "
-        rf"($|u_y|={load:.4f}$ mm)"
-    )
+    axis.set_title("V-notch beam phase field near the end of continuation")
     axis.spines[["top", "right"]].set_visible(False)
     colorbar = figure.colorbar(field, ax=axis, fraction=0.036, pad=0.03)
     colorbar.set_label(r"phase field $d$")

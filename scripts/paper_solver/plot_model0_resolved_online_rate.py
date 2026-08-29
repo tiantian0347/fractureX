@@ -218,7 +218,7 @@ def make_figure(
             edgecolor="white",
             linewidth=0.6,
             zorder=3,
-            label="replay-window reset",
+            label="monitoring-window restart",
         )
     axis_rate.scatter(
         scan_loads[slow_mask],
@@ -228,12 +228,12 @@ def make_figure(
         edgecolor="white",
         linewidth=0.6,
         zorder=4,
-        label=r"slow gate active",
+        label=r"slowdown criterion active",
     )
     axis_rate.text(
         0.0801,
         0.895,
-        r"gate $0.89$",
+        r"activation threshold $0.89$",
         color="#7A601A",
         fontsize=8.0,
         va="bottom",

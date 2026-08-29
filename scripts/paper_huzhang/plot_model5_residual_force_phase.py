@@ -115,21 +115,27 @@ def _plot_force(path: Path, displacement: np.ndarray, reaction: np.ndarray) -> N
     """Save a publication-sized residual/reaction force curve."""
     peak = int(np.argmax(reaction))
     figure, axis = plt.subplots(figsize=(5.6, 3.8))
-    axis.plot(displacement, reaction, color="#1F6D8F", linewidth=1.8, label="standard finite element solution")
+    axis.plot(displacement, reaction, color="#1F6D8F", linewidth=1.8)
     axis.scatter(
         displacement[peak],
         reaction[peak],
         s=38,
         color="#C4513D",
         zorder=4,
-        label=rf"peak: $|R_y|={reaction[peak]:.4f}$ at $u={displacement[peak]:.4f}$",
     )
     axis.axvline(displacement[peak], color="#C4513D", linewidth=0.8, linestyle="--", alpha=0.6)
-    axis.set_xlabel(r"prescribed displacement $|u_y|$ (mm)")
+    axis.annotate(
+        rf"$|R_y|={reaction[peak]:.4f}$ at $\bar{{u}}={displacement[peak]:.4f}$",
+        xy=(displacement[peak], reaction[peak]),
+        xytext=(8, -18),
+        textcoords="offset points",
+        fontsize=8.0,
+        color="#8F3025",
+    )
+    axis.set_xlabel(r"prescribed displacement $\bar u$ (mm)")
     axis.set_ylabel(r"reaction force $|R_y|$ (kN)")
     axis.grid(axis="y", color="#DDE3E8", linewidth=0.7)
     axis.spines[["top", "right"]].set_visible(False)
-    axis.legend(frameon=False, fontsize=8.3, loc="best")
     figure.tight_layout()
     for suffix in ("png", "pdf"):
         figure.savefig(path.with_suffix(f".{suffix}"), dpi=300, bbox_inches="tight")

@@ -132,7 +132,6 @@ def _save_force_figure(
         markerfacecolor="white",
         markeredgewidth=0.8,
         solid_capstyle="round",
-        label="standard finite element solution",
     )
     axis.scatter(
         displacement[peak],
@@ -140,15 +139,21 @@ def _save_force_figure(
         s=34,
         color="#C4513D",
         zorder=4,
-        label=rf"peak: $|R_y|={force[peak]:.2f}$ at $\bar{{u}}={displacement[peak]:.4f}$",
     )
     axis.axvline(displacement[peak], color="#C4513D", linewidth=0.9, linestyle="--", alpha=0.65)
-    axis.set_xlabel("prescribed displacement")
-    axis.set_ylabel("reaction force")
+    axis.annotate(
+        rf"$|R_y|={force[peak]:.2f}$ at $\bar{{u}}={displacement[peak]:.4f}$",
+        xy=(displacement[peak], force[peak]),
+        xytext=(8, -18),
+        textcoords="offset points",
+        fontsize=8.0,
+        color="#8F3025",
+    )
+    axis.set_xlabel(r"prescribed displacement $\bar u$")
+    axis.set_ylabel(r"reaction force $|R_y|$")
     axis.grid(axis="y", color="#DDE3E8", linewidth=0.7)
     axis.spines[["top", "right"]].set_visible(False)
     axis.tick_params(direction="out", length=3.5, width=0.8)
-    axis.legend(frameon=False, fontsize=8.3, loc="best")
     figure.tight_layout()
     for suffix in ("png", "pdf"):
         figure.savefig(output_dir / f"model0_residual_force_curve.{suffix}", dpi=300, bbox_inches="tight")

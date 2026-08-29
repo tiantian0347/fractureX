@@ -110,6 +110,41 @@ def test_reference_free_warmup_stops_on_persistent_slow_rate() -> None:
     assert all(rate >= 0.89 for rate in warmup["online_rates"])
 
 
+def test_reference_free_fixed_warmup_uses_requested_sweep_count() -> None:
+    """Fixed warmup must not be truncated by the adaptive minimum setting."""
+
+    class FakeStepMap:
+        full_state_size = 1
+
+        def __init__(self) -> None:
+            self.current = np.zeros(1, dtype=np.float64)
+
+        def __call__(self, damage: np.ndarray) -> np.ndarray:
+            self.current = self.current + 1.0
+            return self.current.copy()
+
+        def current_full_state(self) -> np.ndarray:
+            return self.current.copy()
+
+    warmup = _run_reference_free_warmup(
+        FakeStepMap(),
+        np.zeros(1),
+        fixed_mask=np.zeros(1, dtype=bool),
+        mode="fixed",
+        fixed_sweeps=4,
+        minimum_sweeps=2,
+        maximum_sweeps=8,
+        slow_rate_threshold=0.89,
+        required_slow_steps=2,
+        residual_tolerance=1.0e-12,
+        residual_ratio_threshold=0.8,
+        residual_norm_callback=lambda _state: 1.0,
+    )
+
+    assert warmup["stop_reason"] == "fixed_sweeps"
+    assert warmup["sweeps"] == 4
+
+
 def test_cell_prefix_matches_union_dof_budget() -> None:
     """Shared cell DOFs are counted once when matching the target size."""
     scores = np.asarray([3.0, 2.0, 1.0])

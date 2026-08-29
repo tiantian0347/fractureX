@@ -2420,7 +2420,9 @@ def _run_reference_free_warmup(
         raise ValueError("residual_ratio_threshold must lie in (0, 1)")
 
     limit = fixed_sweeps if mode == "fixed" else maximum_sweeps
-    minimum = min(fixed_sweeps, minimum_sweeps) if mode == "fixed" else minimum_sweeps
+    # In fixed mode the requested sweep count is the stopping count.  The
+    # adaptive minimum only applies to the adaptive stopping rule.
+    minimum = fixed_sweeps if mode == "fixed" else minimum_sweeps
     damage = np.asarray(initial_damage, dtype=np.float64).reshape(-1).copy()
     if damage.size == 0 or not np.isfinite(damage).all():
         raise ValueError("initial_damage must be a finite nonempty vector")
@@ -3659,7 +3661,14 @@ def _run_reduced_solver_comparison(
         final_metrics = _coupled_residual_metrics(step_map, result.state)
         state_difference = result.state - reference_state
         damage_difference = state_difference[n_displacement:]
-        total_wall_time = initialization_wall_time + result.wall_time_seconds
+        # The reduced Newton result excludes callback time by design.  The
+        # production total must include the mandatory reference-free
+        # acceptance diagnostics, including the local conditioning estimate.
+        total_wall_time = (
+            initialization_wall_time
+            + result.wall_time_seconds
+            + result.state_diagnostic_wall_time_seconds
+        )
         total_residual_equivalents = (
             int(warmup["sweeps"])
             + int(warmup["residual_monitor_evaluations"])

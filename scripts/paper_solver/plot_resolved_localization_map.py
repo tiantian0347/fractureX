@@ -212,7 +212,7 @@ def make_figure(checkpoint: Path, output_pdf: Path) -> Path:
     grad_damage /= max(float(grad_damage.max()), np.finfo(float).tiny)
 
     triangulation = mtri.Triangulation(nodes[:, 0], nodes[:, 1], cells)
-    figure, axes = plt.subplots(1, 3, figsize=(10.4, 3.45), constrained_layout=True)
+    figure, axes = plt.subplots(1, 3, figsize=(10.4, 3.15), constrained_layout=True)
     panels = (
         (mode_energy, "viridis", r"computed slow-subspace trace $\eta_K$", "(a)"),
         (damage, "magma", r"phase field $d$", "(b)"),
@@ -259,11 +259,6 @@ def make_figure(checkpoint: Path, output_pdf: Path) -> Path:
             path_effects=[],
         )
         figure.colorbar(artist, ax=axis, fraction=0.046, pad=0.02)
-    figure.suptitle(
-        r"Resolved clamped circular-boundary checkpoint, $\bar u=0.0898$; "
-        r"fields normalized independently",
-        fontsize=10,
-    )
     for extension in ("pdf", "png"):
         figure.savefig(output_pdf.with_suffix(f".{extension}"), dpi=220)
     plt.close(figure)

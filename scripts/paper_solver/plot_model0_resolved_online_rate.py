@@ -228,7 +228,6 @@ def make_figure(
         edgecolor="white",
         linewidth=0.6,
         zorder=4,
-        label=r"slowdown criterion active",
     )
     axis_rate.text(
         0.0801,

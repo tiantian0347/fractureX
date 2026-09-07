@@ -407,7 +407,10 @@ def _equilibrate_and_read_reaction(main) -> tuple[float, float]:
 
 
 def build_model0_resolved_solver(
-    *, hmin: float
+    *,
+    hmin: float,
+    degradation_floor: float = 1.0e-10,
+    degradation_floor_mode: str = "additive",
 ) -> tuple[object, dict[str, float], dict[str, float], int]:
     """Build the audited length-scale-resolved Model-0 discretization.
 
@@ -416,6 +419,10 @@ def build_model0_resolved_solver(
     hmin : float
         Positive DistMesh target size. The realized mesh must satisfy
         ``h_max < l0/2`` for ``l0=0.02``.
+    degradation_floor : float
+        Positive residual stiffness used by the quadratic degradation law.
+    degradation_floor_mode : {``additive``, ``convex``}
+        Historical standard-FEM convention or Hu--Zhang-matched convention.
 
     Returns
     -------
@@ -445,6 +452,10 @@ def build_model0_resolved_solver(
 
     if not np.isfinite(hmin) or hmin <= 0.0:
         raise ValueError("hmin must be finite and positive")
+    if not np.isfinite(degradation_floor) or not 0.0 < degradation_floor <= 1.0:
+        raise ValueError("degradation_floor must lie in (0,1]")
+    if degradation_floor_mode not in {"additive", "convex"}:
+        raise ValueError("degradation_floor_mode must be 'additive' or 'convex'")
 
     bm.set_backend("numpy")
     report_loads = build_report_loads()
@@ -494,6 +505,11 @@ def build_model0_resolved_solver(
     main.add_boundary_condition("displacement", "Dirichlet", on_inner_circle, 0)
     main.add_boundary_condition("phase", "Dirichlet", on_inner_circle, 0)
     main._method = "lfem"
+    main.set_energy_degradation(
+        degradation_type="quadratic",
+        residual_stiffness=degradation_floor,
+        floor_mode=degradation_floor_mode,
+    )
     main.initialize_settings(p=1)
     main._initialize_force_boundary()
     quadrature = mesh.quadrature_formula(int(main.q), "cell")
@@ -521,6 +537,8 @@ def run_fine_reference(
     resume_report_csv: Path | None,
     output_dir: Path,
     save_internal_states: bool = True,
+    degradation_floor: float = 1.0e-10,
+    degradation_floor_mode: str = "additive",
 ) -> Path:
     """Run the fine-grid standard FE path and export its report-point response.
 
@@ -553,6 +571,10 @@ def run_fine_reference(
     save_internal_states : bool
         Save every accepted continuation state and its chronological manifest.
         Enabled by default for path-consistent solver diagnostics.
+    degradation_floor : float
+        Positive residual stiffness of the quadratic degradation law.
+    degradation_floor_mode : {``additive``, ``convex``}
+        ``convex`` matches the Hu--Zhang law ``(1-k)(1-d)^2+k``.
 
     Returns
     -------
@@ -587,7 +609,9 @@ def run_fine_reference(
         raise ValueError("final_report_load must be one of the Model-0 report loads")
     report_loads = all_report_loads[: int(terminal_matches[0]) + 1]
     main, material, mesh_stats, unused_node_count = build_model0_resolved_solver(
-        hmin=hmin
+        hmin=hmin,
+        degradation_floor=degradation_floor,
+        degradation_floor_mode=degradation_floor_mode,
     )
     length_scale = float(material["l0"])
 
@@ -823,6 +847,11 @@ def run_fine_reference(
             "Anderson, and re-equilibrated reactions"
         ),
         "material": material,
+        "degradation": {
+            "type": "quadratic",
+            "floor": float(degradation_floor),
+            "floor_mode": degradation_floor_mode,
+        },
         "hmin_target": float(hmin),
         "mesh": mesh_stats,
         "unused_distmesh_nodes_removed": unused_node_count,
@@ -873,6 +902,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--anderson-depth", type=int, default=5)
     parser.add_argument("--anderson-start-load", type=float, default=0.0854)
     parser.add_argument("--final-report-load", type=float, default=0.125)
+    parser.add_argument("--degradation-floor", type=float, default=1.0e-10)
+    parser.add_argument(
+        "--degradation-floor-mode",
+        choices=("additive", "convex"),
+        default="additive",
+    )
     parser.add_argument("--resume-from", type=Path)
     parser.add_argument("--resume-report-csv", type=Path)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -903,6 +938,8 @@ def main() -> None:
         ),
         output_dir=args.output_dir.resolve(),
         save_internal_states=args.save_internal_states,
+        degradation_floor=args.degradation_floor,
+        degradation_floor_mode=args.degradation_floor_mode,
     )
     print(f"wrote {path}")
 

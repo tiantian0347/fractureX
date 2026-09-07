@@ -1,7 +1,8 @@
 """能量退化函数 ``g(d)`` 及其一/二阶导（quadratic、thrice、用户自定义）。
 
 退化函数把损伤 ``d∈[0,1]`` 映射到刚度折减系数 ``g(d)``（``d=0`` 完好 → ``g≈1``，
-``d=1`` 完全破坏 → ``g≈0``），各实现加了 ``eps`` 下限防止刚度退化为零。
+``d=1`` 完全破坏 → ``g≈0``）。quadratic 默认保留历史 additive floor；显式选择
+``floor_mode='convex'`` 可与 Hu--Zhang 的残余刚度约定完全一致。
 """
 
 
@@ -9,16 +10,34 @@ class EnergyDegradationFunction:
     """能量退化函数族的统一接口，按 ``degradation_type`` 分派到对应实现。"""
 
     def __init__(self, degradation_type='quadratic', **kwargs):
-        """
-        Initialize the energy degradation function module.
+        """Initialize an energy degradation law.
 
-        Parameters:
-        Degradation-type (str): The type of energy degradation function that supports' quadratic ',
-        'thrice ',' user_define ', etc.
-        Kwargs (dict): Additional parameters are used for different types of degenerate functions, such as exponential factors in exponential functions.
+        Parameters
+        ----------
+        degradation_type : str
+            ``quadratic``, ``thrice`` or ``user_defined``.
+        residual_stiffness : float, optional
+            Dimensionless positive floor ``k``. Default ``1e-10`` preserves
+            the historical standard-FEM quadratic law.
+        floor_mode : {``additive``, ``convex``}, optional
+            ``additive`` gives ``(1-d)^2+k``; ``convex`` gives
+            ``(1-k)(1-d)^2+k`` and therefore exactly ``g(0)=1``.
+        **kwargs
+            User-defined degradation callbacks and their parameters.
+
+        Raises
+        ------
+        ValueError
+            If the residual stiffness or floor mode is invalid.
         """
         self.degradation_type = degradation_type
         self.params = kwargs
+        self.residual_stiffness = float(kwargs.get('residual_stiffness', 1.0e-10))
+        self.floor_mode = str(kwargs.get('floor_mode', 'additive'))
+        if not 0.0 < self.residual_stiffness <= 1.0:
+            raise ValueError("residual_stiffness must lie in (0, 1]")
+        if self.floor_mode not in {'additive', 'convex'}:
+            raise ValueError("floor_mode must be 'additive' or 'convex'")
 
     def degradation_function(self, d):
         """
@@ -68,7 +87,8 @@ class EnergyDegradationFunction:
         c (float or numpy array): The constant coefficient in the gradient of the energy degradation function.
         """
         if self.degradation_type == 'quadratic':
-            return -2
+            factor = 1.0 - self.residual_stiffness if self.floor_mode == 'convex' else 1.0
+            return -2 * factor
         elif self.degradation_type == 'user_defined':
             return self.params.get('constant_coef')
         else:
@@ -85,22 +105,24 @@ class EnergyDegradationFunction:
         return:
         g (float or numpy array): Degradation factor g (d).
         """
-        eps = 1e-10
-        gd = (1 - d)**2 + eps
-        return gd
+        k = self.residual_stiffness
+        if self.floor_mode == 'convex':
+            return (1.0 - k) * (1 - d)**2 + k
+        return (1 - d)**2 + k
     
     def _quadratic_grad_degradation(self, d):
         """
         The derivative of the quadratic energy degradation function g'(d) = -2(1 - d)。
         """
-        g_gd = -2 + 2*d
-        return g_gd
+        factor = 1.0 - self.residual_stiffness if self.floor_mode == 'convex' else 1.0
+        return factor * (-2 + 2*d)
     
     def _quadratice_grad_grad_degradation(self, d):
         """
         The second derivative of the quadratic energy degradation function g''(d) = 2。
         """
-        return 2
+        factor = 1.0 - self.residual_stiffness if self.floor_mode == 'convex' else 1.0
+        return 2 * factor
 
     def _thrice_degradation(self, d):
         """
@@ -166,4 +188,3 @@ class EnergyDegradationFunction:
         plt.legend()
         plt.grid(True)
         plt.show()
-

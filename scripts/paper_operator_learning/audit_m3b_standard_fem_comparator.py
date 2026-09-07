@@ -84,6 +84,11 @@ def main() -> int:
     parser.add_argument("--hmin", type=float, default=0.0065)
     parser.add_argument("--quadrature-order", type=int, default=6)
     parser.add_argument("--degradation-floor", type=float, default=1.0e-10)
+    parser.add_argument(
+        "--degradation-floor-mode",
+        choices=("additive", "convex"),
+        default="additive",
+    )
     parser.add_argument("--reaction-relative-tolerance", type=float, default=0.02)
     args = parser.parse_args()
 
@@ -115,6 +120,7 @@ def main() -> int:
         "hmin": args.hmin,
         "quadrature_order": args.quadrature_order,
         "degradation_floor": args.degradation_floor,
+        "degradation_floor_mode": args.degradation_floor_mode,
         "reaction_relative_tolerance": args.reaction_relative_tolerance,
         "comparator": "continuous_P1_standard_FEM_displacement_recovery",
         "hz_hires_degradation_floor": 1.0e-6,
@@ -123,7 +129,9 @@ def main() -> int:
     meta_path.write_text(json.dumps(meta, indent=2))
 
     main_solver, material, mesh_stats, unused_nodes = build_model0_resolved_solver(
-        hmin=args.hmin
+        hmin=args.hmin,
+        degradation_floor=args.degradation_floor,
+        degradation_floor_mode=args.degradation_floor_mode,
     )
     reactions = load_recorded_reactions(run_dir / "residual_force_vs_displacement.csv")
     rows: list[dict] = []

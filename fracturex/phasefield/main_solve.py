@@ -1199,7 +1199,7 @@ class MainSolve:
         if EDfunc is not None:
             self.EDFunc = EDfunc(degradation_type='user_defined', **kwargs)
         else:
-            self.EDFunc = EDFunc(degradation_type=degradation_type)
+            self.EDFunc = EDFunc(degradation_type=degradation_type, **kwargs)
 
     def set_crack_surface_density(self, density_type='AT2', CSDfunc=None, **kwargs):
         """

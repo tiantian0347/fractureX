@@ -8,8 +8,10 @@ from fealpy.functionspace import LagrangeFESpace, TensorFunctionSpace
 from fealpy.mesh import TriangleMesh
 
 from fracturex.learn.eval.native_stress_residual import (
+    ContinuousP1RecoveredStress,
     OswaldRecoveredStress,
     compute_native_stress_residual,
+    integrate_boundary_reaction,
     oswald_average_dg_displacement,
 )
 
@@ -123,3 +125,37 @@ def test_oswald_recovery_preserves_affine_displacement_and_zero_residual():
     )
     assert result.relative_estimator < 1.0e-12
     assert result.max_traction_jump < 1.0e-10
+
+
+def test_continuous_p1_recovery_preserves_affine_equilibrium_and_reaction():
+    mesh = _two_triangle_mesh()
+    scalar = LagrangeFESpace(mesh, p=1, ctype="C")
+    tensor = TensorFunctionSpace(scalar, shape=(2, -1))
+    displacement = tensor.interpolate(
+        lambda points: bm.stack([0.0 * points[..., 0], points[..., 1]], axis=-1)
+    )
+    damage = scalar.function()
+    damage[:] = 0.0
+    recovered = ContinuousP1RecoveredStress(
+        mesh,
+        scalar,
+        tensor,
+        displacement,
+        damage,
+        young_modulus=200.0,
+        poisson_ratio=0.2,
+    )
+    result = compute_native_stress_residual(
+        mesh, recovered.value, recovered.divergence, quadrature_order=4
+    )
+    reaction_y = integrate_boundary_reaction(
+        mesh,
+        recovered.value,
+        lambda points: np.abs(points[:, 1] - 1.0) < 1.0e-12,
+        component=1,
+        quadrature_order=4,
+    )
+    # Plane strain: sigma_yy=(lambda+2mu)*epsilon_yy=222.222... on unit top edge.
+    assert result.relative_estimator < 1.0e-12
+    expected_reaction = (1.0 + 1.0e-10) * 200.0 * 0.8 / (1.2 * 0.6)
+    assert abs(abs(reaction_y) - expected_reaction) < 1.0e-10

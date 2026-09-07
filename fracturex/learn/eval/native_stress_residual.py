@@ -539,3 +539,176 @@ class OswaldRecoveredStress:
             + degradation_gradient[..., 1] * syy
         )
         return np.stack([div_x, div_y], axis=-1)
+
+
+class ContinuousP1RecoveredStress:
+    """Evaluate degraded stress from a continuous ``P1`` displacement solution.
+
+    This evaluator targets standard displacement-FEM checkpoints. Both
+    displacement and damage must use the same continuous triangle ``P1`` scalar
+    space. Values are returned in physical units and Hu--Zhang Voigt order
+    ``(xx, xy, yy)``; divergence is analytic inside each cell.
+    """
+
+    def __init__(
+        self,
+        mesh,
+        scalar_space,
+        tensor_space,
+        displacement_dofs,
+        damage_dofs,
+        *,
+        young_modulus: float,
+        poisson_ratio: float,
+        degradation_floor: float = 1.0e-10,
+    ) -> None:
+        """Bind one standard-FEM state without modifying caller-owned arrays.
+
+        Parameters
+        ----------
+        mesh
+            Two-dimensional FEALPy triangle mesh.
+        scalar_space
+            Continuous scalar ``P1`` space used by damage and each displacement
+            component.
+        tensor_space
+            Vector space built from ``scalar_space``; its ``dof_priority``
+            determines the flattened checkpoint layout.
+        displacement_dofs : array-like, shape (2*n_scalar_dofs,)
+            Dimensionless displacement coefficients in tensor-space order.
+        damage_dofs : array-like, shape (n_scalar_dofs,)
+            Damage coefficients in ``[0,1]``.
+        young_modulus : float
+            Young's modulus in stress units.
+        poisson_ratio : float
+            Plane-strain Poisson ratio in ``(-1,0.5)``.
+        degradation_floor : float
+            Additive floor in ``g(d)=(1-d)^2+floor``.
+        """
+        from fracturex.learn.stress_recovery import plane_strain_C
+
+        if int(scalar_space.p) != 1:
+            raise ValueError(f"continuous recovery requires P1; got p={scalar_space.p}")
+        if int(mesh.geo_dimension()) != 2:
+            raise ValueError("continuous recovery currently requires a 2-D mesh")
+        if not (-1.0 < poisson_ratio < 0.5):
+            raise ValueError("poisson_ratio must lie in (-1,0.5)")
+        if degradation_floor <= 0.0:
+            raise ValueError("degradation_floor must be positive")
+        self.mesh = mesh
+        self.scalar_space = scalar_space
+        self.tensor_space = tensor_space
+        self.cell_to_dof = _as_numpy(scalar_space.cell_to_dof()).astype(np.int64)
+        n_scalar = int(scalar_space.number_of_global_dofs())
+        flat_u = _as_numpy(displacement_dofs).reshape(-1)
+        flat_d = _as_numpy(damage_dofs).reshape(-1)
+        if flat_u.size != 2 * n_scalar:
+            raise ValueError(f"displacement has {flat_u.size} values; expected {2*n_scalar}")
+        if flat_d.size != n_scalar:
+            raise ValueError(f"damage has {flat_d.size} values; expected {n_scalar}")
+        self.displacement = (
+            flat_u.reshape(2, n_scalar).T.copy()
+            if bool(tensor_space.dof_priority)
+            else flat_u.reshape(n_scalar, 2).copy()
+        )
+        self.damage = flat_d.copy()
+        self.constitutive = _as_numpy(plane_strain_C(young_modulus, poisson_ratio))
+        self.degradation_floor = float(degradation_floor)
+
+    def _state(
+        self,
+        bcs: np.ndarray,
+        cell_indices: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return base stress, damage and damage gradient at cell points."""
+        cell_indices = np.asarray(cell_indices, dtype=np.int64)
+        basis = _as_numpy(self.scalar_space.basis(bcs, index=cell_indices))
+        if basis.shape[0] == 1 and cell_indices.size != 1:
+            basis = np.broadcast_to(basis, (cell_indices.size,) + basis.shape[1:])
+        grad_basis = _as_numpy(self.scalar_space.grad_basis(bcs, index=cell_indices))
+        local_u = self.displacement[self.cell_to_dof[cell_indices]]
+        local_d = self.damage[self.cell_to_dof[cell_indices]]
+        grad_u = np.einsum("cqld,clv->cqvd", grad_basis, local_u)
+        strain = np.stack(
+            [grad_u[..., 0, 0], grad_u[..., 1, 1], grad_u[..., 0, 1] + grad_u[..., 1, 0]],
+            axis=-1,
+        )
+        base_stress = np.einsum("ij,cqj->cqi", self.constitutive, strain)
+        damage = np.einsum("cql,cl->cq", basis, local_d)
+        damage_gradient = np.einsum("cqld,cl->cqd", grad_basis, local_d)
+        return base_stress, damage, damage_gradient
+
+    def value(self, bcs: np.ndarray, cell_indices: np.ndarray) -> np.ndarray:
+        """Return degraded stress ``(n_cells,n_q,3)`` in ``(xx,xy,yy)`` order."""
+        base_stress, damage, _ = self._state(bcs, cell_indices)
+        degradation = (1.0 - damage) ** 2 + self.degradation_floor
+        stress = base_stress * degradation[..., None]
+        return stress[..., [0, 2, 1]]
+
+    def divergence(self, bcs: np.ndarray, cell_indices: np.ndarray) -> np.ndarray:
+        """Return analytic cellwise divergence ``(n_cells,n_q,2)``."""
+        base_stress, damage, damage_gradient = self._state(bcs, cell_indices)
+        degradation_gradient = -2.0 * (1.0 - damage)[..., None] * damage_gradient
+        sxx = base_stress[..., 0]
+        syy = base_stress[..., 1]
+        sxy = base_stress[..., 2]
+        div_x = degradation_gradient[..., 0] * sxx + degradation_gradient[..., 1] * sxy
+        div_y = degradation_gradient[..., 0] * sxy + degradation_gradient[..., 1] * syy
+        return np.stack([div_x, div_y], axis=-1)
+
+
+def integrate_boundary_reaction(
+    mesh,
+    stress_value: StressValue,
+    boundary_selector: Callable[[np.ndarray], np.ndarray],
+    *,
+    component: int,
+    quadrature_order: int = 6,
+) -> float:
+    """Integrate one traction component over selected physical boundary edges.
+
+    Parameters
+    ----------
+    mesh
+        Two-dimensional FEALPy triangle mesh.
+    stress_value
+        Native stress callable in ``(xx,xy,yy)`` order and physical units.
+    boundary_selector
+        Callable mapping edge barycenters ``(n_edges,2)`` to a boolean mask.
+    component : int
+        Traction component, ``0`` for x or ``1`` for y.
+    quadrature_order : int
+        Edge quadrature order, at least 2.
+
+    Returns
+    -------
+    float
+        Signed integrated traction in force-per-thickness units.
+    """
+    if component not in (0, 1):
+        raise ValueError("component must be 0 or 1")
+    if quadrature_order < 2:
+        raise ValueError("quadrature_order must be at least 2")
+    boundary_edges = np.flatnonzero(_as_numpy(mesh.boundary_edge_flag()).astype(bool))
+    edge_barycenters = _as_numpy(mesh.entity_barycenter("edge", index=boundary_edges))
+    selected_mask = np.asarray(boundary_selector(edge_barycenters), dtype=bool)
+    if selected_mask.shape != (boundary_edges.size,):
+        raise ValueError(
+            f"boundary_selector returned {selected_mask.shape}; expected {(boundary_edges.size,)}"
+        )
+    selected_edges = boundary_edges[selected_mask]
+    if selected_edges.size == 0:
+        raise ValueError("boundary_selector selected no edges")
+    qf = mesh.quadrature_formula(quadrature_order, "edge")
+    edge_bcs_raw, weights_raw = qf.get_quadrature_points_and_weights()
+    edge_bcs = _as_numpy(edge_bcs_raw)
+    weights = _as_numpy(weights_raw)
+    stress = _evaluate_edge_traces(
+        mesh, stress_value, selected_edges, edge_bcs, side=0
+    )
+    normal = _as_numpy(mesh.edge_unit_normal(index=selected_edges))
+    tx = stress[..., 0] * normal[:, None, 0] + stress[..., 1] * normal[:, None, 1]
+    ty = stress[..., 1] * normal[:, None, 0] + stress[..., 2] * normal[:, None, 1]
+    traction = tx if component == 0 else ty
+    edge_length = _as_numpy(mesh.entity_measure("edge", index=selected_edges))
+    return float(np.sum(edge_length * np.einsum("q,eq->e", weights, traction)))

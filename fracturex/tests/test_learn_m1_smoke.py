@@ -106,7 +106,33 @@ def test_train_stage_b_one_epoch(tmp_path, model_name):
     # σ metrics present and finite in Stage B
     assert np.isfinite(final["sigma_relative_l2"])
     assert np.isfinite(final["principal_stress_l2"])
+    assert np.isfinite(final["equilibrium_residual_pred_fd"])
+    assert np.isfinite(final["equilibrium_residual_target_hz_fd"])
     assert np.isfinite(final["relative_l2"])  # damage still scored
+
+
+def test_evaluate_saved_stage_b_run(tmp_path):
+    """A saved checkpoint can be audited without retraining or mutating it."""
+    pytest.importorskip("torch")
+    from fracturex.learn.train import TrainConfig, evaluate_saved_run, train
+
+    ds_dir = _make_mini_dataset(tmp_path / "ds")
+    out_dir = tmp_path / "runs" / "saved_stage_b"
+    train(TrainConfig(
+        dataset_dir=ds_dir,
+        out_dir=out_dir,
+        model="multioutput_unet",
+        stage="B",
+        epochs=1,
+        batch_size=2,
+        device="cpu",
+        lambda_sigma=1.0,
+    ))
+    metrics = evaluate_saved_run(out_dir, batch_size=1, device="cpu")
+
+    assert np.isfinite(metrics["relative_l2"])
+    assert np.isfinite(metrics["equilibrium_residual_pred_fd"])
+    assert np.isfinite(metrics["equilibrium_residual_target_supervision_fd"])
 
 
 def test_sigma_arcsinh_transform_roundtrip():

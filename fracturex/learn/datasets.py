@@ -197,6 +197,7 @@ def collate_masked(batch: list[dict]) -> dict:
 
     x:      (B, C_in, H, W)        static input channels
     y:      (B, T, H, W)           damage target (clamped to [0,1])
+    coords: (B, 2, H, W)           physical grid coordinates; channels (x, y)
     stress: (B, T, 3, H, W)        normalized stress target — present only when
                                    every sample in the batch carries ``stress``
     mask:   (B, 1, H, W)           in-Ω mask
@@ -209,6 +210,9 @@ def collate_masked(batch: list[dict]) -> dict:
     out = {
         "x": torch.from_numpy(xs),
         "y": torch.from_numpy(ys),
+        "coords": torch.from_numpy(np.stack(
+            [np.asarray(s["coords"], dtype=np.float32) for s in batch], axis=0
+        )),
         "mask": torch.from_numpy(ms),
         "meta": [s.get("meta", {}) for s in batch],
         "sample_id": [s.get("sample_id") for s in batch],

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import csv
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Optional
 
@@ -170,8 +170,66 @@ def _compute_loss(pred, batch, cfg, device):
     return total, comps
 
 
+def _mean_grid_equilibrium_residual(
+    sigma_grid: np.ndarray,
+    mask: np.ndarray,
+    damage: np.ndarray,
+    coords: np.ndarray,
+) -> float:
+    """Average the dimensionless grid-FD equilibrium residual over a batch.
+
+    Parameters
+    ----------
+    sigma_grid : ndarray, shape (B, T, 3, H, W)
+        Per-sample normalized stress. Channel order is ``(xx, yy, xy)``.
+    mask : ndarray, shape (B, 1, H, W)
+        Boolean or 0/1 validity mask.
+    damage : ndarray, shape (B, T, H, W)
+        Reference damage used to exclude cells with ``d > 0.9``.
+    coords : ndarray, shape (B, 2, H, W)
+        Physical coordinates with channels ``(x, y)``. Grid spacings may vary
+        between samples, so each sample is evaluated separately.
+
+    Returns
+    -------
+    float
+        Mean dimensionless residual over samples and load steps. The inputs are
+        not modified.
+
+    Raises
+    ------
+    ValueError
+        If a sample has non-positive or non-finite Cartesian grid spacing.
+
+    Notes
+    -----
+    This is the structured-grid FD diagnostic used by Stage D. It does not
+    measure native finite-element normal-flux jumps and must not be interpreted
+    as the broken ``H(div)`` residual from the paper's source-level analysis.
+    """
+    residuals: list[float] = []
+    for sample_index in range(sigma_grid.shape[0]):
+        x_grid = np.asarray(coords[sample_index, 0], dtype=np.float64)
+        y_grid = np.asarray(coords[sample_index, 1], dtype=np.float64)
+        dx = float(np.median(np.diff(x_grid, axis=-1)))
+        dy = float(np.median(np.diff(y_grid, axis=-2)))
+        if not np.isfinite(dx) or not np.isfinite(dy) or dx <= 0.0 or dy <= 0.0:
+            raise ValueError(
+                f"sample {sample_index} has invalid grid spacing dx={dx}, dy={dy}"
+            )
+        residuals.append(M.equilibrium_residual_l2(
+            sigma_grid[sample_index],
+            mask[sample_index],
+            dx=dx,
+            dy=dy,
+            d=damage[sample_index],
+        ))
+    return float(np.mean(residuals))
+
+
 def _evaluate(model, loader, stage, device,
-              sigma_transform="none", sigma_scale=1.0) -> dict:
+              sigma_transform="none", sigma_scale=1.0,
+              supervision_source="sigma_h") -> dict:
     """Average the metric table over a loader (adds σ metrics for Stage B).
 
     σ predictions are inverted from the training space (e.g. arcsinh) back to
@@ -190,7 +248,12 @@ def _evaluate(model, loader, stage, device,
     if stage_b:
         agg.update({"sigma_relative_l2": [], "principal_stress_l2": [],
                     "sigma_peak_relative_l2": [], "peak_load_error": [],
-                    "sigma_relative_l2_train": []})
+                    "sigma_relative_l2_train": [],
+                    "equilibrium_residual_pred_fd": [],
+                    "equilibrium_residual_target_hz_fd": [],
+                    "equilibrium_residual_target_supervision_fd": []})
+        if supervision_source == "sigma_h_rec":
+            agg["sigma_relative_l2_to_supervision"] = []
     with torch.no_grad():
         for batch in loader:
             x = batch["x"].to(device)
@@ -210,6 +273,7 @@ def _evaluate(model, loader, stage, device,
                 st_phys = batch["stress"].cpu().numpy()            # physical(normalized)
                 sp_phys = sigma_inverse(sp_train, sigma_transform, sigma_scale)
                 st_train = sigma_forward(st_phys, sigma_transform, sigma_scale)
+                coords = batch["coords"].cpu().numpy()
                 agg["sigma_relative_l2"].append(M.stress_relative_l2(sp_phys, st_phys, mask))
                 agg["principal_stress_l2"].append(
                     M.principal_stress_relative_l2(sp_phys, st_phys, mask))
@@ -219,7 +283,104 @@ def _evaluate(model, loader, stage, device,
                     M.peak_load_error_grid(sp_phys, st_phys, mask))
                 agg["sigma_relative_l2_train"].append(
                     M.stress_relative_l2(sp_train, st_train, mask))
+                agg["equilibrium_residual_pred_fd"].append(
+                    _mean_grid_equilibrium_residual(sp_phys, mask, dt, coords))
+                agg["equilibrium_residual_target_hz_fd"].append(
+                    _mean_grid_equilibrium_residual(st_phys, mask, dt, coords))
+                supervision_target = st_phys
+                if supervision_source == "sigma_h_rec":
+                    if "stress_rec" not in batch:
+                        raise KeyError(
+                            "supervision_source='sigma_h_rec' but evaluation batch "
+                            "does not contain stress_rec"
+                        )
+                    supervision_target = batch["stress_rec"].cpu().numpy()
+                    agg["sigma_relative_l2_to_supervision"].append(
+                        M.stress_relative_l2(sp_phys, supervision_target, mask))
+                agg["equilibrium_residual_target_supervision_fd"].append(
+                    _mean_grid_equilibrium_residual(
+                        supervision_target, mask, dt, coords
+                    ))
     return {k: (float(np.mean(v)) if v else float("nan")) for k, v in agg.items()}
+
+
+def evaluate_saved_run(
+    run_dir: Path,
+    *,
+    batch_size: Optional[int] = None,
+    device: str = "cpu",
+) -> dict[str, float]:
+    """Evaluate one saved operator-learning run on its configured validation split.
+
+    Parameters
+    ----------
+    run_dir : Path
+        Directory containing ``config.json`` and
+        ``checkpoints/model_final.pt``. No files are modified.
+    batch_size : int, optional
+        Evaluation batch size. Defaults to the saved training batch size.
+    device : str
+        PyTorch device string, for example ``"cpu"`` or ``"cuda"``.
+
+    Returns
+    -------
+    dict[str, float]
+        Held-out field, engineering and grid-FD equilibrium metrics.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the saved configuration or final checkpoint is missing.
+    ValueError
+        If the saved configuration cannot reconstruct the model or dataset.
+    """
+    import torch
+
+    run_dir = Path(run_dir)
+    config_path = run_dir / "config.json"
+    checkpoint_path = run_dir / "checkpoints" / "model_final.pt"
+    if not config_path.exists():
+        raise FileNotFoundError(f"missing saved run config: {config_path}")
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"missing saved model checkpoint: {checkpoint_path}")
+
+    saved = json.loads(config_path.read_text())
+    config_fields = {field.name for field in fields(TrainConfig)}
+    config_values = {key: value for key, value in saved.items() if key in config_fields}
+    config_values["dataset_dir"] = Path(config_values["dataset_dir"])
+    config_values["out_dir"] = run_dir
+    config_values["device"] = device
+    cfg = TrainConfig(**config_values)
+    eval_batch_size = int(batch_size or cfg.batch_size)
+    include_stress_rec = cfg.supervision_source == "sigma_h_rec"
+    val_ds, val_loader = _make_loader(
+        cfg.dataset_dir,
+        cfg.val_split,
+        eval_batch_size,
+        shuffle=False,
+        include_stress_rec=include_stress_rec,
+    )
+    model, _, _ = _build_for_stage(
+        cfg,
+        val_ds.n_input_channels,
+        val_ds.n_steps,
+        val_ds.grid_hw,
+        torch.device(device),
+    )
+    try:
+        state = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    except TypeError:  # PyTorch < 2.0 has no weights_only keyword.
+        state = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(state)
+    return _evaluate(
+        model,
+        val_loader,
+        cfg.stage,
+        torch.device(device),
+        sigma_transform=cfg.sigma_transform,
+        sigma_scale=cfg.sigma_transform_scale,
+        supervision_source=cfg.supervision_source,
+    )
 
 
 def _build_for_stage(cfg, in_ch, T, hw, device):
@@ -333,7 +494,8 @@ def train(cfg: TrainConfig) -> dict:
 
     final = _evaluate(model, val_loader, cfg.stage, device,
                       sigma_transform=cfg.sigma_transform,
-                      sigma_scale=cfg.sigma_transform_scale)
+                      sigma_scale=cfg.sigma_transform_scale,
+                      supervision_source=cfg.supervision_source)
     lines = [
         f"# Eval report — model={resolved_name}, stage={cfg.stage}",
         "",
@@ -350,7 +512,8 @@ def train(cfg: TrainConfig) -> dict:
     lines.append("")
     if n_fields > 1:
         lines.append("> σ metrics on normalized stress (per-sample stress_scale). "
-                     "reaction / equilibrium residual land in Stage D.")
+                     "Equilibrium metrics use the structured-grid FD diagnostic; "
+                     "native FE normal-flux jumps are outside this report.")
     else:
         lines.append("> peak_load / equilibrium need reaction & σ (Stage B/D).")
     (out_dir / "eval_report.md").write_text("\n".join(lines))
